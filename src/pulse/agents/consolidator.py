@@ -15,6 +15,28 @@ class Consolidator(Agent[Sequence[ExtractRecord], Consolidation]):
 
     name = "consolidator"
     output_type = Consolidation
+    INSTRUCTIONS = """\
+You receive the extract records for this week's staff updates to Techary Pulse, the internal
+staff newsletter, as a JSON list. Consolidate them into newsletter items and write the headline.
+
+Items:
+
+- Merge records that describe the same news into one item. Records about different news become
+  separate items.
+- Every record must appear in exactly one item. List each item's records by their `message_id`
+  in `source_message_ids`.
+- Give each item a unique `item_id`, such as `item-1`.
+- Set `category` to the category of the item's records. Where merged records have different
+  categories, choose the one that fits the news best.
+- `facts` and `people` come only from the item's records. Combine them without repeating the
+  same fact, and never add anything the records do not state.
+
+Headline:
+
+- Write `headline` as one short headline for the week, like a newspaper headline, using only the
+  items' facts. It is not a list of every item: lead with the main news and leave the rest to
+  the newsletter.
+"""
 
     def __init__(self, sections: Sequence[SectionConfig]) -> None:
         self._sections = sections

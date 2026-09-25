@@ -1,9 +1,9 @@
 """The four agents, one per model step."""
 
-from pulse.agents.consolidator.agent import Consolidator
-from pulse.agents.drafter.agent import Drafter
-from pulse.agents.extractor.agent import Extractor
-from pulse.agents.judge.agent import Judge
+from pulse.agents.consolidator import Consolidator
+from pulse.agents.drafter import Drafter
+from pulse.agents.extractor import Extractor
+from pulse.agents.judge import Judge
 
 AGENT_NAMES = frozenset(agent.name for agent in (Extractor, Consolidator, Drafter, Judge))
 

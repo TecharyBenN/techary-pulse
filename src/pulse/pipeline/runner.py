@@ -2,7 +2,6 @@
 
 import logging
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -181,10 +180,7 @@ def run_pipeline(
 
         # Step 4: extract.
         extractor = Extractor(config.sections)
-        with ThreadPoolExecutor() as pool:
-            records = list(
-                pool.map(lambda m: agents.run(extractor, CleanedEmail.from_message(m)), passed)
-            )
+        records = agents.run_many(extractor, [CleanedEmail.from_message(m) for m in passed])
         artefacts.write_text(
             "extract.json", TypeAdapter(list[ExtractRecord]).dump_json(records, indent=2).decode()
         )

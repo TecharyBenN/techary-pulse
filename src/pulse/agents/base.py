@@ -1,8 +1,6 @@
 """The base class every agent derives from."""
 
-import inspect
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel
@@ -17,11 +15,11 @@ class Agent[InputT, OutputT: BaseModel](ABC):
     name: ClassVar[str]
     output_type: type[OutputT]
     tools: ClassVar[tuple[()]] = ()
+    INSTRUCTIONS: ClassVar[str]
 
     def instructions(self) -> str:
-        """Return the instructions held in ``instructions.md`` beside the agent's class."""
-        path = Path(inspect.getfile(type(self))).with_name("instructions.md")
-        return path.read_text(encoding="utf-8")
+        """Return the instructions sent to the model."""
+        return self.INSTRUCTIONS
 
     @abstractmethod
     def build_message(self, data: InputT) -> str:

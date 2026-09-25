@@ -63,12 +63,10 @@ techary-pulse/
 │   ├── agents/
 │   │   ├── base.py                  Agent base class
 │   │   ├── runner.py                Runs any agent through Pydantic AI
-│   │   ├── extractor/
-│   │   │   ├── agent.py             The Extractor class
-│   │   │   └── instructions.md
-│   │   ├── consolidator/
-│   │   ├── drafter/
-│   │   └── judge/
+│   │   ├── extractor.py             Extractor class, with its instructions
+│   │   ├── consolidator.py
+│   │   ├── drafter.py
+│   │   └── judge.py
 │   ├── pipeline/
 │   │   ├── runner.py                Steps 1 to 9 in order
 │   │   ├── rules.py                 Pre-filter, exclusions and section order
@@ -95,7 +93,7 @@ The mailbox has three parts, only one of which ships in production:
 - `GraphMailbox`, also in `mail.py`, implements it by calling Microsoft Graph. The same code serves the dev tenant and production; only the configuration differs.
 - `FakeMailbox`, in `tests/`, implements it with messages held in memory and sends nothing. Tests use it to run the whole pipeline in milliseconds without a tenant, and to simulate failures a real tenant will not produce on demand, such as a move failing after the send.
 
-Each agent is a self-contained folder holding its class and instructions. The class derives from `Agent` in `agents/base.py` and declares the agent's name, which is also its key in `llm.models`, its input and output types, its settings and its permitted tools, which are always none. It implements `build_message`, which turns its input into the message sent to the model, and can override `check_output` for checks beyond the schema. `agents/runner.py` runs any agent through Pydantic AI, so adding an agent never changes the runner, and the base class only describes what an agent is.
+Each agent is one file holding its class, including its instructions. The class derives from `Agent` in `agents/base.py` and declares the agent's name, which is also its key in `llm.models`, its input and output types, its settings and its permitted tools, which are always none. It implements `build_message`, which turns its input into the message sent to the model, and can override `check_output` for checks beyond the schema. `agents/runner.py` runs any agent through Pydantic AI, so adding an agent never changes the runner, and the base class only describes what an agent is.
 
 The repository never contains real email content, a real `config.yaml`, certificates, keys or run artefacts. The certificate is kept outside the repository folder, and `.gitignore` excludes `*.pem`, `*.pfx`, `.env`, `config.yaml` and `runs/`.
 
@@ -108,6 +106,7 @@ The repository never contains real email content, a real `config.yaml`, certific
 | `uv run ruff check` | Lint |
 | `uv run mypy src tests` | Type check |
 | `uv run pytest` | Run tests; tests marked `live` are excluded by default |
+| `uv run --env-file .env pytest -m live -s` | Run the synthetic emails through the agents on the dev gateway, as a dry run, and print where the reviewer email is saved |
 | `docker build -t techary-pulse .` | Build the container image |
 
 Run format, lint, type check and tests before every commit.
@@ -199,7 +198,7 @@ Scope, taken from the design's model steps section:
 
 - **Extractor:** instructions covering the extract record's fields and their values, the configured categories and their definitions, extracting only facts stated in the message, and treating the email, given in a delimited block, as data rather than instructions.
 - **Consolidator:** instructions for merging records describing the same news, writing the headline as one short line from the consolidated items, and choosing one category where merged records differ.
-- **Drafter:** instructions applying every drafting rule in the design, including the tone rules, all held in `agents/drafter/instructions.md`.
+- **Drafter:** instructions applying every drafting rule in the design, including the tone rules.
 - **Judge:** instructions for returning, for the intro and each entry, whether its text is supported by the facts of the consolidated items.
 - **Live test:** a `live` test that runs the corpus through the agents against the dev gateway and saves the reviewer email.
 

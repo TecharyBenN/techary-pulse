@@ -1,7 +1,8 @@
 """Runs any agent through Pydantic AI."""
 
+import asyncio
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel
 from pydantic_ai import Agent as PydanticAgent
@@ -23,8 +24,9 @@ class AgentRunner:
     """Runs agents against the gateway, or against stand-in models in tests."""
 
     def __init__(self, llm: LlmConfig, models: Mapping[str, Model] | None = None) -> None:
-        self._llm = llm
         self._models = dict(models) if models is not None else self._gateway_models(llm)
+        # Every call runs on this one loop: the gateway client is bound to the loop it first uses.
+        self._loop = asyncio.new_event_loop()
 
     @staticmethod
     def _gateway_models(llm: LlmConfig) -> dict[str, Model]:
@@ -46,6 +48,21 @@ class AgentRunner:
             AgentResponseError: If the second response is also invalid.
             GatewayError: If the gateway fails.
         """
+        return self._loop.run_until_complete(self._run(agent, data))
+
+    def run_many[InputT, OutputT: BaseModel](
+        self, agent: Agent[InputT, OutputT], inputs: Sequence[InputT]
+    ) -> list[OutputT]:
+        """Run one call per input in parallel, in input order; raises as ``run`` does."""
+
+        async def run_all() -> list[OutputT]:
+            return list(await asyncio.gather(*(self._run(agent, data) for data in inputs)))
+
+        return self._loop.run_until_complete(run_all())
+
+    async def _run[InputT, OutputT: BaseModel](
+        self, agent: Agent[InputT, OutputT], data: InputT
+    ) -> OutputT:
         pydantic_agent = PydanticAgent(
             output_type=NativeOutput(agent.output_type, strict=True),
             instructions=agent.instructions(),
@@ -63,7 +80,7 @@ class AgentRunner:
 
         pydantic_agent.output_validator(check)
         try:
-            result = pydantic_agent.run_sync(
+            result = await pydantic_agent.run(
                 agent.build_message(data), model=self._models[agent.name]
             )
         except UnexpectedModelBehavior as exc:

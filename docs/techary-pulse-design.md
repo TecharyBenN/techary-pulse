@@ -101,7 +101,7 @@ If no items remain after step 5, no newsletter is sent. Rejected messages are st
 
 ## Model steps
 
-Each step is an agent packaged with Pulse. Its instructions are held in a Markdown file beside the agent's class. The extractor's instructions include each configured section's category and definition. The model for each step comes from `llm.models` in config, keyed by agent name; configuration fails to load if an agent has no model entry or an entry names no agent.
+Each step is an agent packaged with Pulse. Its instructions are part of the agent's class. The extractor's instructions include each configured section's category and definition. The model for each step comes from `llm.models` in config, keyed by agent name; configuration fails to load if an agent has no model entry or an entry names no agent.
 
 Pulse validates every response against the agent's output type, and an invalid response is retried once. A second invalid response for a message that passed the pre-filter means the instructions, output type or model are faulty: the run fails, nothing is sent or moved, and the operator alert names the message, the agent and the validation error.
 

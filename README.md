@@ -67,6 +67,8 @@ To run Pulse locally against the dev tenant:
 3. Put the dev certificate outside the repository, and set `graph.certificate_path` to its full path.
 4. Run `uv run --env-file .env pulse run --dry-run`.
 
+To run the synthetic test emails through the agents on the dev gateway, after steps 1 and 2, run `uv run --env-file .env pytest -m live -s`. It is a dry run against a fake mailbox, so nothing is sent or moved, and it prints where the reviewer email is saved.
+
 `config.yaml`, `.env`, `*.pem` and `runs/` are git-ignored.
 
 | Command | Purpose |
@@ -76,6 +78,7 @@ To run Pulse locally against the dev tenant:
 | `uv run ruff check` | Lint |
 | `uv run mypy src tests` | Type check |
 | `uv run pytest` | Run tests; `live` tests are excluded by default |
+| `uv run --env-file .env pytest -m live -s` | Run the synthetic emails through the agents on the dev gateway, as a dry run, and print where the reviewer email is saved |
 | `uv lock --upgrade` | Upgrade every dependency to its latest version |
 
 Run format, lint, type check and tests before every commit, and after every upgrade.
