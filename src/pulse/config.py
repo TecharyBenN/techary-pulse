@@ -6,6 +6,7 @@ from typing import Self
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
+from pulse.agents import AGENT_NAMES
 from pulse.errors import ConfigError
 
 
@@ -79,6 +80,16 @@ class Config(_Model):
     llm: LlmConfig
     run_artefacts_dir: Path
     retention_days: int
+
+    @model_validator(mode="after")
+    def _models_match_agents(self) -> Self:
+        missing = sorted(AGENT_NAMES - self.llm.models.keys())
+        unknown = sorted(self.llm.models.keys() - AGENT_NAMES)
+        if missing or unknown:
+            raise ValueError(
+                f"llm.models must name each agent: missing {missing}, unknown {unknown}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _recipients_allowed(self) -> Self:

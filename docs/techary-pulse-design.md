@@ -101,7 +101,7 @@ If no items remain after step 5, no newsletter is sent. Rejected messages are st
 
 ## Model steps
 
-Each step is an agent packaged with Pulse. Its instructions are held in a Markdown file beside the agent's class, and the drafter also uses a shared tone-of-voice file. The extractor's instructions include each configured section's category and definition. The model for each step comes from `llm.models` in config, keyed by agent name; configuration fails to load if an agent has no model entry or an entry names no agent.
+Each step is an agent packaged with Pulse. Its instructions are held in a Markdown file beside the agent's class. The extractor's instructions include each configured section's category and definition. The model for each step comes from `llm.models` in config, keyed by agent name; configuration fails to load if an agent has no model entry or an entry names no agent.
 
 Pulse validates every response against the agent's output type, and an invalid response is retried once. A second invalid response for a message that passed the pre-filter means the instructions, output type or model are faulty: the run fails, nothing is sent or moved, and the operator alert names the message, the agent and the validation error.
 
@@ -197,7 +197,7 @@ Code renders the consolidator's headline under `headline_title`, then the intro,
 Code verifies that:
 
 - the newsletter's visible text, including titles and the headline but not the review section, is at most `max_words` words;
-- no em dashes or en dashes appear (code replaces them before the other checks);
+- no em dashes or en dashes appear;
 - every digit sequence in an entry appears in a source message of its item, and every digit sequence in the intro appears in a source message of any item; numbers written as words are not checked;
 - every name in an entry's `people` appears, ignoring case, in the entry's text, and in a source message of its item or the item's sender names;
 - every entry is at most two sentences, where a sentence ends at `.`, `!` or `?` followed by a space or the end of the text;

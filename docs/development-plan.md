@@ -11,7 +11,7 @@ This document describes how the Techary Pulse minimum viable solution (MVS), set
 Pulse follows three coding principles. Where they pull in different directions, KISS wins.
 
 - **KISS (keep it simple).** Build the simplest thing that meets the design. Add no speculative features, and introduce an interface only where a second implementation exists; a test fake counts.
-- **DRY (don't repeat yourself).** Each rule and value has one source. Output schemas are generated from the Pydantic models, recipient domains are validated once, when configuration loads, configuration values are never repeated as constants, and all agents share one runner.
+- **DRY (don't repeat yourself).** Every rule, value and definition has one authoritative place in the code. Write logic once and call it wherever it is needed, and derive anything that can be derived, such as a schema from its model, instead of keeping a second copy.
 - **SOLID.** Each module has one job. New agents and check rules are added without editing the runner. The fake and real mailboxes are interchangeable and pass the same tests. Interfaces contain only what the pipeline uses, and the pipeline receives its dependencies rather than creating them.
 
 ## Technology choices
@@ -63,7 +63,6 @@ techary-pulse/
 │   ├── agents/
 │   │   ├── base.py                  Agent base class
 │   │   ├── runner.py                Runs any agent through Pydantic AI
-│   │   ├── tone-of-voice.md         Tone-of-voice rules used by the drafter
 │   │   ├── extractor/
 │   │   │   ├── agent.py             The Extractor class
 │   │   │   └── instructions.md
@@ -72,20 +71,17 @@ techary-pulse/
 │   │   └── judge/
 │   ├── pipeline/
 │   │   ├── runner.py                Steps 1 to 9 in order
-│   │   ├── prefilter.py
-│   │   ├── select.py                Exclusions and section mapping
+│   │   ├── rules.py                 Pre-filter, exclusions and section order
 │   │   ├── check.py
 │   │   └── render.py                Newsletter and review section, with autoescaping
-│   ├── state/
-│   │   ├── manifest.py
-│   │   ├── lock.py
-│   │   └── retention.py
+│   ├── state.py                     Lock, run manifest and artefacts, retention
 │   └── templates/
 │       └── newsletter.html.j2
 ├── tests/
 │   ├── conftest.py
-│   ├── fake_mailbox.py              FakeMailbox
+│   ├── support.py                   FakeMailbox, stand-in models, message builders
 │   ├── corpus/                      Synthetic emails
+│   ├── golden/                      Rendered reviewer email for comparison
 │   ├── unit/
 │   └── pipeline/                    Full runs against the fake mailbox, crash recovery
 └── docs/
@@ -203,7 +199,7 @@ Scope, taken from the design's model steps section:
 
 - **Extractor:** instructions covering the extract record's fields and their values, the configured categories and their definitions, extracting only facts stated in the message, and treating the email, given in a delimited block, as data rather than instructions.
 - **Consolidator:** instructions for merging records describing the same news, writing the headline as one short line from the consolidated items, and choosing one category where merged records differ.
-- **Drafter:** instructions applying every drafting rule in the design, and the shared tone-of-voice file.
+- **Drafter:** instructions applying every drafting rule in the design, including the tone rules, all held in `agents/drafter/instructions.md`.
 - **Judge:** instructions for returning, for the intro and each entry, whether its text is supported by the facts of the consolidated items.
 - **Live test:** a `live` test that runs the corpus through the agents against the dev gateway and saves the reviewer email.
 
