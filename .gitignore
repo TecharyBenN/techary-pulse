@@ -1,1 +1,20 @@
+# Local Claude Code guidance
 CLAUDE.md
+
+# Secrets and real configuration
+*.pem
+*.pfx
+.env
+config.yaml
+
+# Run artefacts
+runs/
+
+# Python and tooling
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/

@@ -1,0 +1,65 @@
+# Production-shaped example. Placeholders only: copy to config.yaml outside the
+# repository and fill in real values. config.yaml is git-ignored.
+
+graph:
+  tenant_id: 00000000-0000-0000-0000-000000000000
+  client_id: 00000000-0000-0000-0000-000000000000
+  certificate_path: /run/secrets/pulse.pem
+  max_retries: 5
+
+mailbox:
+  address: pulse@techary.ai
+  processed_folder: Processed
+  rejected_folder: Rejected
+
+reviewers:
+  - reviewer@techary.ai
+
+operator_alerts:
+  - operator@techary.ai
+
+allowed_sender_domains:
+  - techary.ai
+allowed_senders: []
+allowed_recipient_domains:
+  - techary.ai
+allowed_sensitivity_labels: []
+
+schedule:
+  cron: "30 17 * * FRI"
+  timezone: Europe/London
+
+limits:
+  max_messages_per_run: 200
+  min_body_chars: 20
+  max_words: 400
+
+subject_template: "Pulse: week ending {week_ending}"
+
+headline_title: "Headline of the week"
+
+sections:
+  - category: customer_win
+    title: "Customer wins"
+    definition: "A new customer has signed, or an existing customer has renewed or expanded their contract."
+  - category: delivery_highlight
+    title: "Delivery highlights"
+    definition: "A project, service or milestone has been delivered, launched or completed for a customer."
+  - category: team_news
+    title: "Team news and new joiners"
+    definition: "Someone has joined, moved role or gained a qualification, or a team has reached a milestone or held an event."
+  - category: shout_out
+    title: "Shout-outs"
+    definition: "A named colleague is being thanked or recognised for their work."
+
+llm:
+  base_url: https://gateway.example.internal
+  api_key_env: PULSE_LLM_API_KEY
+  models:
+    extractor: gateway-small-model
+    consolidator: gateway-mid-model
+    drafter: gateway-mid-model
+    judge: gateway-mid-model
+
+run_artefacts_dir: /var/lib/pulse/runs
+retention_days: 90

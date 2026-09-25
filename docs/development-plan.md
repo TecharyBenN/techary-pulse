@@ -4,7 +4,7 @@
 **Owner:** Ben Nicholls
 **Date:** 25 September 2026
 
-This document describes how the Techary Pulse minimum viable solution (MVS), set out in the [design and architecture document](techary-pulse-design.md), is built. It covers the engineering principles, technology choices, repository structure, development approach and delivery phases, and records the design decisions agreed during planning. It is written for the engineers building Pulse.
+This document describes how the Techary Pulse minimum viable solution (MVS), set out in the [design and architecture document](techary-pulse-design.md), is built. It covers the engineering principles, technology choices, repository structure, development approach and delivery phases. Behaviour, and every decision about it, is in the design. It is written for the engineers building Pulse.
 
 ## Principles
 
@@ -22,12 +22,12 @@ The design fixes the shape of the system: a Python package providing the `pulse`
 | --- | --- | --- |
 | Language | Python 3.14, moving to 3.15 once its dependencies support it | Latest stable release. |
 | Dependencies | uv, with `pyproject.toml` and a committed `uv.lock` | The lockfile records the exact versions tested, so the container runs what the tests ran. |
-| Version policy | Latest versions of every package, with minimum versions only and no upper limits; Dependabot opens weekly upgrade pull requests (PRs) for packages and the base image | Keeps Pulse current, with each upgrade tested by continuous integration (CI) before merge. |
+| Version policy | Latest versions of every package, with minimum versions only and no upper limits; upgrade with `uv lock --upgrade`, then run the checks, at the start of each phase | Keeps Pulse current, with each upgrade checked before it is committed. |
 | Lint and format | Ruff | One tool for linting, import ordering and formatting. |
 | Type checking | mypy in strict mode | Catches drift between the pipeline, the real mailbox and the fake. |
 | Tests | pytest, with parameterised cases for the check rules | One test style, no extra dependency. |
 | Models and configuration | Pydantic, with PyYAML `safe_load` | One set of models validates `config.yaml`, agent output and the run manifest. |
-| Agents | Pydantic AI, used for its agent and model layer only | Runs each agent with typed output and validation retry against the gateway's OpenAI-compatible endpoint; its test models stand in for the gateway in automated tests. Subject to the phase 0 spike. |
+| Agents | `pydantic-ai-slim[openai]`, used for its agent and model layer only, in native output mode | Runs each agent with typed output and validation retry against the gateway's OpenAI-compatible endpoint, independent of the provider behind it; its test models stand in for the gateway in automated tests. Tested against the dev gateway in phase 0: native mode sends no tools, output types limited to schema features every major provider supports are accepted, Pydantic AI validates each reply, and requests go only to the gateway. Set `PYDANTIC_AI_NO_BANNER=1`, and use `httpx2` clients. |
 | Entra ID token | Microsoft Authentication Library (MSAL) for Python | Maintained implementation of the certificate client assertion. |
 | Microsoft Graph calls | Direct REST calls through httpx | Pulse uses five operations, so a software development kit (SDK) adds more than it saves. |
 | Rendering | Jinja2 with autoescaping on | Escapes model output and email-derived strings by default. |
@@ -35,7 +35,6 @@ The design fixes the shape of the system: a Python package providing the `pulse`
 | Logging | Standard library `logging` with a JSON formatter | Structured logs without another dependency. |
 | Command-line interface | `argparse` | Two commands and two options do not need a framework. |
 | Container | `python:3.14-slim`, running as a non-root user | Small image with no build tools. |
-| CI | GitHub Actions: lint, type check and tests on every push and PR | Checks every change, including every dependency upgrade, automatically. |
 
 ## Repository structure
 
@@ -44,12 +43,10 @@ techary-pulse/
 ├── README.md                        What Pulse is, how to run it, the mailbox permissions it needs
 ├── pyproject.toml                   Package metadata, dependencies, tool settings
 ├── uv.lock                          Locked dependency versions
+├── .python-version                  Python version for uv, matching the container
 ├── Dockerfile
 ├── .dockerignore
 ├── .gitignore
-├── .github/
-│   ├── workflows/ci.yml             Lint, type check, tests
-│   └── dependabot.yml               Weekly upgrades for packages and the base image
 ├── .claude/settings.json            Claude Code permissions (deny reading secrets)
 ├── config/
 │   ├── config.example.yaml          Production-shaped example, placeholders only
@@ -76,7 +73,7 @@ techary-pulse/
 │   ├── pipeline/
 │   │   ├── runner.py                Steps 1 to 9 in order
 │   │   ├── prefilter.py
-│   │   ├── select.py                Relevance filter, section mapping, item limit
+│   │   ├── select.py                Exclusions and section mapping
 │   │   ├── check.py
 │   │   └── render.py                Newsletter and review section, with autoescaping
 │   ├── state/
@@ -88,14 +85,12 @@ techary-pulse/
 ├── tests/
 │   ├── conftest.py
 │   ├── fake_mailbox.py              FakeMailbox
-│   ├── corpus/                      Synthetic emails with expected labels
+│   ├── corpus/                      Synthetic emails
 │   ├── unit/
-│   ├── pipeline/                    Full runs against the fake mailbox, crash recovery
-│   └── evals/                       Agent quality evaluations and thresholds.yaml
+│   └── pipeline/                    Full runs against the fake mailbox, crash recovery
 └── docs/
     ├── techary-pulse-design.md
-    ├── development-plan.md
-    └── adr/                         Architecture decision records
+    └── development-plan.md
 ```
 
 The mailbox has three parts, only one of which ships in production:
@@ -116,41 +111,24 @@ The repository never contains real email content, a real `config.yaml`, certific
 | `uv run ruff format` | Format code |
 | `uv run ruff check` | Lint |
 | `uv run mypy src tests` | Type check |
-| `uv run pytest` | Run tests; tests marked `live` or `eval` are excluded by default |
-| `uv run pytest -m eval` | Run agent evaluations against the dev gateway |
+| `uv run pytest` | Run tests; tests marked `live` are excluded by default |
 | `docker build -t techary-pulse .` | Build the container image |
 
-CI runs the same commands.
+Run format, lint, type check and tests before every commit.
 
 ## Development approach
 
 **Pipeline shape first.** Phase 1 wires all nine steps end to end against the fake mailbox and Pydantic AI test models before any real integration exists. Later phases replace the stand-ins with real services, so the pipeline runs throughout.
 
-**Test first for deterministic code.** The pre-filter, selection rules, check rules, recipient validation, manifest handling and rendering are written test first. Each of the design's in-Pulse security measures has a test proving it works. A bug fix starts with a failing test.
+**Test first for deterministic code.** The pre-filter, selection rules, check rules, recipient validation, manifest handling and rendering are written test first. A bug fix starts with a failing test.
 
-**Two layers of agent testing.** Automated tests replace each agent's model with a Pydantic AI stand-in returning JSON set by the test, checking wiring, validation, retry and failure handling on every commit. For quality, each synthetic email carries expected labels, and an evaluation suite scores the agents against the dev gateway using the thresholds below. Any change to instructions, output types or models is followed by an evaluation run, with the summary in the PR.
+**Agent testing.** Automated tests replace each agent's model with a Pydantic AI stand-in returning JSON set by the test, checking wiring, validation, retry and failure handling on every commit. Draft quality is judged by reviewers, as the design intends.
 
-**Environments.** Local development and CI use stand-ins and no network. The dev tenant and dev gateway are used for integration and manual end-to-end runs. The production mailbox is used only in phase 5.
+**Environments.** Automated tests use stand-ins and no network. Where configuration, credentials and the certificate live on the server and in local development is set out in the README. The dev tenant and dev gateway are used for integration and manual end-to-end runs. The production mailbox is used only in phase 5.
 
-**Branching.** Work happens on short-lived branches from `main`, merged by squash after CI passes and a review. Commit messages follow Conventional Commits (`feat:`, `fix:`, `test:`, `docs:`).
+**Run it as documented.** Passing tests is not enough to finish a phase. Each phase ends with Pulse run the way the README documents, with a real configuration, so that anything the README leaves out shows up before the phase closes.
 
-**The design is the source of truth.** A change in behaviour updates the design document in the same PR, and a decision with real alternatives gets an architecture decision record (ADR).
-
-## Evaluation thresholds
-
-The evaluation suite reads these values from `tests/evals/thresholds.yaml`, so they can be changed without code changes. They are starting values, to be reviewed after phase 2.
-
-| Measure | Threshold |
-| --- | --- |
-| Emails correctly classified as update or not | 95% |
-| Updates given the correct category | 90% |
-| Sensitive test emails flagged | 100% |
-| Flags that are false alarms | 20% at most |
-| Duplicate reports correctly merged | 90% |
-| Prompt-injection instructions followed | 0 |
-| Valid responses within one retry | 100% |
-| Final drafts passing the code checks and the judge | 100% |
-| Entries judged supported on the first draft | 95% |
+**The design is the source of truth.** A change in behaviour updates the design document in the same change, and a change of technology updates the technology choices table in this plan.
 
 ## Delivery phases
 
@@ -174,18 +152,18 @@ flowchart LR
 
 Scope:
 
-- scaffold the package, `pyproject.toml`, `.gitignore`, `.claude/settings.json`, the CI workflow and Dependabot;
-- build the configuration model with unknown keys rejected, the example configurations, JSON logging and the command-line skeleton;
+- scaffold the package, `pyproject.toml`, `.gitignore` and `.claude/settings.json`;
+- build the configuration model, the example configurations, JSON logging and the command-line skeleton;
 - write the Dockerfile and the README, including the mailbox permissions Pulse needs;
-- run the Pydantic AI spike: one agent called through agentgateway's OpenAI-compatible endpoint, confirming structured output works with the gateway's model names and that no telemetry leaves the server;
-- record ADRs for the technology choices and the spike outcome.
+- test Pydantic AI against the dev gateway: one agent called through agentgateway's OpenAI-compatible endpoint, confirming structured output works with the gateway's model names, no tools are sent and no telemetry leaves the server, with the result recorded in the technology choices table.
 
 Exit criteria:
 
-- CI runs on every PR, and `main` accepts changes only through PRs;
+- format, lint, type check and tests pass;
 - `pulse --help` runs in the built container;
-- the example configuration loads, and a configuration with an unknown key, or a reviewer outside `allowed_recipient_domains`, fails at start-up;
-- the spike outcome is recorded; if Pydantic AI fails it, the runner is built on the official `openai` SDK instead.
+- the example configuration loads, and a configuration with a reviewer outside `allowed_recipient_domains` fails at start-up;
+- the gateway test result is recorded; if Pydantic AI had failed it, the runner would have been built on the official `openai` SDK instead;
+- following the README's local setup with a real `config.yaml` and `.env`, `uv run --env-file .env pulse run --dry-run` loads the configuration.
 
 ### Phase 1: offline pipeline
 
@@ -204,9 +182,9 @@ Scope:
 Exit criteria:
 
 - a pipeline test runs the corpus through all nine steps and produces the reviewer email and a complete manifest;
-- each of the design's in-Pulse security measures has a test proving it works;
 - a failure injected at each step boundary, and a `SIGTERM`, leave the mailbox and manifest as the design's failure table describes, and the next run recovers;
-- the rendered newsletter and review section are agreed as golden files.
+- the rendered newsletter and review section are agreed as golden files;
+- every command in the README still works as documented with a real configuration.
 
 ### Phase 2: agents
 
@@ -216,13 +194,12 @@ Scope:
 
 - instructions for the extractor, consolidator, drafter and judge, and the shared tone-of-voice file;
 - the judge call and single regeneration;
-- the evaluation suite and `thresholds.yaml`;
-- confirmation of the model for each agent, based on evaluation results.
+- a `live` test that runs the corpus through the agents against the dev gateway and saves the reviewer email.
 
 Exit criteria:
 
-- the agents meet every evaluation threshold;
-- a reviewer has read sample drafts and confirmed the tone.
+- a reviewer has read the drafts produced from the corpus and confirmed them;
+- the `live` test runs by following the README, with a real configuration.
 
 ### Phase 3: Graph integration
 
@@ -230,8 +207,10 @@ Exit criteria:
 
 Scope:
 
+- at least one Microsoft Purview sensitivity label published in the dev tenant, which needs a licence that includes sensitivity labels, with its label ID in the dev `allowed_sensitivity_labels`;
 - certificate authentication through MSAL;
 - listing with paging, folder creation, moving and sending, with `Retry-After` handling;
+- reading the `msip_labels` header and `hasAttachments` from real dev tenant messages, confirming that Graph returns both;
 - unit tests against mocked HTTP responses, including throttling and server errors;
 - `FakeMailbox` and `GraphMailbox` passing the same interface tests;
 - manual dry runs and real runs in the dev tenant.
@@ -239,7 +218,8 @@ Scope:
 Exit criteria:
 
 - a real run in the dev tenant sends the draft to the test reviewer and moves every snapshot message to the correct folder;
-- the interface tests pass against both mailboxes.
+- the interface tests pass against both mailboxes;
+- the real run is made by following the README's local setup and commands, not by a test script.
 
 ### Phase 4: operations
 
@@ -248,14 +228,15 @@ Exit criteria:
 Scope:
 
 - `pulse schedule` with time zone handling and signal handling, isolating each run from the scheduler;
-- operator alerts, exit codes and a run summary log entry;
-- container hardening: non-root user, read-only root filesystem and restrictive volume permissions;
-- a short runbook in the README covering deployment, credential rotation and recovery from a failed run.
+- operator alerts and exit codes;
+- the container running as a non-root user, with run artefacts readable only by that user;
+- the README covering deployment to the server.
 
 Exit criteria:
 
 - the container runs unattended in the dev environment through at least two scheduled runs, including one forced failure and one `SIGTERM` mid-run, and both recover;
-- the operator alert arrives for the forced failure.
+- the operator alert arrives for the forced failure;
+- the container is set up and run by following the README's host requirements and running instructions.
 
 ### Phase 5: production pilot
 
@@ -264,32 +245,10 @@ Exit criteria:
 Scope:
 
 - deployment to the closed server with production configuration, once the production mailbox and its permissions are in place as the README describes;
-- weekly runs with reviewer feedback, with every instruction change evaluated before release;
+- weekly runs sending drafts to reviewers;
 - a decision on the scope after the MVS, such as sending to all staff.
 
 Exit criteria:
 
-- four consecutive weekly runs complete without operator intervention;
-- reviewers judge at least three of the four drafts usable with light edits.
-
-## Decisions agreed during planning
-
-These decisions are reflected in the design document.
-
-| Area | Decision |
-| --- | --- |
-| Pending messages | Every message in the inbox is pending. Read status is ignored, and a message is done once moved to `Processed` or `Rejected`. |
-| Invalid agent responses | An email that fails the pre-filter, or that the extractor marks as not an update, is rejected. An invalid response after one retry means the app is faulty: the run fails, nothing is sent or moved, and the alert names the message, agent and error. |
-| Limits | `max_words` and `max_items` are configuration settings. Items beyond `max_items` are listed in the review section. |
-| Rule-based work | Code drops records below `min_relevance` and assigns sections by category, with sections identified by category alone. The consolidator only merges duplicates and picks the headline, which appears only in the headline section. |
-| Unmatched categories | Items whose category has no configured section, such as `other`, are left out of the newsletter and listed in the review section. |
-| Subject line | Code builds the subject from `subject_template` and the run date. The drafter writes only the intro and sections. |
-| Empty weeks | No newsletter is sent. Rejected messages still move to `Rejected`. |
-| Review section | Below the newsletter in the reviewer email: check failures, sensitivity flags, unmatched and over-limit items, excluded messages, rejected messages by subject line, and the source map. |
-| Agents | Each model step is a self-contained class derived from an `Agent` base class, run through Pydantic AI. `prompts_dir` and `LLMClient` are removed. |
-| Security | No separate guardrails module. Recipient domains are validated at configuration load, escaping is part of rendering, and mailbox settings, Exchange scoping and gateway prompt filtering are deployment requirements documented in the README. |
-| Testing | Dev Proxy, replayed gateway responses and Hypothesis are removed. Agents are tested with Pydantic AI stand-ins and evaluations; the Graph client with mocked HTTP responses and the dev tenant. |
-| Gateway | Pulse uses the gateway's OpenAI-compatible format only; `llm.api_format` is removed. |
-| Configuration | `llm.models` is keyed by agent name, the thumbprint is calculated from the certificate, `--reviewers` is removed, and the headline title is a separate `headline_title` setting. |
-| Mailbox permissions | Pulse does not configure permissions. The README documents what the mailbox and app registration need. |
-| Tooling | No Makefile and no pre-commit hooks; commands run through `uv run`, and CI runs the same commands. |
+- Pulse sends a draft from the production mailbox to the reviewers;
+- the production deployment followed the README with no missing steps.
