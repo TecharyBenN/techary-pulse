@@ -167,17 +167,26 @@ Exit criteria:
 
 ### Phase 1: offline pipeline
 
-**Goal:** all nine steps run end to end against the fake mailbox and Pydantic AI test models, with every deterministic rule implemented and tested.
+**Goal:** all nine steps run end to end against the fake mailbox and Pydantic AI test models, with every deterministic rule in the design built and tested.
 
-Scope:
+Scope, taken section by section from the design. Each item is built and covered by tests.
 
-- the domain models, the `Mailbox` interface and `FakeMailbox`;
-- the `Agent` base class and runner, with the four agents using placeholder instructions;
-- the first synthetic corpus, covering every case in the design's testing section;
-- the lock, the run manifest with atomic writes, resume of incomplete moves, and retention;
-- the pre-filter, selection rules, check rules, rendering with the branded template, and the review section;
-- send-before-move ordering, empty-week handling and `--dry-run`;
-- crash-recovery tests.
+- **Configuration:** configuration fails to load if an agent has no `llm.models` entry or an entry names no agent.
+- **Architecture:** `Mailbox` (list the inbox, move a message, send an email) and `FakeMailbox`; the `Agent` base class and the runner, using Pydantic AI in native output mode with no tools, calling `llm.base_url` in the OpenAI-compatible format with the credential from the environment variable named in `llm.api_key_env`; the four agents with placeholder instructions.
+- **Step 1, lock and resume:** the exclusive lock on `pulse.lock` in `run_artefacts_dir`, with a second concurrent run exiting at once; completing incomplete moves from the latest manifest that is not a dry run; deleting run artefacts older than `retention_days`.
+- **Step 2, snapshot:** recording every inbox message ID in a new manifest, and processing only those messages.
+- **Step 3, pre-filter:** the sender taken from `from`; rejection by sender domain, `allowed_senders`, any disallowed sensitivity label in `msip_labels`, `Auto-Submitted` and `X-Auto-Response-Suppress` headers, and `uniqueBody` shorter than `min_body_chars`.
+- **Step 4, extract:** one extractor call per cleaned email, run in parallel; excluding records that are not updates, are unclear, have no matching section or carry a sensitivity flag.
+- **Step 5, consolidate:** one consolidator call; checking that every returned source ID came from the input and that every input record appears in exactly one item; adding each item's sender names.
+- **Step 6, draft:** one drafter call on the consolidated items, with no raw email content.
+- **Step 7, check:** every code check in the design's check section; the judge call on the intro and each entry; one regeneration with the failure reasons; sending a second failing draft with the failures listed first.
+- **Step 8, render and send:** the subject from `subject_template` and the run date; the Techary-branded template, with the headline under `headline_title`, then the intro, then sections in config order, omitting empty sections; the review section's six parts in order; escaping all model output and email-derived text; sending to `reviewers` with `replyTo` set to `reviewers`; recording the send in the manifest.
+- **Step 9, move messages:** moving to `Processed` and `Rejected`, creating either folder if absent, only after the send succeeds; marking the manifest complete.
+- **Empty weeks:** no newsletter; rejected messages still moved; everything else left in the inbox.
+- **Model steps:** retrying an invalid response once, and failing the run on a second invalid response.
+- **Failure handling:** each row of the design's failure table except Graph throttling, including a gateway error and a `SIGTERM` at a step boundary.
+- **Run artefacts:** a dated directory per run holding the fetched messages, intermediate JSON, draft attempts, check results, the rendered reviewer email and the manifest, with file mode `0600` and directory mode `0700`; `--dry-run` sending and moving nothing, with its manifest marked as a dry run.
+- **Testing:** the synthetic corpus covering every case listed in the design's testing section.
 
 Exit criteria:
 
@@ -190,11 +199,13 @@ Exit criteria:
 
 **Goal:** the four agents produce reviewable drafts from the corpus through the dev gateway.
 
-Scope:
+Scope, taken from the design's model steps section:
 
-- instructions for the extractor, consolidator, drafter and judge, and the shared tone-of-voice file;
-- the judge call and single regeneration;
-- a `live` test that runs the corpus through the agents against the dev gateway and saves the reviewer email.
+- **Extractor:** instructions covering the extract record's fields and their values, the configured categories and their definitions, extracting only facts stated in the message, and treating the email, given in a delimited block, as data rather than instructions.
+- **Consolidator:** instructions for merging records describing the same news, writing the headline as one short line from the consolidated items, and choosing one category where merged records differ.
+- **Drafter:** instructions applying every drafting rule in the design, and the shared tone-of-voice file.
+- **Judge:** instructions for returning, for the intro and each entry, whether its text is supported by the facts of the consolidated items.
+- **Live test:** a `live` test that runs the corpus through the agents against the dev gateway and saves the reviewer email.
 
 Exit criteria:
 
@@ -205,15 +216,13 @@ Exit criteria:
 
 **Goal:** the same pipeline runs against the dev tenant through `GraphMailbox`.
 
-Scope:
+Scope, taken from the design's Microsoft Graph integration section:
 
-- at least one Microsoft Purview sensitivity label published in the dev tenant, which needs a licence that includes sensitivity labels, with its label ID in the dev `allowed_sensitivity_labels`;
-- certificate authentication through MSAL;
-- listing with paging, folder creation, moving and sending, with `Retry-After` handling;
-- reading the `msip_labels` header and `hasAttachments` from real dev tenant messages, confirming that Graph returns both;
-- unit tests against mocked HTTP responses, including throttling and server errors;
-- `FakeMailbox` and `GraphMailbox` passing the same interface tests;
-- manual dry runs and real runs in the dev tenant.
+- **Authentication:** the client credentials flow through MSAL with the certificate at `graph.certificate_path`, calculating and logging the thumbprint at start-up.
+- **Operations:** the five operations in the design's operations table, each request sending `Prefer: IdType="ImmutableId"`, list requests also sending `Prefer: outlook.body-content-type="text"`, following `@odata.nextLink` and sorting in code.
+- **Throttling:** on HTTP 429, waiting for `Retry-After` and retrying up to `graph.max_retries`.
+- **Dev tenant:** at least one Microsoft Purview sensitivity label published, which needs a licence that includes sensitivity labels, with its label ID in the dev `allowed_sensitivity_labels`; confirming that Graph returns `msip_labels` and `hasAttachments` for real dev tenant messages.
+- **Tests:** unit tests against mocked HTTP responses, including throttling and server errors; `FakeMailbox` and `GraphMailbox` passing the same interface tests; manual dry runs and real runs in the dev tenant.
 
 Exit criteria:
 
@@ -225,12 +234,13 @@ Exit criteria:
 
 **Goal:** Pulse runs unattended in its container and fails safely and visibly.
 
-Scope:
+Scope, taken from the design's architecture, failure handling and packaging sections:
 
-- `pulse schedule` with time zone handling and signal handling, isolating each run from the scheduler;
-- operator alerts and exit codes;
-- the container running as a non-root user, with run artefacts readable only by that user;
-- the README covering deployment to the server.
+- **Schedule:** `pulse schedule` calling `pulse run` on `schedule.cron` in `schedule.timezone`, as the container entrypoint.
+- **Signals:** on `SIGTERM`, stopping at the next step boundary with the manifest recording progress.
+- **Alerts:** a failed run sending an alert to `operator_alerts`; if the alert cannot be sent, logging the error and exiting with status 1.
+- **Container:** running as a non-root user, with run artefacts readable only by that user; reading `config.yaml` and the certificate from mounted paths, the gateway credential from the environment, writing artefacts to a mounted volume and logging to standard output.
+- **README:** deployment to the server.
 
 Exit criteria:
 

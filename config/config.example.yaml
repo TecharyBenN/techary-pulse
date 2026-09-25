@@ -30,7 +30,6 @@ schedule:
   timezone: Europe/London
 
 limits:
-  max_messages_per_run: 200
   min_body_chars: 20
   max_words: 400
 

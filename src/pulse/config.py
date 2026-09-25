@@ -44,7 +44,6 @@ class ScheduleConfig(_Model):
 
 
 class LimitsConfig(_Model):
-    max_messages_per_run: int
     min_body_chars: int
     max_words: int
 

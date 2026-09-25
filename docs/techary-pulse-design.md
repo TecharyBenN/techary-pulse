@@ -82,19 +82,19 @@ flowchart TD
 
 *Figure 2: Pipeline for one run. Steps 4 to 7 call the model.*
 
-1. **Lock and resume.** Pulse takes an exclusive lock on a lock file; a second concurrent run exits immediately. If the latest run manifest shows a sent draft with incomplete moves, Pulse completes those moves. It then deletes run artefacts older than `retention_days`.
+1. **Lock and resume.** Pulse takes an exclusive lock on `pulse.lock` in `run_artefacts_dir`; a second concurrent run exits immediately. If the latest run manifest shows a sent draft with incomplete moves, Pulse completes those moves. Manifests from dry runs are ignored. It then deletes run artefacts older than `retention_days`.
 2. **Snapshot.** Pulse lists every message in the inbox and records their IDs in a new run manifest. Read status is ignored: the inbox holds pending messages, and a message is done once it is moved to `Processed` or `Rejected`. Only the snapshot messages are processed and moved in this run.
-3. **Pre-filter.** Pulse rejects messages:
+3. **Pre-filter.** The sender is the address in the message's `from` field. Pulse rejects messages:
    - whose sender domain is not in `allowed_sender_domains`;
    - whose sender is not in `allowed_senders`, when that list is not empty;
-   - carrying a sensitivity label whose ID is not in `allowed_sensitivity_labels`, read from the `msip_labels` header; messages with no label are allowed;
+   - carrying any sensitivity label whose ID is not in `allowed_sensitivity_labels`, read from the `msip_labels` header; messages with no label are allowed;
    - carrying an `Auto-Submitted` header other than `no`, or an `X-Auto-Response-Suppress` header;
-   - with a body shorter than `min_body_chars`.
+   - whose `uniqueBody`, ignoring leading and trailing spaces, is shorter than `min_body_chars`.
 4. **Extract.** One model call per message, run in parallel, returns an extract record. Code then excludes every record that is not an update, is unclear, has no matching category or carries a sensitivity flag.
 5. **Consolidate.** One model call over the remaining extract records merges records describing the same news, writes the headline from the consolidated items and confirms each item's category. Each item lists its source message IDs, and code adds the sender names.
 6. **Draft.** One model call writes the newsletter from the consolidated items, following the rules in [draft](#draft). It receives no raw email content and returns structured sections, not HTML.
-7. **Check.** Code checks the draft against the rules in [check](#check), and a judge call verifies each sentence against its source items. On failure, Pulse regenerates the draft once with the failure reasons. If the second draft also fails, it is sent with the failures listed first in the review section.
-8. **Render and send.** Pulse builds the subject from `subject_template` and the run date, renders the draft into the HTML template, omitting sections with no entries, appends the review section and sends it from `pulse@techary.ai` to `reviewers`, with `replyTo` set to `reviewers`. The manifest records the send.
+7. **Check.** Code checks the draft against the rules in [check](#check), and a judge call verifies the intro and each entry against the consolidated items. On failure, Pulse regenerates the draft once with the failure reasons. If the second draft also fails, it is sent with the failures listed first in the review section.
+8. **Render and send.** Pulse builds the subject from `subject_template`, where `{week_ending}` is the run date in the schedule's time zone, written like 25 September 2026, renders the draft into the HTML template, omitting sections with no entries, appends the review section and sends it from `pulse@techary.ai` to `reviewers`, with `replyTo` set to `reviewers`. The manifest records the send.
 9. **Move messages.** Pulse moves included and excluded messages to `Processed` and rejected messages to `Rejected`, creating either folder if absent, and marks the manifest complete. No message is moved before the send succeeds.
 
 If no items remain after step 5, no newsletter is sent. Rejected messages are still moved to `Rejected`, all other messages stay in the inbox, and the run is logged.
@@ -107,7 +107,7 @@ Pulse validates every response against the agent's output type, and an invalid r
 
 | Step | Agent | Calls per run | Input | Model tier |
 | --- | --- | --- | --- | --- |
-| Extract | `extractor` | One per message | One cleaned email | Small |
+| Extract | `extractor` | One per message | One cleaned email: message ID, sender name and address from `from`, subject, received date and `uniqueBody` | Small |
 | Consolidate | `consolidator` | One | Extract records that were not excluded | Mid |
 | Draft | `drafter` | One, plus at most one regeneration | Consolidated items, tone rules | Mid |
 | Judge | `judge` | One per draft | Draft and consolidated items | Mid |
@@ -164,7 +164,7 @@ Excluded records appear in the review section with their reason or sensitivity e
 }
 ```
 
-The model returns `source_message_ids` for each item, because only it knows which records it merged; code checks that every ID came from its input and adds each item's sender names. Where merged records have different categories, the consolidator chooses one. The headline is one short line written from the consolidated items.
+The model returns `source_message_ids` for each item, because only it knows which records it merged; code checks that every ID came from its input, that every input record appears in exactly one item, and adds each item's sender names. A response that fails either check is invalid. Where merged records have different categories, the consolidator chooses one. The headline is one short line written from the consolidated items.
 
 ### Draft
 
@@ -182,7 +182,7 @@ The model returns `source_message_ids` for each item, because only it knows whic
 }
 ```
 
-Code renders the consolidator's headline under `headline_title`, then each section under its configured title, in config order. The draft has no subject: code builds it from `subject_template`. The drafter's instructions apply these rules:
+Code renders the consolidator's headline under `headline_title`, then the intro, then each section under its configured title, in config order. The draft has no subject: code builds it from `subject_template`. The drafter's instructions apply these rules:
 
 - each entry is one or two sentences;
 - each entry names every sender of its item, and lists every person it names in `people`;
@@ -196,16 +196,16 @@ Code renders the consolidator's headline under `headline_title`, then each secti
 
 Code verifies that:
 
-- the rendered newsletter, excluding the review section, is at most `max_words` words;
+- the newsletter's visible text, including titles and the headline but not the review section, is at most `max_words` words;
 - no em dashes or en dashes appear (code replaces them before the other checks);
-- every number in the draft appears in a source message;
-- every name in an entry's `people` appears in the entry's text, and in a source message or the item's sender names;
-- every entry is at most two sentences;
+- every digit sequence in an entry appears in a source message of its item, and every digit sequence in the intro appears in a source message of any item; numbers written as words are not checked;
+- every name in an entry's `people` appears, ignoring case, in the entry's text, and in a source message of its item or the item's sender names;
+- every entry is at most two sentences, where a sentence ends at `.`, `!` or `?` followed by a space or the end of the text;
 - every entry names every sender of its item;
 - every entry references an existing `item_id`, and every included item appears exactly once;
 - only configured categories appear.
 
-The judge call returns, for each entry, whether its text is supported by the facts of its item.
+The judge call returns, for the intro and each entry, whether its text is supported by the facts of the consolidated items.
 
 ### Reviewer email
 
@@ -215,7 +215,7 @@ The reviewer email contains the rendered newsletter followed by a review section
 2. messages excluded for sensitivity, with sender, subject, sensitivity type and evidence;
 3. other excluded messages, with sender, subject and reason;
 4. rejected messages, by subject line only;
-5. messages with attachments, whose attachment content is not included;
+5. included and excluded messages with attachments, whose attachment content is not included;
 6. the source map, linking each item to its source messages by sender and subject.
 
 ## Microsoft Graph integration
@@ -267,14 +267,15 @@ The run manifest records the snapshot of message IDs, the outcome for each messa
 | --- | --- |
 | Before the send | Nothing is sent or moved. The next run processes the same messages. |
 | Invalid model response after one retry | The run fails before the send. The operator alert names the message, the agent and the validation error. |
+| Gateway error, such as a timeout, throttling or a server error | The run fails before the send. The next scheduled run, or a manual `pulse run`, processes the same messages. |
 | During the send | No messages are moved. A retry may send a second draft to reviewers. |
 | After the send, during moves | The next run completes the moves before processing anything else. |
 | SIGTERM | Pulse stops at the next step boundary and exits. The manifest records progress. |
 | Graph HTTP 429 | Pulse waits for the `Retry-After` interval and retries, up to `graph.max_retries`. |
 
-Each run writes its artefacts to a dated directory under `run_artefacts_dir`, readable only by the account Pulse runs as. Logs are structured JSON on standard output. A failed run sends an alert from the Pulse mailbox to `operator_alerts`.
+Each run writes its artefacts to a dated directory under `run_artefacts_dir`, readable only by the account Pulse runs as. Logs are structured JSON on standard output. A failed run sends an alert from the Pulse mailbox to `operator_alerts`; if the alert cannot be sent, Pulse logs the error and exits with status 1.
 
-`pulse run` accepts `--dry-run`, which runs every step without sending or moving.
+`pulse run` accepts `--dry-run`, which runs every step without sending or moving. Every run saves the rendered reviewer email in its run artefacts, and a dry run's manifest is marked as a dry run.
 
 ## Packaging
 
@@ -313,7 +314,6 @@ schedule:
   timezone: Europe/London
 
 limits:
-  max_messages_per_run: 200
   min_body_chars: 20
   max_words: 400
 
