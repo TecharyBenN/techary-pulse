@@ -1,31 +1,41 @@
 # Techary Pulse
 
-Techary Pulse is a scheduled service that turns staff updates emailed to a shared Microsoft 365 mailbox into a weekly draft newsletter, and emails the draft to human reviewers. This README covers what Pulse needs to run and how to work on it. Behaviour is defined in the [design document](docs/techary-pulse-design.md), and delivery is planned in the [development plan](docs/development-plan.md).
+Techary Pulse is a service that turns staff updates emailed to a Microsoft 365 submissions mailbox into a newsletter. A chat agent drafts each edition, discusses it with human reviewers over email or LibreChat, revises it from their feedback and, once a reviewer approves it, sends it to an all-staff distribution list. This README covers what Pulse needs to run and how to work on it. Behaviour is defined in the [design document](docs/techary-pulse-design.md), and delivery is planned in the [development plan](docs/development-plan.md).
 
-Pulse is under development. `pulse run` runs the pipeline once; `pulse schedule` is not yet implemented.
+Pulse is under development. The build workflow works today as `pulse run`, which builds a draft once and emails it to reviewers; `pulse schedule` is not implemented. The development plan replaces these with `pulse build` and `pulse serve`, and adds the conversation, approval and all-staff send, in phases 5 to 8. The running and development instructions below describe what works now.
 
 ## How it works
 
-Each run reads the messages in the Pulse mailbox inbox, rejects anything that is not a genuine update from an allowed sender, and uses a fixed sequence of model calls through an AI gateway to extract, consolidate and draft the updates. Code checks the draft, renders it with a review section listing sensitivity flags, exclusions and sources, and sends it to the configured reviewers. Processed messages then move to the `Processed` or `Rejected` folder.
+A build reads the messages in the submissions mailbox inbox, rejects anything that is not a genuine update from an allowed sender, and uses a fixed sequence of model calls through an AI gateway to extract, consolidate and draft the updates. Code checks the draft, renders it with a review section listing sensitivity flags, exclusions and sources, and emails it to the configured reviewers. Processed messages then move to the `Processed` or `Rejected` folder. A build runs on a schedule, when a reviewer asks, or from the command line, and at most one edition is open at a time.
+
+Reviewers reply to the draft by email, or talk to Pulse in LibreChat, with questions, feedback or approval. The chat agent answers, revises the draft and sends each new version to the reviewers. When a reviewer approves the current version, Pulse sends it to the all-staff list straight away or at the next configured send slot. A reviewer can withdraw an approval until the send starts, an unapproved edition expires after a configured period, and a reviewer can discard an edition.
 
 ## Deployment requirements
 
-Pulse connects to a mailbox and a gateway that are set up outside this codebase. It does not create or check any of the following.
+Pulse connects to mailboxes, a distribution list, a gateway and a chat client that are set up outside this codebase. It does not create or check any of the following.
 
 ### Microsoft 365
 
 | Requirement | Detail |
 | --- | --- |
-| Shared mailbox | The Pulse mailbox, for example `pulse@techary.ai`. Pulse creates the `Processed` and `Rejected` folders if they are absent. |
-| Internal senders only | In production, the mailbox has `RequireSenderAuthenticationEnabled` set, so Exchange rejects mail from unauthenticated or external senders. |
+| Submissions mailbox | A shared mailbox that receives staff updates, for example `pulse@techary.ai`. Pulse creates the `Processed` and `Rejected` folders if they are absent. |
+| Conversation mailbox | A shared mailbox that sends drafts, replies and the newsletter, and receives reviewer messages, for example `pulseagent@techary.ai`. Pulse creates the `Processed` and `Rejected` folders if they are absent. |
+| Internal senders only | In production, both mailboxes have `RequireSenderAuthenticationEnabled` set, so Exchange rejects mail from unauthenticated or external senders. |
+| All-staff list | The distribution list that receives the approved newsletter. It accepts mail only from the conversation mailbox and named administrators. |
 | App registration | An Entra ID app registration authenticated by a certificate. The app needs no Mail permissions in Entra ID. |
-| Mailbox permissions | Exchange Online RBAC (role-based access control) for Applications, scoped to the Pulse mailbox only: `Application Mail.ReadWrite` (read, move, create folders) and `Application Mail.Send` (send the draft). |
+| Mailbox permissions | Exchange Online RBAC (role-based access control) for Applications, scoped to the two Pulse mailboxes only: `Application Mail.ReadWrite` (read, move, create folders, create replies) and `Application Mail.Send` (send drafts, replies, alerts and the newsletter). |
 | Sensitivity labels | If messages carry Microsoft Purview sensitivity labels, the IDs of the labels Pulse may process go in `allowed_sensitivity_labels`. Pulse reads the label from each message's `msip_labels` header and rejects any other label; unlabelled messages are allowed. |
 | Certificate | A PEM file holding the certificate and its private key, mounted into the container. Pulse calculates the thumbprint from it and logs it at start-up, so it can be matched against the app registration. |
 
 ### AI gateway
 
-An AI gateway, currently agentgateway, exposing an OpenAI-compatible chat completions endpoint. Pulse holds only the gateway credential, never provider credentials. Prompt filtering, if the gateway offers it, is configured on the gateway.
+An AI gateway, currently agentgateway, exposing an OpenAI-compatible chat completions endpoint for Pulse's model calls. Pulse holds only the gateway credential, never provider credentials. Prompt filtering, if the gateway offers it, is configured on the gateway.
+
+The gateway also routes LibreChat to Pulse's chat endpoint, registered as an OpenAI-compatible backend. The route authenticates LibreChat, sends a second gateway credential to Pulse as a bearer token through agentgateway's `backendAuth` policy, and forwards the `X-User-Email` header unchanged.
+
+### LibreChat
+
+LibreChat reaches Pulse through the gateway as a custom endpoint and passes the signed-in user's email address in `X-User-Email`. In production, LibreChat users sign in through Entra ID.
 
 ### Host
 

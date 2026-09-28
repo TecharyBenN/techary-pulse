@@ -6,7 +6,7 @@
 
 This document describes how the Techary Pulse minimum viable solution (MVS), set out in the [design and architecture document](techary-pulse-design.md), is built. It covers the engineering principles, technology choices, repository structure, development approach and delivery phases. Behaviour, and every decision about it, is in the design. It is written for the engineers building Pulse.
 
-Pulse began as a scheduled pipeline that emailed a weekly draft to reviewers. After phase 3, the scope changed to a chat agent that discusses each draft with reviewers over email and LibreChat, revises it and, once approved, sends it to an all-staff distribution list. Phases 0 to 3 built the pipeline, which the new design keeps as its build workflow; phases 4 to 9 cover the rest.
+Pulse began as a scheduled pipeline that emailed a weekly draft to reviewers. After phase 3, the scope changed to a chat agent that discusses each draft with reviewers over email and LibreChat, revises it and, once approved, sends it to an all-staff distribution list. Phases 0 to 3 built the pipeline, which the new design keeps as its build workflow, and phase 4 prepared the dev environment for the new design; phases 5 to 9 cover the rest.
 
 ## Principles
 
@@ -30,8 +30,8 @@ The design fixes the shape of the system: a Python package providing the `pulse`
 | Tests | pytest, with parameterised cases for the check rules, and the AnyIO pytest plugin for asynchronous tests | One test style. The AnyIO plugin ships with AnyIO, already installed as an httpx dependency, so it adds no package. |
 | Concurrency | asyncio throughout: one event loop runs the chat endpoint, the scheduler, polling, the periodic check and builds. Pure steps (rules, check, render) stay plain functions. | Pulse is a long-running service doing several input and output tasks at once, and Pydantic AI and httpx are built for asynchronous use. One concurrency model avoids sharing SQLite connections or event loops between threads, gives `SIGTERM` defined cancellation points, and makes the per-edition lock an `asyncio.Lock`. MSAL and `sqlite3` are synchronous, so their calls run through `asyncio.to_thread`; the token is cached and store writes are short. |
 | Models and configuration | Pydantic, with PyYAML `safe_load` | One set of models validates `config.yaml`, agent output, the run manifest and chat endpoint requests. |
-| Pipeline agents | `pydantic-ai-slim[openai]`, used for its agent and model layer only, in native output mode | Runs each agent with typed output and validation retry against the gateway's OpenAI-compatible endpoint, independent of the provider behind it; its test models stand in for the gateway in automated tests. Tested against the dev gateway in phase 0: native mode sends no tools, output types limited to schema features every major provider supports are accepted, Pydantic AI validates each reply, and requests go only to the gateway. Set `PYDANTIC_AI_NO_BANNER=1`. |
-| Chat agent | Pydantic AI, with function tools and `ModelMessagesTypeAdapter` for history | The design names it, and `FunctionModel` lets tests script the tool calls. Tool calls through the gateway are confirmed in phase 4. |
+| Pipeline agents | `pydantic-ai-slim[openai]`, used for its agent and model layer only, in native output mode | Runs each agent with typed output and validation retry against the gateway's OpenAI-compatible endpoint, independent of the provider behind it; its test models stand in for the gateway in automated tests. Tested against the dev gateway in phase 0: native mode sends no tools, output types limited to schema features every major provider supports are accepted, Pydantic AI validates each reply, and requests go only to the gateway. Set `PYDANTIC_AI_NO_BANNER=1`, and use `httpx2` clients for any client passed to Pydantic AI. |
+| Chat agent | Pydantic AI, with function tools and `ModelMessagesTypeAdapter` for history | The design names it, and `FunctionModel` lets tests script the tool calls. Tested against the dev gateway in phase 4 with the model the pipeline agents use: tool calls and results pass through, dependencies reach the tool, history round-trips unchanged through `ModelMessagesTypeAdapter` and a follow-up run answers from it, and requests go only to the gateway. |
 | Chat endpoint | FastAPI | LibreChat reaches Pulse as an OpenAI-compatible model through agentgateway, so Pulse serves the chat completions route. FastAPI validates requests and responses against Pydantic models and supports streamed responses. Pydantic AI's own adapters speak AG-UI, Vercel AI and A2A, not the chat completions format. |
 | Web server | Uvicorn | FastAPI needs an ASGI (Asynchronous Server Gateway Interface) server to accept connections. Uvicorn is the server FastAPI is built and documented around, and it runs as a task inside `pulse serve`, on the same event loop as the scheduler. |
 | Gateway credential to Pulse | agentgateway's `backendAuth` policy with a static key on the Pulse backend | agentgateway sends the key as `Authorization: Bearer <key>`, as it does for a provider, and Pulse compares it with the value in `chat.gateway_key_env`. See [agentgateway backend authentication](https://agentgateway.dev/docs/standalone/latest/configuration/security/backend-authn/). |
@@ -167,7 +167,7 @@ Phases 5 to 7 change code built in phases 0 to 3. The table lists each existing 
 
 ## Delivery phases
 
-Development runs in ten phases, each ending with exit criteria that can be checked. Phases 0 to 3 are complete.
+Development runs in ten phases, each ending with exit criteria that can be checked. Phases 0 to 4 are complete.
 
 ```mermaid
 flowchart LR
@@ -183,7 +183,7 @@ flowchart LR
     P8 --> P9["9. Production pilot"]
 ```
 
-*Figure 1: Delivery phases. Phases 0 to 3 are complete.*
+*Figure 1: Delivery phases. Phases 0 to 4 are complete.*
 
 ### Phase 0: foundations (complete)
 
@@ -201,21 +201,27 @@ Instructions for the extractor, consolidator, drafter and judge, and a `live` te
 
 `GraphMailbox` with certificate authentication through MSAL, the list, find folder, create folder, move and send operations, immutable IDs, paging and throttling, tested against mocked HTTP and passing the same interface tests as `FakeMailbox`, with real runs in the dev tenant.
 
-### Phase 4: verify integrations
+### Phase 4: verify integrations (complete)
 
-**Goal:** the dev environment set up for the chat agent design, and its three new integrations shown to work before code depends on them.
+**Goal:** the dev environment set up for the chat agent design, and the chat agent's tool calls shown to work through the gateway before code depends on them.
 
 Scope:
 
+- upgrade every dependency with `uv lock --upgrade`, then run the checks;
 - update the README's description of Pulse to the chat agent design;
-- set up the dev tenant: the conversation shared mailbox, the test distribution list with the test user as its only member, and the Exchange management scope widened to both mailboxes;
-- **check 1, chat agent tools:** a throwaway Pydantic AI agent with one tool, called through the dev gateway with the intended chat model, confirming tool calls work, history round-trips through `ModelMessagesTypeAdapter`, and requests go only to the gateway;
-- **check 2, gateway to Pulse:** a stub chat completions endpoint registered in the dev agentgateway as an OpenAI-compatible backend, confirming the `backendAuth` bearer token and `X-User-Email` arrive as the design expects, that streamed and non-streamed responses both work, and how long a streamed request can run before the gateway closes it, measured against the time a corpus build takes;
-- **check 3, Graph threading:** `createReplyAll`, replacing its recipients with the test user, and sending, in the dev tenant, confirming the reply stays in the reviewer's thread.
+- create the conversation shared mailbox, unlicensed, requiring senders to be authenticated as in production;
+- create the test distribution list, standing in for the all-staff list, with closed membership and the test user as its only member, accepting mail only from the conversation mailbox and an administrator;
+- widen the Exchange management scope from the phase 3 set-up to match both Pulse mailboxes, extending the existing role assignments;
+- **check 1, chat agent tools:** a throwaway Pydantic AI agent with one tool, called through the dev gateway with the model the pipeline agents use, confirming tool calls work, dependencies reach the tool, history round-trips through `ModelMessagesTypeAdapter`, and requests go only to the gateway.
+
+The gateway route to Pulse and replying in a thread were planned as phase 4 checks, and moved to phase 7, where they are tested live.
 
 Exit criteria:
 
-- each check's result is recorded in the technology choices table, with any design change it forces agreed before phase 5;
+- format, lint, type check and tests pass after the upgrade;
+- the management scope's stored filter names exactly the two Pulse mailboxes, and `Test-ServicePrincipalAuthorization`, run against every mailbox in the tenant, shows the app's two roles apply to those two mailboxes and no others;
+- mail to the test distribution list from the test user is rejected, and mail from the administrator is delivered;
+- the check 1 result is recorded in the technology choices table;
 - check code is deleted, not merged.
 
 ### Phase 5: editions and build workflow
@@ -263,8 +269,8 @@ Exit criteria:
 
 Scope:
 
-- **Graph:** the reply-in-thread operation in `GraphMailbox`, with mocked HTTP tests and the interface tests run against both mailboxes.
-- **Chat endpoint:** the chat completions route on FastAPI, the bearer token check, `X-User-Email`, and streamed responses with progress notes.
+- **Graph:** the reply-in-thread operation in `GraphMailbox`, with mocked HTTP tests, the interface tests run against both mailboxes, and a live reply in the dev tenant confirming it stays in the reviewer's thread and reaches only `reviewers`.
+- **Chat endpoint:** the chat completions route on FastAPI, answering streamed and non-streamed requests, with progress notes in streamed responses, the bearer token check and `X-User-Email`; tested live through the dev agentgateway route, confirming the `backendAuth` bearer token and `X-User-Email` arrive as the design expects.
 - **`pulse serve`:** Uvicorn, the scheduler polling every `poll_interval_minutes`, the optional build cron and the periodic check, on one event loop.
 - **Agent quality:** instructions for the chat agent and reviser, tuned through the dev gateway; the `live` test extended with a scripted reviewer conversation.
 - **README:** the local setup for the second mailbox and the chat endpoint.
