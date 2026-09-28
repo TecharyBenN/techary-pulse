@@ -387,7 +387,7 @@ The edition store is a SQLite database at `state.db_path`, on the mounted volume
 | `items` | Each edition's consolidated items and excluded records, each with an item ID and source message IDs |
 | `feedback` | Each reviewer message: reviewer, channel, text and received time |
 | `messages` | Each chat agent run's new messages, serialised, in order, by edition |
-| `handled_messages` | IDs of conversation mailbox messages already processed |
+| `handled_messages` | IDs of conversation mailbox messages seen, each with its attempt count and whether it has been handled |
 
 ## Microsoft Graph integration
 

@@ -254,23 +254,23 @@ Exit criteria:
 
 Scope, from the design's editions, conversation, chat agent, revise, reviewer email and periodic check sections:
 
-- **Configuration:** `all_staff`, validated against `allowed_recipient_domains`; `send`; `edition.expire_after_days`; `chat.max_attempts`; `chat` and `reviser` in `llm.models`, added with their agents.
-- **Edition store:** the `feedback` and `handled_messages` tables.
-- **Editions:** the remaining transitions (new version, approve, withdraw, discard, send and expire) as pure functions; send time in both send modes; expiry.
-- **Reviser:** the agent, its output type and checks, restoring excluded records by item ID, and the check and judge steps treating reviewer feedback as a source, with one regeneration.
+- **Configuration:** `all_staff`, validated against `allowed_recipient_domains`; `send`; `edition.expire_after_days`; `chat.max_attempts`; `chat` and `reviser` in `llm.models`, added with their agents; the example configurations and the local dev configuration updated, the dev configuration using `send.mode: on_approval` and leaving `edition.expire_after_days` unset.
+- **Edition store:** the `feedback` and `handled_messages` tables, and the operations the conversation needs: adding a version, changing an edition's state, loading and appending history, recording feedback, and recording each conversation mailbox message with its attempt count.
+- **Editions:** the remaining transitions (new version, approve, withdraw, discard, send and expire) as pure functions, with send, expire and discard setting the edition's closed time, which retention uses; send time in both send modes; expiry.
+- **Reviser:** the agent, its output type and checks, restoring excluded records by item ID, with a restored record taking the category of the section it is placed in, and the check and judge steps treating reviewer feedback as a source; one regeneration on a failed check, with a second failing draft saved with the failures listed first; a second invalid response making `revise_draft` return an error, which the agent reports to the reviewer.
 - **Chat agent:** the seven tools, with the caller, the reviewer's message, the channel and the edition passed as dependencies; `build_newsletter` calling the build workflow and reporting a failed or empty build; the `approve` checks, including `approve v{version}` in the reviewer's own message; withdrawal by tool and by revision, refused once `send_started` is recorded; `revise_draft` emailing the new version only in a LibreChat run; each tool recording its effect as it happens; the instruction rules; text output, with no reply allowed in the email channel.
-- **Conversation runner:** the per-edition lock, loading history from the store, appending `new_messages()`, runs with no open edition, and appending nothing on failure.
-- **Email channel:** polling the conversation inbox; the reviewer and automatic-reply checks, moving failures to `Rejected`; recording feedback and `handled_messages`; reply-all to `reviewers` only, carrying any new version; `chat.max_attempts`, after which the message is moved to `Rejected`.
+- **Conversation runner:** shared by both channels; the per-edition lock, loading history from the store, recording the reviewer's message as feedback, appending `new_messages()`, runs with no open edition, whose exchange becomes the new edition's history when the agent starts a build, appending nothing on failure, and logging each run with its edition ID as `conversation_id`.
+- **Email channel:** polling the conversation inbox; the reviewer and automatic-reply checks, moving failures to `Rejected`; recording `handled_messages`; reply-all to `reviewers` only, carrying any new version; moving each message to `Processed` once its run completes; a failed run leaving the message in the inbox for the next poll, and `chat.max_attempts`, after which the message is moved to `Rejected`.
 - **Mailbox:** reply in a thread added to `Mailbox`, `FakeMailbox` and `GraphMailbox`, with mocked HTTP tests for `GraphMailbox` and the interface tests run against both.
-- **Periodic check:** send timing, the approval re-check, `send_started`, the send to `all_staff` with `replyTo` set to the submissions mailbox, marking the edition sent, no resend after `send_started` without `sent`, and expiry.
+- **Periodic check:** send timing, the approval re-check, `send_started`, the send to `all_staff` with `replyTo` set to the submissions mailbox, marking the edition sent, no resend after `send_started` without `sent`, a Graph error before sending leaving the edition approved for the next check, and expiry.
 - **Emails:** the review section's changes and feedback not applied; the newsletter without the review section; the notices to `reviewers` that a send was cancelled, that an edition was closed unsent, and that a newsletter was sent.
 
 Exit criteria:
 
 - a scenario test runs build, email feedback, revision, approval, withdrawal, a second approval and the periodic check, and asserts exactly one email to `all_staff`, containing the approved version and with `replyTo` set to the submissions mailbox, and the notices to `reviewers` along the way;
 - a test shows that a chat agent run calling `approve` without `approve v{version}` in the reviewer's message records nothing, and that submission text cannot supply it;
-- tests cover each tool refusal, a message from a non-reviewer, an automatic reply, `chat.max_attempts`, expiry, and `send_started` without `sent`;
-- a test confirms that no code path other than the periodic check can send to `all_staff`.
+- tests cover each tool refusal, version numbering, a message from a non-reviewer, an automatic reply, a failed run and `chat.max_attempts`, an invalid reviser response, expiry, and `send_started` without `sent`;
+- a test reads the source and fails if `all_staff` is used anywhere other than `config.py` and `periodic.py`, so no code path other than the periodic check can send to it.
 
 ### Phase 7: live channels
 
@@ -278,8 +278,8 @@ Exit criteria:
 
 Scope:
 
-- **Chat endpoint:** `chat.port` and `chat.gateway_key_env` in configuration; the chat completions route on FastAPI, answering streamed and non-streamed requests, with progress notes in streamed responses; the bearer token check; the reviewer taken from `X-User-Email`; only the newest user message used. Tested offline against the route, then live through the dev agentgateway route once the LibreChat connection work has registered it.
-- **`pulse serve`:** `schedule.build_cron` (optional) and `poll_interval_minutes` in configuration; Uvicorn, the scheduler polling the conversation mailbox and running the periodic check every `poll_interval_minutes`, and the optional build cron, on one event loop; the cron library chosen and recorded in the technology choices table.
+- **Chat endpoint:** `chat.port` and `chat.gateway_key_env` in configuration, with the example and local dev configurations updated; the chat completions route on FastAPI, answering streamed and non-streamed requests, with progress notes in streamed responses; the bearer token check; the reviewer taken from `X-User-Email`, and a response stating that the user is not a reviewer when the address is not in `reviewers`; only the newest user message used, passed to the shared conversation runner; an error response when the run fails. Tested offline against the route, then live through the dev agentgateway route once the LibreChat connection work has registered it.
+- **`pulse serve`:** `schedule.build_cron` (optional) and `poll_interval_minutes` in configuration, with the example and local dev configurations updated; Uvicorn, the scheduler polling the conversation mailbox and running the periodic check every `poll_interval_minutes`, and the optional build cron, on one event loop; the cron library chosen and recorded in the technology choices table.
 - **Graph:** a live reply in the dev tenant.
 - **Agent quality:** instructions for the chat agent and reviser, tuned through the dev gateway; the `live` test extended with a scripted reviewer conversation.
 - **README:** the local setup for `pulse serve` and the chat endpoint.
