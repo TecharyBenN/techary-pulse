@@ -45,7 +45,6 @@ class ScheduleConfig(_Model):
 
 
 class LimitsConfig(_Model):
-    min_body_chars: int
     max_words: int
 
 

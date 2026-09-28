@@ -42,7 +42,6 @@ def test_genuine_update_passes(config: Config) -> None:
         ),
         ({"headers": {"auto-submitted": "auto-replied"}}, "automatic reply"),
         ({"headers": {"x-auto-response-suppress": "All"}}, "automatic reply"),
-        ({"body": "   ok   "}, "body is too short"),
     ],
 )
 def test_rejections(config: Config, overrides: dict[str, object], reason: str) -> None:

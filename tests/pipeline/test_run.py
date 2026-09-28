@@ -19,8 +19,8 @@ from .conftest import CORPUS, clock, corpus_messages, draft, stand_ins
 Runner = Callable[..., AgentRunner]
 GOLDEN = Path(__file__).parent.parent / "golden" / "reviewer_email.html"
 INCLUDED = {"m01", "m02", "m03", "m04", "m05", "m06"}
-EXCLUDED = {"m08", "m10", "m11", "m12", "m15", "m16", "m18"}
-REJECTED = {"m07", "m09", "m13", "m14", "m17"}
+EXCLUDED = {"m08", "m09", "m10", "m11", "m12", "m15", "m16", "m17", "m18"}
+REJECTED = {"m07", "m13", "m14"}
 
 
 def test_corpus_run_sends_one_draft_and_moves_every_message(

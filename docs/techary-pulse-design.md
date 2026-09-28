@@ -88,8 +88,9 @@ flowchart TD
    - whose sender domain is not in `allowed_sender_domains`;
    - whose sender is not in `allowed_senders`, when that list is not empty;
    - carrying any sensitivity label whose ID is not in `allowed_sensitivity_labels`, read from the `msip_labels` header; messages with no label are allowed;
-   - carrying an `Auto-Submitted` header other than `no`, or an `X-Auto-Response-Suppress` header;
-   - whose `uniqueBody`, ignoring leading and trailing spaces, is shorter than `min_body_chars`.
+   - carrying an `Auto-Submitted` header other than `no`, or an `X-Auto-Response-Suppress` header.
+
+   Short and empty messages are left to the extractor, because company email signatures make message length unreliable.
 4. **Extract.** One model call per message, run in parallel, returns an extract record. Code then excludes every record that is not an update, is unclear, has no matching category or carries a sensitivity flag.
 5. **Consolidate.** One model call over the remaining extract records merges records describing the same news, writes the headline from the consolidated items and confirms each item's category. Each item lists its source message IDs, and code adds the sender names.
 6. **Draft.** One model call writes the newsletter from the consolidated items, following the rules in [draft](#draft). It receives no raw email content and returns structured sections, not HTML.
@@ -141,7 +142,7 @@ Pulse sends every model call to `llm.base_url` in the OpenAI-compatible chat com
 | `is_update` | `false` for out-of-office and other automatic replies, test emails, one-word messages, newsletters and mailing-list mail |
 | `exclusion_reason` | `not_an_update`, `unclear` (the facts cannot be stated without assumptions) or `no_matching_section` (the update fits none of the configured category definitions); `null` for an included record |
 | `category` | One of the configured section categories; `null` for an excluded record |
-| `sensitivity.type` | `commercial` (deal values, margins, pricing, revenue), `personal` (health, family, performance, HR matters), `unannounced` (confidential, draft or not yet announced) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
+| `sensitivity.type` | `commercial` (deal values, margins, pricing, revenue), `personal` (health, family, performance, HR matters; a birthday is newsletter content, not personal), `unannounced` (confidential, draft or not yet announced) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
 
 The model extracts only facts stated in the message. Categories and their definitions are set in `sections` in config, and the starting set is shown in [configuration](#configuration).
 
@@ -164,7 +165,7 @@ Excluded records appear in the review section with their reason or sensitivity e
 }
 ```
 
-The model returns `source_message_ids` for each item, because only it knows which records it merged; code checks that every ID came from its input, that every input record appears in exactly one item, and adds each item's sender names. A response that fails either check is invalid. Where merged records have different categories, the consolidator chooses one. The headline is one short line written from the consolidated items.
+The model returns `source_message_ids` for each item, because only it knows which records it merged; code checks that every ID came from its input, that every input record appears in exactly one item, and adds each item's sender names. A response that fails either check is invalid. Where merged records have different categories, the consolidator chooses one. The headline is one short line in sentence case, written from the consolidated items.
 
 ### Draft
 
@@ -233,7 +234,8 @@ The scoping consists of an Exchange service principal for the app, a management 
 | --- | --- |
 | Get token | `POST https://login.microsoftonline.com/{tenant-id}/oauth2/v2.0/token`, scope `https://graph.microsoft.com/.default`, signed client assertion |
 | List inbox | `GET /users/pulse@techary.ai/mailFolders/inbox/messages?$select=id,from,sender,subject,receivedDateTime,uniqueBody,internetMessageHeaders,hasAttachments&$top=50` |
-| Create folder | `POST /users/pulse@techary.ai/mailFolders` |
+| Find folder | `GET /users/pulse@techary.ai/mailFolders?$filter=displayName eq '<folder>'` |
+| Create folder | `POST /users/pulse@techary.ai/mailFolders`, when the folder is not found |
 | Move | `POST /users/pulse@techary.ai/messages/{id}/move`, body `{"destinationId": "<folder-id>"}` |
 | Send | `POST /users/pulse@techary.ai/sendMail`, with `replyTo` |
 
@@ -314,7 +316,6 @@ schedule:
   timezone: Europe/London
 
 limits:
-  min_body_chars: 20
   max_words: 400
 
 subject_template: "Pulse: week ending {week_ending}"
@@ -330,7 +331,7 @@ sections:
     definition: "A project, service or milestone has been delivered, launched or completed for a customer."
   - category: team_news
     title: "Team news and new joiners"
-    definition: "Someone has joined, moved role or gained a qualification, or a team has reached a milestone or held an event."
+    definition: "Someone has joined, moved role, gained a qualification or has a birthday, or a team has reached a milestone or held an event."
   - category: shout_out
     title: "Shout-outs"
     definition: "A named colleague is being thanked or recognised for their work."

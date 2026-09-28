@@ -66,6 +66,7 @@ messages:
     sender_address: lucy.grey@techary.ai
     subject: Pulse
     body: Thanks!
+    extract: {is_update: false, exclusion_reason: not_an_update, category: null, summary: A one-word message., facts: [], people: [], sensitivity: []}
   - id: m10
     case: newsletter
     sender_name: Marketing
@@ -120,6 +121,7 @@ messages:
     sender_address: lucy.grey@techary.ai
     subject: ""
     body: ""
+    extract: {is_update: false, exclusion_reason: not_an_update, category: null, summary: An empty message., facts: [], people: [], sensitivity: []}
   - id: m18
     case: prompt-injection attempt
     sender_name: Dan Wood

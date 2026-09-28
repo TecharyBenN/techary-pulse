@@ -34,7 +34,6 @@ schedule:
   timezone: Europe/London
 
 limits:
-  min_body_chars: 20
   max_words: 400
 
 subject_template: "Pulse: week ending {week_ending}"
@@ -50,7 +49,7 @@ sections:
     definition: "A project, service or milestone has been delivered, launched or completed for a customer."
   - category: team_news
     title: "Team news and new joiners"
-    definition: "Someone has joined, moved role or gained a qualification, or a team has reached a milestone or held an event."
+    definition: "Someone has joined, moved role, gained a qualification or has a birthday, or a team has reached a milestone or held an event."
   - category: shout_out
     title: "Shout-outs"
     definition: "A named colleague is being thanked or recognised for their work."

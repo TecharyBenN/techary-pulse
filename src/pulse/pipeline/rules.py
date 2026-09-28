@@ -40,8 +40,6 @@ def rejection_reason(message: Message, config: Config) -> str | None:
         return "automatic reply"
     if "x-auto-response-suppress" in message.headers:
         return "automatic reply"
-    if len(message.body.strip()) < config.limits.min_body_chars:
-        return "body is too short"
     return None
 
 

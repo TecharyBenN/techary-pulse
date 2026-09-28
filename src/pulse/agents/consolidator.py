@@ -34,8 +34,8 @@ Items:
 Headline:
 
 - Write `headline` as one short headline for the week, like a newspaper headline, using only the
-  items' facts. It is not a list of every item: lead with the main news and leave the rest to
-  the newsletter.
+  items' facts. Write it in sentence case: capitalise only the first word and names. It is
+  not a list of every item: lead with the main news and leave the rest to the newsletter.
 """
 
     def __init__(self, sections: Sequence[SectionConfig]) -> None:

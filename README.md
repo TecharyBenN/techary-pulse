@@ -2,7 +2,7 @@
 
 Techary Pulse is a scheduled service that turns staff updates emailed to a shared Microsoft 365 mailbox into a weekly draft newsletter, and emails the draft to human reviewers. This README covers what Pulse needs to run and how to work on it. Behaviour is defined in the [design document](docs/techary-pulse-design.md), and delivery is planned in the [development plan](docs/development-plan.md).
 
-Pulse is under development. The `pulse` command validates its configuration, but the pipeline itself is not yet implemented.
+Pulse is under development. `pulse run` runs the pipeline once; `pulse schedule` is not yet implemented.
 
 ## How it works
 

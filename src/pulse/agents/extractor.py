@@ -39,7 +39,8 @@ Fill in the record as follows.
 - `sensitivity`: one entry for each kind of sensitive content in the email, with the exact type
   and a short description of the evidence; an empty list if there is none. The types are:
   - `commercial`: deal values, margins, pricing or revenue;
-  - `personal`: health, family, performance or HR matters;
+  - `personal`: health, family, performance or HR matters. A birthday is newsletter content,
+    not personal;
   - `unannounced`: anything confidential, draft or not yet announced;
   - `inappropriate`: offensive, discriminatory or harassing content, profanity, or criticism of
     named colleagues or customers.

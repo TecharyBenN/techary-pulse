@@ -29,3 +29,7 @@ class LockHeldError(PulseError):
 
 class StopRequested(PulseError):
     """SIGTERM was received; the run stops at the next step boundary."""
+
+
+class GraphError(PulseError):
+    """Microsoft Graph or the Entra ID token endpoint returned an error."""

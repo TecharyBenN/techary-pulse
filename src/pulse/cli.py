@@ -3,14 +3,19 @@
 import argparse
 import logging
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
-from pulse.config import load_config
-from pulse.errors import ConfigError
+from pulse.agents.runner import AgentRunner
+from pulse.config import Config, load_config
+from pulse.errors import AgentResponseError, ConfigError, PulseError
 from pulse.log import configure_logging
+from pulse.mail import GraphMailbox, msal_token
+from pulse.pipeline.runner import run_pipeline
 
 log = logging.getLogger("pulse")
 
+EXIT_OK = 0
 EXIT_FAILED = 1
 
 
@@ -41,11 +46,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     configure_logging()
     try:
-        load_config(args.config)
+        config = load_config(args.config)
     except ConfigError as exc:
         log.error("configuration invalid", extra={"error": str(exc)})
         return EXIT_FAILED
     log.info("configuration loaded", extra={"command": args.command})
-    # The pipeline arrives in phase 1 and the scheduler in phase 4.
+    if args.command == "run":
+        return _run(config, dry_run=args.dry_run)
+    # The scheduler arrives in phase 4.
     log.error("command not implemented yet", extra={"command": args.command})
     return EXIT_FAILED
+
+
+def _run(config: Config, dry_run: bool) -> int:
+    try:
+        mailbox = GraphMailbox(config.graph, config.mailbox, token=msal_token(config.graph))
+        result = run_pipeline(
+            config, mailbox, AgentRunner(config.llm), lambda: datetime.now(UTC), dry_run=dry_run
+        )
+    except AgentResponseError as exc:
+        # The detail can quote model output, which never goes in the logs.
+        log.error(
+            "run failed",
+            extra={"error_type": type(exc).__name__, "agent": exc.agent, "subject": exc.subject},
+        )
+        return EXIT_FAILED
+    except (PulseError, OSError) as exc:
+        log.error("run failed", extra={"error_type": type(exc).__name__, "error": str(exc)})
+        return EXIT_FAILED
+    log.info("run finished", extra={"status": result.status, "run_id": result.manifest.run_id})
+    return EXIT_OK

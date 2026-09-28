@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -91,3 +92,71 @@ def message(
         headers=headers or {},
         has_attachments=has_attachments,
     )
+
+
+class FakeGraph:
+    """Answers the Graph requests GraphMailbox makes, from an in-memory mailbox.
+
+    Queue responses in ``injected`` to simulate throttling or errors before the real answer.
+    """
+
+    PAGE = 2
+
+    def __init__(self, messages: list[Message]) -> None:
+        self.inbox: list[Message] = list(messages)
+        self.folders: dict[str, dict[str, Any]] = {}
+        self.sent: list[dict[str, Any]] = []
+        self.requests: list[httpx.Request] = []
+        self.injected: list[httpx.Response] = []
+
+    def client(self) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(self.handle))
+
+    @staticmethod
+    def raw(message: Message) -> dict[str, Any]:
+        return {
+            "id": message.id,
+            "from": {
+                "emailAddress": {"name": message.sender_name, "address": message.sender_address}
+            },
+            "subject": message.subject,
+            "receivedDateTime": message.received_at.isoformat().replace("+00:00", "Z"),
+            "uniqueBody": {"contentType": "text", "content": message.body},
+            "internetMessageHeaders": [{"name": k, "value": v} for k, v in message.headers.items()],
+            "hasAttachments": message.has_attachments,
+        }
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if self.injected:
+            return self.injected.pop(0)
+        path = request.url.path
+        if request.method == "GET" and path.endswith("/mailFolders/inbox/messages"):
+            skip = int(request.url.params.get("skip", "0"))
+            page = self.inbox[skip : skip + self.PAGE]
+            body: dict[str, Any] = {"value": [self.raw(m) for m in page]}
+            if skip + self.PAGE < len(self.inbox):
+                body["@odata.nextLink"] = str(request.url.copy_set_param("skip", skip + self.PAGE))
+            return httpx.Response(200, json=body)
+        if request.method == "GET" and path.endswith("/mailFolders"):
+            name = request.url.params["$filter"].split("'")[1]
+            found = [{"id": f["id"]} for n, f in self.folders.items() if n == name]
+            return httpx.Response(200, json={"value": found})
+        if request.method == "POST" and path.endswith("/mailFolders"):
+            name = json.loads(request.content)["displayName"]
+            self.folders[name] = {"id": f"folder-{name}", "messages": []}
+            return httpx.Response(201, json={"id": f"folder-{name}"})
+        if request.method == "POST" and path.endswith("/move"):
+            message_id = path.split("/")[-2]
+            destination = json.loads(request.content)["destinationId"]
+            self.inbox = [m for m in self.inbox if m.id != message_id]
+            for folder in self.folders.values():
+                if message_id in folder["messages"]:
+                    folder["messages"].remove(message_id)
+                if folder["id"] == destination:
+                    folder["messages"].append(message_id)
+            return httpx.Response(201, json={"id": message_id})
+        if request.method == "POST" and path.endswith("/sendMail"):
+            self.sent.append(json.loads(request.content)["message"])
+            return httpx.Response(202)
+        return httpx.Response(404, json={"error": {"code": "NotFound"}})

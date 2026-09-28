@@ -1,8 +1,25 @@
-"""The mailbox interface the pipeline uses."""
+"""The mailbox interface the pipeline uses, and its Microsoft Graph implementation."""
 
-from typing import Protocol
+import logging
+import time
+from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Protocol
 
+import httpx
+import msal
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+
+from pulse.config import GraphConfig, MailboxConfig
+from pulse.errors import GraphError
 from pulse.models import Message, OutgoingEmail
+
+log = logging.getLogger("pulse.mail")
+
+GRAPH = "https://graph.microsoft.com/v1.0"
+_SELECT = "id,from,sender,subject,receivedDateTime,uniqueBody,internetMessageHeaders,hasAttachments"
 
 
 class Mailbox(Protocol):
@@ -19,3 +36,137 @@ class Mailbox(Protocol):
     def send(self, email: OutgoingEmail) -> None:
         """Send an email from the Pulse mailbox."""
         ...
+
+
+def load_certificate(path: Path) -> tuple[str, str]:
+    """Return the private key as PEM and the certificate's SHA-1 thumbprint from ``path``.
+
+    The file holds the private key and the certificate, as the design requires.
+    """
+    data = path.read_bytes()
+    key = serialization.load_pem_private_key(data, password=None)
+    certificate = x509.load_pem_x509_certificate(data)
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    return key_pem, certificate.fingerprint(hashes.SHA1()).hex().upper()
+
+
+def msal_token(graph: GraphConfig) -> Callable[[], str]:
+    """Return a function that gets a Graph token with the certificate, through MSAL."""
+    key_pem, thumbprint = load_certificate(graph.certificate_path)
+    log.info("certificate loaded", extra={"thumbprint": thumbprint})
+    try:
+        app = msal.ConfidentialClientApplication(
+            graph.client_id,
+            authority=f"https://login.microsoftonline.com/{graph.tenant_id}",
+            client_credential={"private_key": key_pem, "thumbprint": thumbprint},
+        )
+    except ValueError as exc:
+        # MSAL raises ValueError when Entra ID rejects the tenant, for example a mistyped ID.
+        raise GraphError(f"Entra ID rejected tenant {graph.tenant_id}") from exc
+
+    def token() -> str:
+        result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+        if "access_token" not in result:
+            raise GraphError(f"token request failed: {result.get('error')}")
+        return str(result["access_token"])
+
+    return token
+
+
+def _message(raw: dict[str, Any]) -> Message:
+    sender = (raw.get("from") or {}).get("emailAddress") or {}
+    headers = {h["name"].lower(): h["value"] for h in raw.get("internetMessageHeaders") or []}
+    return Message(
+        id=raw["id"],
+        sender_name=sender.get("name", ""),
+        sender_address=sender.get("address", ""),
+        subject=raw.get("subject") or "",
+        received_at=datetime.fromisoformat(raw["receivedDateTime"]),
+        body=(raw.get("uniqueBody") or {}).get("content", ""),
+        headers=headers,
+        has_attachments=bool(raw.get("hasAttachments")),
+    )
+
+
+class GraphMailbox:
+    """The Pulse mailbox, through Microsoft Graph."""
+
+    def __init__(
+        self,
+        graph: GraphConfig,
+        mailbox: MailboxConfig,
+        token: Callable[[], str],
+        http: httpx.Client | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._max_retries = graph.max_retries
+        self._user = f"{GRAPH}/users/{mailbox.address}"
+        self._token = token
+        self._http = http or httpx.Client(timeout=60)
+        self._sleep = sleep
+        self._folders: dict[str, str] = {}
+
+    def _request(
+        self, method: str, url: str, prefer_text: bool = False, **kwargs: Any
+    ) -> httpx.Response:
+        prefer = 'IdType="ImmutableId"'
+        if prefer_text:
+            prefer += ', outlook.body-content-type="text"'
+        for attempt in range(self._max_retries + 1):
+            headers = {"Authorization": f"Bearer {self._token()}", "Prefer": prefer}
+            response = self._http.request(method, url, headers=headers, **kwargs)
+            if response.status_code == 429 and attempt < self._max_retries:
+                self._sleep(float(response.headers.get("Retry-After", "1")))
+                continue
+            if response.is_error:
+                code = response.json().get("error", {}).get("code", "") if response.content else ""
+                raise GraphError(
+                    f"{method} {url.removeprefix(GRAPH)}: {response.status_code} {code}"
+                )
+            return response
+        raise AssertionError("unreachable")
+
+    def list_inbox(self) -> list[Message]:
+        url: str | None = f"{self._user}/mailFolders/inbox/messages?$select={_SELECT}&$top=50"
+        messages: list[Message] = []
+        while url:
+            page = self._request("GET", url, prefer_text=True).json()
+            messages.extend(_message(raw) for raw in page.get("value", []))
+            url = page.get("@odata.nextLink")
+        return sorted(messages, key=lambda m: m.received_at)
+
+    def _folder_id(self, name: str) -> str:
+        if name not in self._folders:
+            found = self._request(
+                "GET", f"{self._user}/mailFolders", params={"$filter": f"displayName eq '{name}'"}
+            ).json()["value"]
+            if found:
+                self._folders[name] = found[0]["id"]
+            else:
+                created = self._request(
+                    "POST", f"{self._user}/mailFolders", json={"displayName": name}
+                )
+                self._folders[name] = created.json()["id"]
+        return self._folders[name]
+
+    def move(self, message_id: str, folder: str) -> None:
+        destination = self._folder_id(folder)
+        self._request(
+            "POST", f"{self._user}/messages/{message_id}/move", json={"destinationId": destination}
+        )
+
+    def send(self, email: OutgoingEmail) -> None:
+        def recipients(addresses: list[str]) -> list[dict[str, Any]]:
+            return [{"emailAddress": {"address": a}} for a in addresses]
+
+        message = {
+            "subject": email.subject,
+            "body": {"contentType": "HTML", "content": email.html},
+            "toRecipients": recipients(email.to),
+            "replyTo": recipients(email.reply_to),
+        }
+        self._request("POST", f"{self._user}/sendMail", json={"message": message})

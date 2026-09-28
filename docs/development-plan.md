@@ -29,7 +29,7 @@ The design fixes the shape of the system: a Python package providing the `pulse`
 | Models and configuration | Pydantic, with PyYAML `safe_load` | One set of models validates `config.yaml`, agent output and the run manifest. |
 | Agents | `pydantic-ai-slim[openai]`, used for its agent and model layer only, in native output mode | Runs each agent with typed output and validation retry against the gateway's OpenAI-compatible endpoint, independent of the provider behind it; its test models stand in for the gateway in automated tests. Tested against the dev gateway in phase 0: native mode sends no tools, output types limited to schema features every major provider supports are accepted, Pydantic AI validates each reply, and requests go only to the gateway. Set `PYDANTIC_AI_NO_BANNER=1`, and use `httpx2` clients. |
 | Entra ID token | Microsoft Authentication Library (MSAL) for Python | Maintained implementation of the certificate client assertion. |
-| Microsoft Graph calls | Direct REST calls through httpx | Pulse uses five operations, so a software development kit (SDK) adds more than it saves. |
+| Microsoft Graph calls | Direct REST calls through httpx | Pulse uses six operations, so a software development kit (SDK) adds more than it saves. |
 | Rendering | Jinja2 with autoescaping on | Escapes model output and email-derived strings by default. |
 | Scheduling | A cron library that supports IANA time zones, inside `pulse schedule` | Computes the next run in `Europe/London` correctly across daylight saving changes. |
 | Logging | Standard library `logging` with a JSON formatter | Structured logs without another dependency. |
@@ -170,7 +170,7 @@ Scope, taken section by section from the design. Each item is built and covered 
 - **Architecture:** `Mailbox` (list the inbox, move a message, send an email) and `FakeMailbox`; the `Agent` base class and the runner, using Pydantic AI in native output mode with no tools, calling `llm.base_url` in the OpenAI-compatible format with the credential from the environment variable named in `llm.api_key_env`; the four agents with placeholder instructions.
 - **Step 1, lock and resume:** the exclusive lock on `pulse.lock` in `run_artefacts_dir`, with a second concurrent run exiting at once; completing incomplete moves from the latest manifest that is not a dry run; deleting run artefacts older than `retention_days`.
 - **Step 2, snapshot:** recording every inbox message ID in a new manifest, and processing only those messages.
-- **Step 3, pre-filter:** the sender taken from `from`; rejection by sender domain, `allowed_senders`, any disallowed sensitivity label in `msip_labels`, `Auto-Submitted` and `X-Auto-Response-Suppress` headers, and `uniqueBody` shorter than `min_body_chars`.
+- **Step 3, pre-filter:** the sender taken from `from`; rejection by sender domain, `allowed_senders`, any disallowed sensitivity label in `msip_labels`, and `Auto-Submitted` and `X-Auto-Response-Suppress` headers.
 - **Step 4, extract:** one extractor call per cleaned email, run in parallel; excluding records that are not updates, are unclear, have no matching section or carry a sensitivity flag.
 - **Step 5, consolidate:** one consolidator call; checking that every returned source ID came from the input and that every input record appears in exactly one item; adding each item's sender names.
 - **Step 6, draft:** one drafter call on the consolidated items, with no raw email content.
@@ -214,9 +214,10 @@ Exit criteria:
 Scope, taken from the design's Microsoft Graph integration section:
 
 - **Authentication:** the client credentials flow through MSAL with the certificate at `graph.certificate_path`, calculating and logging the thumbprint at start-up.
-- **Operations:** the five operations in the design's operations table, each request sending `Prefer: IdType="ImmutableId"`, list requests also sending `Prefer: outlook.body-content-type="text"`, following `@odata.nextLink` and sorting in code.
+- **Operations:** the operations in the design's operations table, each request sending `Prefer: IdType="ImmutableId"`, list requests also sending `Prefer: outlook.body-content-type="text"`, following `@odata.nextLink` and sorting in code.
+- **Command line:** `pulse run` and `pulse run --dry-run` running the pipeline with `GraphMailbox`.
 - **Throttling:** on HTTP 429, waiting for `Retry-After` and retrying up to `graph.max_retries`.
-- **Dev tenant:** at least one Microsoft Purview sensitivity label published, which needs a licence that includes sensitivity labels, with its label ID in the dev `allowed_sensitivity_labels`; confirming that Graph returns `msip_labels` and `hasAttachments` for real dev tenant messages.
+- **Dev tenant:** confirming that Graph returns `msip_labels` and `hasAttachments` for real messages, testing the label rule with Techary's existing sensitivity labels applied from a work account.
 - **Tests:** unit tests against mocked HTTP responses, including throttling and server errors; `FakeMailbox` and `GraphMailbox` passing the same interface tests; manual dry runs and real runs in the dev tenant.
 
 Exit criteria:
