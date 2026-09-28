@@ -90,15 +90,14 @@ class EditionStore:
         self._db_path = db_path
 
     def _connect(self) -> sqlite3.Connection:
-        # Following state.py's RunArtefacts: the directory is 0700, and, since sqlite3.connect
-        # creates the file subject to the process umask, its mode is fixed up on first creation.
+        # Following state.py's _write: the directory is 0700, and the file, if absent, is
+        # created with 0600 directly, so it never exists at a wider mode even momentarily.
         self._db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        created = not self._db_path.exists()
+        if not self._db_path.exists():
+            os.close(os.open(self._db_path, os.O_CREAT | os.O_WRONLY, 0o600))
         # autocommit=False gives PEP 249-style transactions, so ``with conn:`` around a write
         # commits it as one transaction, or rolls it all back if a statement raises.
         conn = sqlite3.connect(self._db_path, autocommit=False)
-        if created:
-            os.chmod(self._db_path, 0o600)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(_SCHEMA)

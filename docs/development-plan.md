@@ -224,7 +224,7 @@ Exit criteria:
 - the check 1 result is recorded in the technology choices table;
 - check code is deleted, not merged.
 
-### Phase 5: editions and build workflow
+### Phase 5: editions and build workflow (complete)
 
 **Goal:** the build workflow runs asynchronously against the two mailboxes and creates editions in the edition store, and a real build in the dev tenant sends version 1 from the conversation mailbox.
 

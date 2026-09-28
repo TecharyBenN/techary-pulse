@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from jinja2 import Environment, PackageLoader
 
@@ -9,7 +10,19 @@ from pulse.config import Config
 from pulse.models import Draft
 from pulse.pipeline.rules import sections_in_order
 
+
+def _format_date(day: date) -> str:
+    """Render a date like "25 September 2026", the design's one date format."""
+    return f"{day.day} {day:%B %Y}"
+
+
+def _local_date(received_at: datetime, timezone: str) -> str:
+    """Render a UTC timestamp as a date in the given IANA time zone."""
+    return _format_date(received_at.astimezone(ZoneInfo(timezone)).date())
+
+
 _env = Environment(loader=PackageLoader("pulse", "templates"), autoescape=True)
+_env.filters["local_date"] = _local_date
 
 
 @dataclass(frozen=True)
@@ -32,8 +45,7 @@ class Review:
 
 
 def subject(config: Config, run_date: date) -> str:
-    formatted = f"{run_date.day} {run_date:%B %Y}"
-    return config.subject_template.format(date=formatted)
+    return config.subject_template.format(date=_format_date(run_date))
 
 
 def reviewer_subject(config: Config, version: int, run_date: date) -> str:
@@ -56,4 +68,5 @@ def render_email(config: Config, headline: str, draft: Draft, review: Review) ->
         intro=draft.intro,
         sections=sections_in_order(draft, config),
         review=review,
+        timezone=config.timezone,
     )

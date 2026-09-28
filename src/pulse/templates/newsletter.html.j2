@@ -45,7 +45,7 @@
 {% endif %}
 {% if review.source_map %}
 <h3 style="margin:12px 0 4px;font-size:14px;">Sources</h3>
-<ul style="margin:0;padding-left:20px;">{% for entry_text, sources in review.source_map %}<li>{{ entry_text }}<br>{% for source in sources %}{{ source.sender }}, "{{ source.subject }}", {{ source.received_at.strftime('%d %B') }}{% if not loop.last %}; {% endif %}{% endfor %}</li>{% endfor %}</ul>
+<ul style="margin:0;padding-left:20px;">{% for entry_text, sources in review.source_map %}<li>{{ entry_text }}<br>{% for source in sources %}{{ source.sender }}, "{{ source.subject }}", {{ source.received_at | local_date(timezone) }}{% if not loop.last %}; {% endif %}{% endfor %}</li>{% endfor %}</ul>
 {% endif %}
 </td></tr>
 </table>
