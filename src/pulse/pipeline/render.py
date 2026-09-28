@@ -1,7 +1,7 @@
 """Step 8: the subject, the newsletter and the review section."""
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 from jinja2 import Environment, PackageLoader
 
@@ -16,6 +16,7 @@ _env = Environment(loader=PackageLoader("pulse", "templates"), autoescape=True)
 class Source:
     sender: str
     subject: str
+    received_at: datetime
 
 
 @dataclass(frozen=True)
@@ -31,8 +32,12 @@ class Review:
 
 
 def subject(config: Config, run_date: date) -> str:
-    week_ending = f"{run_date.day} {run_date:%B %Y}"
-    return config.subject_template.format(week_ending=week_ending)
+    formatted = f"{run_date.day} {run_date:%B %Y}"
+    return config.subject_template.format(date=formatted)
+
+
+def reviewer_subject(config: Config, version: int, run_date: date) -> str:
+    return f"Draft v{version}: {subject(config, run_date)}"
 
 
 def visible_text(config: Config, headline: str, draft: Draft) -> list[str]:

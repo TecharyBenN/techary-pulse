@@ -33,15 +33,15 @@ class GraphConfig(_Model):
     max_retries: int = 5
 
 
-class MailboxConfig(_Model):
-    address: str
+class MailboxesConfig(_Model):
+    submissions: str
+    conversation: str
     processed_folder: str = "Processed"
     rejected_folder: str = "Rejected"
 
 
-class ScheduleConfig(_Model):
-    cron: str
-    timezone: str = "Europe/London"
+class StateConfig(_Model):
+    db_path: Path
 
 
 class LimitsConfig(_Model):
@@ -64,19 +64,20 @@ class Config(_Model):
     """Contents of ``config.yaml``."""
 
     graph: GraphConfig
-    mailbox: MailboxConfig
+    mailboxes: MailboxesConfig
     reviewers: list[str]
     operator_alerts: list[str]
     allowed_sender_domains: list[str]
     allowed_senders: list[str] = []
     allowed_recipient_domains: list[str]
     allowed_sensitivity_labels: list[str] = []
-    schedule: ScheduleConfig
+    timezone: str
     limits: LimitsConfig
     subject_template: str
     headline_title: str
     sections: list[SectionConfig]
     llm: LlmConfig
+    state: StateConfig
     run_artefacts_dir: Path
     retention_days: int
 

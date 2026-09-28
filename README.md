@@ -2,7 +2,7 @@
 
 Techary Pulse is a service that turns staff updates emailed to a Microsoft 365 submissions mailbox into a newsletter. A chat agent drafts each edition, discusses it with human reviewers over email or LibreChat, revises it from their feedback and, once a reviewer approves it, sends it to an all-staff distribution list. This README covers what Pulse needs to run and how to work on it. Behaviour is defined in the [design document](docs/techary-pulse-design.md), and delivery is planned in the [development plan](docs/development-plan.md).
 
-Pulse is under development. The build workflow works today as `pulse run`, which builds a draft once and emails it to reviewers; `pulse schedule` is not implemented. The development plan replaces these with `pulse build` and `pulse serve`, and adds the conversation, approval and all-staff send, in phases 5 to 8. The running and development instructions below describe what works now.
+Pulse is under development. The build workflow works today as `pulse build`, which creates a draft edition, if none is open, and emails version 1 to reviewers from the conversation mailbox; `pulse serve` is not implemented, and `pulse schedule` remains its stub until then. The development plan adds the conversation, approval and all-staff send in phases 6 to 8. The running and development instructions below describe what works now.
 
 ## How it works
 
@@ -44,7 +44,8 @@ A container runtime on a server with outbound access to `graph.microsoft.com`, `
 - `/etc/pulse/config.yaml`, copied from [config/config.example.yaml](config/config.example.yaml);
 - `/etc/pulse/pulse.env`, containing `PULSE_LLM_API_KEY=<gateway credential>`;
 - `/etc/pulse/pulse.pem`, the certificate and its private key;
-- `/var/lib/pulse/runs`, a writable directory for run artefacts.
+- `/var/lib/pulse/runs`, a writable directory for run artefacts;
+- `/var/lib/pulse/state`, a writable directory for the edition store.
 
 The files under `/etc/pulse` must be readable only by the account that runs the container.
 
@@ -60,11 +61,12 @@ docker run --rm \
   -v /etc/pulse/config.yaml:/config/config.yaml:ro \
   -v /etc/pulse/pulse.pem:/run/secrets/pulse.pem:ro \
   -v /var/lib/pulse/runs:/var/lib/pulse/runs \
+  -v /var/lib/pulse/state:/var/lib/pulse/state \
   --env-file /etc/pulse/pulse.env \
   techary-pulse
 ```
 
-The container runs `pulse schedule` by default. `pulse run` runs the pipeline once, and `pulse run --dry-run` runs every step without sending or moving mail.
+The container runs `pulse schedule` by default, which is not yet implemented. `pulse build` creates a draft edition, if none is open, and exits; `pulse build --dry-run` runs every step without sending or moving mail.
 
 ## Development
 
@@ -72,14 +74,14 @@ Development needs [uv](https://docs.astral.sh/uv/), which installs the Python ve
 
 To run Pulse locally against the dev tenant:
 
-1. Copy `config/config.dev.example.yaml` to `config.yaml` at the repository root and fill in the dev tenant and gateway values.
+1. Copy `config/config.dev.example.yaml` to `config.yaml` at the repository root, fill in the dev tenant and gateway values, and set `mailboxes.submissions` and `mailboxes.conversation` to the two dev tenant mailbox addresses.
 2. Put `PULSE_LLM_API_KEY=<dev gateway credential>` in `.env` at the repository root.
 3. Put the dev certificate outside the repository, and set `graph.certificate_path` to its full path.
-4. Run `uv run --env-file .env pulse run --dry-run`.
+4. Run `uv run --env-file .env pulse build --dry-run`.
 
 To run the synthetic test emails through the agents on the dev gateway, after steps 1 and 2, run `uv run --env-file .env pytest -m live -s`. It is a dry run against a fake mailbox, so nothing is sent or moved, and it prints where the reviewer email is saved.
 
-`config.yaml`, `.env`, `*.pem` and `runs/` are git-ignored.
+`config.yaml`, `.env`, `*.pem`, `runs/` and `state/` are git-ignored.
 
 | Command | Purpose |
 | --- | --- |
@@ -89,6 +91,7 @@ To run the synthetic test emails through the agents on the dev gateway, after st
 | `uv run mypy src tests` | Type check |
 | `uv run pytest` | Run tests; `live` tests are excluded by default |
 | `uv run --env-file .env pytest -m live -s` | Run the synthetic emails through the agents on the dev gateway, as a dry run, and print where the reviewer email is saved |
-| `uv lock --upgrade` | Upgrade every dependency to its latest version |
+| `uv run --env-file .env pulse build --dry-run` | Run one build locally with `./config.yaml` and the credentials in `./.env` |
+| `uv lock --upgrade` | Upgrade every dependency to its latest version, then run the checks |
 
 Run format, lint, type check and tests before every commit, and after every upgrade.

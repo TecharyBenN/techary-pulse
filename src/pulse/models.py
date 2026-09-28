@@ -55,7 +55,7 @@ class CleanedEmail(_Frozen):
 
 class OutgoingEmail(_Frozen):
     to: list[str]
-    reply_to: list[str]
+    reply_to: list[str] = []
     subject: str
     html: str
 
@@ -85,9 +85,10 @@ class Item(_Output):
 
 
 class ItemWithSenders(Item):
-    """A consolidated item with the sender names code adds from its source messages."""
+    """A consolidated item with the sender names and received dates code adds from its sources."""
 
     sender_names: list[str]
+    received_dates: list[datetime]
 
 
 class Consolidation(_Output):
@@ -134,3 +135,21 @@ class DraftInput(_Frozen):
 class JudgeInput(_Frozen):
     draft: Draft
     items: list[ItemWithSenders]
+
+
+EditionState = Literal["in_review", "approved", "sent", "expired", "discarded"]
+Trigger = Literal["schedule", "reviewer", "command"]
+
+
+class Edition(_Frozen):
+    """An edition: one newsletter from its build until it is sent, expired or discarded.
+
+    The ID is also the ``conversation_id`` of the edition's conversation history.
+    """
+
+    id: str
+    build_id: str
+    state: EditionState
+    trigger: Trigger
+    created_at: datetime
+    current_version: int

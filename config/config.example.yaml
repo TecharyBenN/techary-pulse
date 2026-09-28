@@ -7,8 +7,9 @@ graph:
   certificate_path: /run/secrets/pulse.pem
   max_retries: 5
 
-mailbox:
-  address: pulse@techary.ai
+mailboxes:
+  submissions: pulse@techary.ai
+  conversation: pulseagent@techary.ai
   processed_folder: Processed
   rejected_folder: Rejected
 
@@ -25,14 +26,12 @@ allowed_recipient_domains:
   - techary.ai
 allowed_sensitivity_labels: []
 
-schedule:
-  cron: "30 17 * * FRI"
-  timezone: Europe/London
+timezone: Europe/London
 
 limits:
   max_words: 400
 
-subject_template: "Pulse: week ending {week_ending}"
+subject_template: "Pulse: {date}"
 
 headline_title: "Headline of the week"
 
@@ -58,6 +57,9 @@ llm:
     consolidator: gateway-mid-model
     drafter: gateway-mid-model
     judge: gateway-mid-model
+
+state:
+  db_path: /var/lib/pulse/state/pulse.db
 
 run_artefacts_dir: /var/lib/pulse/runs
 retention_days: 90

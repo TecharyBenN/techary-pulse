@@ -22,6 +22,7 @@ ITEMS = [
         people=["Priya Shah", "Tom Evans"],
         source_message_ids=["m1"],
         sender_names=["Priya Shah"],
+        received_dates=[MESSAGES["m1"].received_at],
     ),
     ItemWithSenders(
         item_id="i2",
@@ -30,6 +31,7 @@ ITEMS = [
         people=["Sam Patel"],
         source_message_ids=["m2"],
         sender_names=["Sam Patel"],
+        received_dates=[MESSAGES["m2"].received_at],
     ),
 ]
 GOOD_I1 = "Priya Shah and Tom Evans signed Northwind Retail on 22 September for 3 years."
@@ -126,6 +128,23 @@ def test_items_must_appear_exactly_once_in_configured_sections(config: Config) -
     assert "item i2 appears 0 times, not once" in failures
     assert "item i1 appears 2 times, not once" in failures
     assert "category birthdays is not configured" in failures
+
+
+def test_entry_referencing_an_excluded_record_fails_as_unknown_item(config: Config) -> None:
+    # Excluded records are never in the consolidated items, so their item IDs, such as
+    # "excluded-1", already fail as unknown; no extra check is needed for them.
+    d = Draft.model_validate(
+        {
+            "intro": "A good week.",
+            "sections": [
+                {
+                    "category": "customer_win",
+                    "entries": [{"item_id": "excluded-1", "text": GOOD_I1, "people": []}],
+                }
+            ],
+        }
+    )
+    assert "entry references unknown item excluded-1" in check(config, d)
 
 
 def test_judge_failures() -> None:

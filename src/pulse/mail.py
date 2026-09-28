@@ -1,8 +1,8 @@
 """The mailbox interface the pipeline uses, and its Microsoft Graph implementation."""
 
+import asyncio
 import logging
-import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -12,7 +12,7 @@ import msal
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 
-from pulse.config import GraphConfig, MailboxConfig
+from pulse.config import GraphConfig
 from pulse.errors import GraphError
 from pulse.models import Message, OutgoingEmail
 
@@ -23,18 +23,18 @@ _SELECT = "id,from,sender,subject,receivedDateTime,uniqueBody,internetMessageHea
 
 
 class Mailbox(Protocol):
-    """What the pipeline needs from the Pulse mailbox."""
+    """What Pulse needs from a mailbox."""
 
-    def list_inbox(self) -> list[Message]:
+    async def list_inbox(self) -> list[Message]:
         """Return every message in the inbox."""
         ...
 
-    def move(self, message_id: str, folder: str) -> None:
+    async def move(self, message_id: str, folder: str) -> None:
         """Move a message to the named folder, creating the folder if it is absent."""
         ...
 
-    def send(self, email: OutgoingEmail) -> None:
-        """Send an email from the Pulse mailbox."""
+    async def send(self, email: OutgoingEmail) -> None:
+        """Send an email from the mailbox."""
         ...
 
 
@@ -98,29 +98,30 @@ class GraphMailbox:
     def __init__(
         self,
         graph: GraphConfig,
-        mailbox: MailboxConfig,
+        address: str,
         token: Callable[[], str],
-        http: httpx.Client | None = None,
-        sleep: Callable[[float], None] = time.sleep,
+        http: httpx.AsyncClient | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._max_retries = graph.max_retries
-        self._user = f"{GRAPH}/users/{mailbox.address}"
+        self._user = f"{GRAPH}/users/{address}"
         self._token = token
-        self._http = http or httpx.Client(timeout=60)
+        self._http = http or httpx.AsyncClient(timeout=60)
         self._sleep = sleep
         self._folders: dict[str, str] = {}
 
-    def _request(
+    async def _request(
         self, method: str, url: str, prefer_text: bool = False, **kwargs: Any
     ) -> httpx.Response:
         prefer = 'IdType="ImmutableId"'
         if prefer_text:
             prefer += ', outlook.body-content-type="text"'
         for attempt in range(self._max_retries + 1):
-            headers = {"Authorization": f"Bearer {self._token()}", "Prefer": prefer}
-            response = self._http.request(method, url, headers=headers, **kwargs)
+            token = await asyncio.to_thread(self._token)
+            headers = {"Authorization": f"Bearer {token}", "Prefer": prefer}
+            response = await self._http.request(method, url, headers=headers, **kwargs)
             if response.status_code == 429 and attempt < self._max_retries:
-                self._sleep(float(response.headers.get("Retry-After", "1")))
+                await self._sleep(float(response.headers.get("Retry-After", "1")))
                 continue
             if response.is_error:
                 code = response.json().get("error", {}).get("code", "") if response.content else ""
@@ -130,43 +131,48 @@ class GraphMailbox:
             return response
         raise AssertionError("unreachable")
 
-    def list_inbox(self) -> list[Message]:
+    async def list_inbox(self) -> list[Message]:
         url: str | None = f"{self._user}/mailFolders/inbox/messages?$select={_SELECT}&$top=50"
         messages: list[Message] = []
         while url:
-            page = self._request("GET", url, prefer_text=True).json()
+            page = (await self._request("GET", url, prefer_text=True)).json()
             messages.extend(_message(raw) for raw in page.get("value", []))
             url = page.get("@odata.nextLink")
         return sorted(messages, key=lambda m: m.received_at)
 
-    def _folder_id(self, name: str) -> str:
+    async def _folder_id(self, name: str) -> str:
         if name not in self._folders:
-            found = self._request(
-                "GET", f"{self._user}/mailFolders", params={"$filter": f"displayName eq '{name}'"}
+            found = (
+                await self._request(
+                    "GET",
+                    f"{self._user}/mailFolders",
+                    params={"$filter": f"displayName eq '{name}'"},
+                )
             ).json()["value"]
             if found:
                 self._folders[name] = found[0]["id"]
             else:
-                created = self._request(
+                created = await self._request(
                     "POST", f"{self._user}/mailFolders", json={"displayName": name}
                 )
                 self._folders[name] = created.json()["id"]
         return self._folders[name]
 
-    def move(self, message_id: str, folder: str) -> None:
-        destination = self._folder_id(folder)
-        self._request(
+    async def move(self, message_id: str, folder: str) -> None:
+        destination = await self._folder_id(folder)
+        await self._request(
             "POST", f"{self._user}/messages/{message_id}/move", json={"destinationId": destination}
         )
 
-    def send(self, email: OutgoingEmail) -> None:
+    async def send(self, email: OutgoingEmail) -> None:
         def recipients(addresses: list[str]) -> list[dict[str, Any]]:
             return [{"emailAddress": {"address": a}} for a in addresses]
 
-        message = {
+        message: dict[str, Any] = {
             "subject": email.subject,
             "body": {"contentType": "HTML", "content": email.html},
             "toRecipients": recipients(email.to),
-            "replyTo": recipients(email.reply_to),
         }
-        self._request("POST", f"{self._user}/sendMail", json={"message": message})
+        if email.reply_to:
+            message["replyTo"] = recipients(email.reply_to)
+        await self._request("POST", f"{self._user}/sendMail", json={"message": message})

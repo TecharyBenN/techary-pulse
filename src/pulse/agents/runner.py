@@ -25,8 +25,6 @@ class AgentRunner:
 
     def __init__(self, llm: LlmConfig, models: Mapping[str, Model] | None = None) -> None:
         self._models = dict(models) if models is not None else self._gateway_models(llm)
-        # Every call runs on this one loop: the gateway client is bound to the loop it first uses.
-        self._loop = asyncio.new_event_loop()
 
     @staticmethod
     def _gateway_models(llm: LlmConfig) -> dict[str, Model]:
@@ -39,7 +37,7 @@ class AgentRunner:
             name: OpenAIChatModel(model, provider=provider) for name, model in llm.models.items()
         }
 
-    def run[InputT, OutputT: BaseModel](
+    async def run[InputT, OutputT: BaseModel](
         self, agent: Agent[InputT, OutputT], data: InputT
     ) -> OutputT:
         """Run one agent call, retrying an invalid response once.
@@ -48,21 +46,6 @@ class AgentRunner:
             AgentResponseError: If the second response is also invalid.
             GatewayError: If the gateway fails.
         """
-        return self._loop.run_until_complete(self._run(agent, data))
-
-    def run_many[InputT, OutputT: BaseModel](
-        self, agent: Agent[InputT, OutputT], inputs: Sequence[InputT]
-    ) -> list[OutputT]:
-        """Run one call per input in parallel, in input order; raises as ``run`` does."""
-
-        async def run_all() -> list[OutputT]:
-            return list(await asyncio.gather(*(self._run(agent, data) for data in inputs)))
-
-        return self._loop.run_until_complete(run_all())
-
-    async def _run[InputT, OutputT: BaseModel](
-        self, agent: Agent[InputT, OutputT], data: InputT
-    ) -> OutputT:
         pydantic_agent = PydanticAgent(
             output_type=NativeOutput(agent.output_type, strict=True),
             instructions=agent.instructions(),
@@ -89,3 +72,9 @@ class AgentRunner:
         except ModelAPIError as exc:
             raise GatewayError(f"{agent.name}: {type(exc).__name__}") from exc
         return result.output
+
+    async def run_many[InputT, OutputT: BaseModel](
+        self, agent: Agent[InputT, OutputT], inputs: Sequence[InputT]
+    ) -> list[OutputT]:
+        """Run one call per input in parallel, in input order; raises as ``run`` does."""
+        return list(await asyncio.gather(*(self.run(agent, data) for data in inputs)))

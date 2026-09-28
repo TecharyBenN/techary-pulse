@@ -33,3 +33,7 @@ class StopRequested(PulseError):
 
 class GraphError(PulseError):
     """Microsoft Graph or the Entra ID token endpoint returned an error."""
+
+
+class EditionStoreError(PulseError):
+    """The edition store rejected a write, such as a duplicate item ID."""

@@ -16,12 +16,15 @@ from pulse.models import OutgoingEmail
 
 from ..support import FakeGraph, FakeMailbox, message
 
+pytestmark = pytest.mark.anyio
+
 MESSAGES = [
     message("m1", headers={"Auto-Submitted": "no", "msip_labels": "MSIP_Label_x_Enabled=true"}),
     message("m2", has_attachments=True),
     message("m3", body="Third update with enough text."),
 ]
 EMAIL = OutgoingEmail(to=["r@techary.ai"], reply_to=["r@techary.ai"], subject="S", html="<p>x</p>")
+EMAIL_NO_REPLY_TO = OutgoingEmail(to=["r@techary.ai"], subject="S", html="<p>x</p>")
 
 
 @pytest.fixture
@@ -32,12 +35,16 @@ def config(config_dir: Path) -> Config:
 def graph_mailbox(
     config: Config, graph: FakeGraph, sleeps: list[float] | None = None
 ) -> GraphMailbox:
+    async def sleep(seconds: float) -> None:
+        if sleeps is not None:
+            sleeps.append(seconds)
+
     return GraphMailbox(
         config.graph,
-        config.mailbox,
+        config.mailboxes.submissions,
         token=lambda: "token",
         http=graph.client(),
-        sleep=(sleeps.append if sleeps is not None else lambda s: None),
+        sleep=sleep,
     )
 
 
@@ -52,50 +59,50 @@ def mailbox(request: pytest.FixtureRequest, config: Config) -> Iterator[Mailbox]
         yield graph_mailbox(config, FakeGraph(MESSAGES))
 
 
-def test_lists_every_inbox_message(mailbox: Mailbox) -> None:
-    listed = mailbox.list_inbox()
+async def test_lists_every_inbox_message(mailbox: Mailbox) -> None:
+    listed = await mailbox.list_inbox()
     assert [m.id for m in listed] == ["m1", "m2", "m3"]
     assert listed[1].has_attachments
     assert listed[0].sender_address == "priya.shah@techary.ai"
 
 
-def test_moved_messages_leave_the_inbox_and_can_be_moved_again(mailbox: Mailbox) -> None:
-    mailbox.move("m1", "Processed")
-    mailbox.move("m2", "Rejected")
-    mailbox.move("m1", "Processed")
-    assert [m.id for m in mailbox.list_inbox()] == ["m3"]
+async def test_moved_messages_leave_the_inbox_and_can_be_moved_again(mailbox: Mailbox) -> None:
+    await mailbox.move("m1", "Processed")
+    await mailbox.move("m2", "Rejected")
+    await mailbox.move("m1", "Processed")
+    assert [m.id for m in await mailbox.list_inbox()] == ["m3"]
 
 
-def test_send_is_accepted(mailbox: Mailbox) -> None:
-    mailbox.send(EMAIL)
+async def test_send_is_accepted(mailbox: Mailbox) -> None:
+    await mailbox.send(EMAIL)
 
 
 # Graph specifics.
 
 
-def test_every_request_asks_for_immutable_ids_and_lists_ask_for_text(config: Config) -> None:
+async def test_every_request_asks_for_immutable_ids_and_lists_ask_for_text(config: Config) -> None:
     graph = FakeGraph(MESSAGES)
     box = graph_mailbox(config, graph)
-    box.list_inbox()
-    box.move("m1", "Processed")
+    await box.list_inbox()
+    await box.move("m1", "Processed")
     assert all('IdType="ImmutableId"' in r.headers["Prefer"] for r in graph.requests)
     listing = [r for r in graph.requests if r.url.path.endswith("/inbox/messages")]
     assert all('outlook.body-content-type="text"' in r.headers["Prefer"] for r in listing)
     assert "$select=" in str(listing[0].url) and "hasAttachments" in str(listing[0].url)
 
 
-def test_listing_follows_next_link_and_lowercases_headers(config: Config) -> None:
+async def test_listing_follows_next_link_and_lowercases_headers(config: Config) -> None:
     graph = FakeGraph(MESSAGES)
-    listed = graph_mailbox(config, graph).list_inbox()
+    listed = await graph_mailbox(config, graph).list_inbox()
     assert len([r for r in graph.requests if r.url.path.endswith("/inbox/messages")]) == 2
     assert listed[0].headers == {"auto-submitted": "no", "msip_labels": "MSIP_Label_x_Enabled=true"}
 
 
-def test_missing_folder_is_created_once(config: Config) -> None:
+async def test_missing_folder_is_created_once(config: Config) -> None:
     graph = FakeGraph(MESSAGES)
     box = graph_mailbox(config, graph)
-    box.move("m1", "Processed")
-    box.move("m2", "Processed")
+    await box.move("m1", "Processed")
+    await box.move("m2", "Processed")
     creates = [
         r for r in graph.requests if r.method == "POST" and r.url.path.endswith("/mailFolders")
     ]
@@ -103,43 +110,49 @@ def test_missing_folder_is_created_once(config: Config) -> None:
     assert graph.folders["Processed"]["messages"] == ["m1", "m2"]
 
 
-def test_existing_folder_is_reused(config: Config) -> None:
+async def test_existing_folder_is_reused(config: Config) -> None:
     graph = FakeGraph(MESSAGES)
     graph.folders["Processed"] = {"id": "existing", "messages": []}
-    graph_mailbox(config, graph).move("m1", "Processed")
+    await graph_mailbox(config, graph).move("m1", "Processed")
     assert graph.folders["Processed"]["messages"] == ["m1"]
 
 
-def test_send_sets_recipients_reply_to_and_html(config: Config) -> None:
+async def test_send_sets_recipients_reply_to_and_html(config: Config) -> None:
     graph = FakeGraph([])
-    graph_mailbox(config, graph).send(EMAIL)
+    await graph_mailbox(config, graph).send(EMAIL)
     sent = graph.sent[0]
     assert sent["toRecipients"] == [{"emailAddress": {"address": "r@techary.ai"}}]
     assert sent["replyTo"] == [{"emailAddress": {"address": "r@techary.ai"}}]
     assert sent["body"] == {"contentType": "HTML", "content": "<p>x</p>"}
 
 
-def test_throttling_waits_for_retry_after_then_succeeds(config: Config) -> None:
+async def test_send_omits_reply_to_when_empty(config: Config) -> None:
+    graph = FakeGraph([])
+    await graph_mailbox(config, graph).send(EMAIL_NO_REPLY_TO)
+    assert "replyTo" not in graph.sent[0]
+
+
+async def test_throttling_waits_for_retry_after_then_succeeds(config: Config) -> None:
     graph = FakeGraph(MESSAGES)
     graph.injected = [httpx.Response(429, headers={"Retry-After": "7"})] * 2
     sleeps: list[float] = []
-    assert len(graph_mailbox(config, graph, sleeps).list_inbox()) == 3
+    assert len(await graph_mailbox(config, graph, sleeps).list_inbox()) == 3
     assert sleeps == [7.0, 7.0]
 
 
-def test_throttling_beyond_max_retries_fails(config: Config) -> None:
+async def test_throttling_beyond_max_retries_fails(config: Config) -> None:
     graph = FakeGraph(MESSAGES)
     graph.injected = [httpx.Response(429, headers={"Retry-After": "1"})] * 10
     with pytest.raises(GraphError, match="429"):
-        graph_mailbox(config, graph).list_inbox()
+        await graph_mailbox(config, graph).list_inbox()
     assert len(graph.requests) == config.graph.max_retries + 1
 
 
-def test_server_error_fails_without_retrying(config: Config) -> None:
+async def test_server_error_fails_without_retrying(config: Config) -> None:
     graph = FakeGraph(MESSAGES)
     graph.injected = [httpx.Response(503, json={"error": {"code": "ServiceUnavailable"}})]
     with pytest.raises(GraphError, match="503 ServiceUnavailable"):
-        graph_mailbox(config, graph).list_inbox()
+        await graph_mailbox(config, graph).list_inbox()
     assert len(graph.requests) == 1
 
 

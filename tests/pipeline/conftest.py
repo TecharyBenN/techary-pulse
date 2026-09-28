@@ -12,6 +12,7 @@ from pydantic_ai.models import Model
 from pulse.agents.runner import AgentRunner
 from pulse.config import Config, load_config
 from pulse.models import Message
+from pulse.store import EditionStore
 
 from ..support import FakeMailbox, answering, scripted
 
@@ -71,8 +72,23 @@ def config(config_dir: Path, tmp_path: Path) -> Config:
 
 
 @pytest.fixture
-def mailbox() -> FakeMailbox:
+def submissions() -> FakeMailbox:
     return FakeMailbox(corpus_messages())
+
+
+@pytest.fixture
+def conversation() -> FakeMailbox:
+    return FakeMailbox([])
+
+
+@pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    return tmp_path / "state" / "pulse.db"
+
+
+@pytest.fixture
+def store(db_path: Path) -> EditionStore:
+    return EditionStore(db_path)
 
 
 @pytest.fixture

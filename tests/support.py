@@ -25,10 +25,10 @@ class FakeMailbox:
         self.fail_move_after: int | None = None
         self._moves = 0
 
-    def list_inbox(self) -> list[Message]:
+    async def list_inbox(self) -> list[Message]:
         return list(self.inbox.values())
 
-    def move(self, message_id: str, folder: str) -> None:
+    async def move(self, message_id: str, folder: str) -> None:
         if self.fail_move_after is not None and self._moves >= self.fail_move_after:
             raise MailboxFailure("move failed")
         # Like Graph with immutable IDs, a message already moved can be moved again.
@@ -39,7 +39,7 @@ class FakeMailbox:
         self.folders.setdefault(folder, []).append(message_id)
         self._moves += 1
 
-    def send(self, email: OutgoingEmail) -> None:
+    async def send(self, email: OutgoingEmail) -> None:
         if self.fail_send:
             raise MailboxFailure("send failed")
         self.sent.append(email)
@@ -109,8 +109,8 @@ class FakeGraph:
         self.requests: list[httpx.Request] = []
         self.injected: list[httpx.Response] = []
 
-    def client(self) -> httpx.Client:
-        return httpx.Client(transport=httpx.MockTransport(self.handle))
+    def client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
 
     @staticmethod
     def raw(message: Message) -> dict[str, Any]:

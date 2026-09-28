@@ -1,6 +1,7 @@
-"""Command-line interface: ``pulse run`` and ``pulse schedule``."""
+"""Command-line interface: ``pulse build`` and ``pulse schedule``."""
 
 import argparse
+import asyncio
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -11,7 +12,8 @@ from pulse.config import Config, load_config
 from pulse.errors import AgentResponseError, ConfigError, PulseError
 from pulse.log import configure_logging
 from pulse.mail import GraphMailbox, msal_token
-from pulse.pipeline.runner import run_pipeline
+from pulse.pipeline.runner import run_build
+from pulse.store import EditionStore
 
 log = logging.getLogger("pulse")
 
@@ -25,13 +27,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    run = commands.add_parser("run", help="run the pipeline once and exit")
-    run.add_argument(
+    build = commands.add_parser("build", help="build a draft edition, if none is open, and exit")
+    build.add_argument(
         "--dry-run", action="store_true", help="run every step without sending or moving mail"
     )
     schedule = commands.add_parser("schedule", help="run the pipeline on the configured schedule")
 
-    for command in (run, schedule):
+    for command in (build, schedule):
         command.add_argument(
             "--config",
             type=Path,
@@ -51,28 +53,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         log.error("configuration invalid", extra={"error": str(exc)})
         return EXIT_FAILED
     log.info("configuration loaded", extra={"command": args.command})
-    if args.command == "run":
-        return _run(config, dry_run=args.dry_run)
-    # The scheduler arrives in phase 4.
+    if args.command == "build":
+        return asyncio.run(_build(config, dry_run=args.dry_run))
+    # The scheduler arrives in phase 7.
     log.error("command not implemented yet", extra={"command": args.command})
     return EXIT_FAILED
 
 
-def _run(config: Config, dry_run: bool) -> int:
+async def _build(config: Config, dry_run: bool) -> int:
     try:
-        mailbox = GraphMailbox(config.graph, config.mailbox, token=msal_token(config.graph))
-        result = run_pipeline(
-            config, mailbox, AgentRunner(config.llm), lambda: datetime.now(UTC), dry_run=dry_run
+        token = msal_token(config.graph)
+        submissions = GraphMailbox(config.graph, config.mailboxes.submissions, token=token)
+        conversation = GraphMailbox(config.graph, config.mailboxes.conversation, token=token)
+        store = EditionStore(config.state.db_path)
+        result = await run_build(
+            config,
+            submissions,
+            conversation,
+            store,
+            AgentRunner(config.llm),
+            lambda: datetime.now(UTC),
+            trigger="command",
+            dry_run=dry_run,
         )
     except AgentResponseError as exc:
         # The detail can quote model output, which never goes in the logs.
         log.error(
-            "run failed",
+            "build failed",
             extra={"error_type": type(exc).__name__, "agent": exc.agent, "subject": exc.subject},
         )
         return EXIT_FAILED
     except (PulseError, OSError) as exc:
-        log.error("run failed", extra={"error_type": type(exc).__name__, "error": str(exc)})
+        log.error("build failed", extra={"error_type": type(exc).__name__, "error": str(exc)})
         return EXIT_FAILED
-    log.info("run finished", extra={"status": result.status, "run_id": result.manifest.run_id})
+    log.info(
+        "build finished",
+        extra={
+            "status": result.status,
+            "edition_id": result.edition.id if result.edition else None,
+        },
+    )
     return EXIT_OK

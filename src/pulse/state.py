@@ -51,7 +51,6 @@ class Manifest(BaseModel):
     step: str = "started"
     message_ids: list[str] = []
     outcomes: dict[str, Outcome] = {}
-    sent: bool = False
     moved: list[str] = []
     complete: bool = False
 

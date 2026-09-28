@@ -160,8 +160,8 @@ Phases 5 to 7 change code built in phases 0 to 3. The table lists each existing 
 | `pipeline/render.py`, template | Change | `Draft v{version}:` subject prefix, `{date}` in place of `{week_ending}`, the changes and not-applied part of the review section, received dates in the source map, and a variant without the review section for all staff. Golden files are updated deliberately. |
 | `pipeline/runner.py` | Change | Becomes the asynchronous build workflow: get-or-create, `build.lock`, completing moves for a saved edition, and step 8 sending before saving the edition. |
 | `state.py` | Keep | Lock file renamed to `build.lock`. |
-| `mail.py` | Change | Asynchronous, one `GraphMailbox` per mailbox address, and a reply-in-thread operation. |
-| `config.py` | Change | New and renamed sections, listed in [phase 5](#phase-5-editions-and-build-workflow). |
+| `mail.py` | Change | Asynchronous and one `GraphMailbox` per mailbox address in phase 5; reply in a thread in phase 6. |
+| `config.py` | Change | New and renamed sections, added in phases 5 to 7 as each is first used. |
 | `cli.py` | Change | `pulse run` becomes `pulse build`; `pulse schedule` becomes `pulse serve`. |
 | `tests/support.py` | Change | `FakeMailbox` becomes asynchronous and gains reply. |
 
@@ -226,41 +226,50 @@ Exit criteria:
 
 ### Phase 5: editions and build workflow
 
-**Goal:** the build workflow runs asynchronously and creates editions in the edition store, against fakes.
+**Goal:** the build workflow runs asynchronously against the two mailboxes and creates editions in the edition store, and a real build in the dev tenant sends version 1 from the conversation mailbox.
 
-Scope, from the design's editions, build workflow and edition store sections:
+Scope, from the design's editions, build workflow, reviewer email and edition store sections:
 
-- **Asynchronous conversion:** `GraphMailbox`, `FakeMailbox`, the agent runner and the pipeline runner made asynchronous, with the existing tests passing before any behaviour changes.
-- **Configuration:** `mailboxes`, `all_staff`, top-level `timezone`, `schedule.build_cron` (optional) and `poll_interval_minutes`, `send`, `edition.expire_after_days`, `chat`, `state.db_path`, and `chat` and `reviser` in `llm.models`; `all_staff` validated against `allowed_recipient_domains`; example configurations and `.gitignore` updated.
-- **Edition store:** the six tables, transactions, file mode, and deleting closed editions older than `retention_days`.
-- **Editions:** the state machine and its transitions, including withdrawal, as pure functions; send time in both send modes; expiry.
-- **Build workflow:** get-or-create for repeated and concurrent requests, "build in progress" when `build.lock` is held, completing moves for a saved edition even while it is open, received dates on items, item IDs for excluded records, step 8 sending before saving the edition, and the empty-build rules.
-- **Rendering:** the reviewer email changes and the all-staff variant listed in [changes from the scheduled pipeline](#changes-from-the-scheduled-pipeline), with golden files updated.
-- **Command line:** `pulse build` and `pulse build --dry-run`, replacing `pulse run`.
-- **Failure handling:** the build rows of the design's failure table, with a failure injected at each step boundary.
+- **Asynchronous conversion:** `GraphMailbox`, `FakeMailbox`, the agent runner, the pipeline runner and the command line made asynchronous, with the existing tests passing before any behaviour changes.
+- **Configuration:** `mailbox` replaced by `mailboxes`, with the submissions and conversation addresses; `schedule` replaced by a top-level `timezone`; `state.db_path`; `subject_template` using `{date}`; the example configurations, the local dev configuration and `.gitignore` updated.
+- **Mailboxes:** one `GraphMailbox` per mailbox address. The build lists and moves messages in the submissions mailbox and sends from the conversation mailbox.
+- **Edition store:** the `editions`, `versions`, `items` and `messages` tables, one transaction per write, file mode `0600`, and deleting closed editions older than `retention_days`.
+- **Build workflow:** get-or-create for repeated and concurrent requests; "build in progress" when `build.lock` is held; completing the moves of a build whose edition is saved, even while that edition is open; the trigger and, for a reviewer request, the requesting reviewer passed in and recorded on the edition and in the version 1 history note; sender names and received dates on items; item IDs for excluded records; step 8 sending version 1 and then saving the edition in one transaction; the empty-build rules; `--dry-run` creating no edition and sending and moving nothing.
+- **Check:** every entry references an included item, now that excluded records have item IDs.
+- **Reviewer email:** the subject `Draft v{version}:` followed by `subject_template`, with `{date}` as the edition's creation date in `timezone`; received dates in the source map; sent from the conversation mailbox to `reviewers` with no `replyTo`, so replies reach Pulse; the golden file updated.
+- **Command line:** `pulse build` and `pulse build --dry-run`, replacing `pulse run`. A created edition, a returned open edition, "build in progress" and an empty build are each logged and exit with status 0; a failed build exits with status 1.
+- **README:** the local setup and commands changed to `pulse build`, including the conversation mailbox.
+- **Failure handling:** the build rows of the design's failure table, other than reporting to a reviewer, which is phase 6, and operator alerts, which are phase 8.
 
 Exit criteria:
 
-- a pipeline test runs the corpus through a build, creates an edition with version 1, and a second request returns the same edition without sending;
-- the crash-recovery tests pass against the new failure table;
-- `uv run --env-file .env pulse build --dry-run` works against the dev tenant as the README documents.
+- a pipeline test runs the corpus through a build and asserts that version 1 is emailed from the conversation mailbox to `reviewers` with no `replyTo`, that the edition holds its items, its excluded records with item IDs, version 1 and the history note, and that every snapshot message is moved; a second request returns the same edition and sends nothing, and a request while the lock is held returns "build in progress";
+- a failure injected at each step boundary, including between sending version 1 and saving the edition, leaves the mailboxes, manifest and edition store as the failure table describes, and the next build recovers;
+- the rendered reviewer email is agreed as the new golden file;
+- following the README in the dev tenant, `pulse build --dry-run` and then `pulse build` run against test submissions: version 1 arrives at the test user from the conversation mailbox, the messages move to the right folders, and a second `pulse build` returns the open edition and sends nothing.
 
 ### Phase 6: conversation offline
 
 **Goal:** the whole review conversation, from feedback to the all-staff send, runs against scripted models, fake mailboxes and a controlled clock.
 
-Scope, from the design's conversation, chat agent, revise and periodic check sections:
+Scope, from the design's editions, conversation, chat agent, revise, reviewer email and periodic check sections:
 
-- **Reviser:** the agent, its output type and checks, restoring excluded records by item ID, and the check and judge steps treating feedback as a source, with one regeneration.
-- **Chat agent:** the seven tools, with the caller, the reviewer's message and the edition passed as dependencies; the `approve` checks, including `approve v{version}` in the reviewer's own message; withdrawal by tool and by revision; each tool recording its effect as it happens; the instruction rules; text output, with no reply allowed in the email channel.
+- **Configuration:** `all_staff`, validated against `allowed_recipient_domains`; `send`; `edition.expire_after_days`; `chat.max_attempts`; `chat` and `reviser` in `llm.models`, added with their agents.
+- **Edition store:** the `feedback` and `handled_messages` tables.
+- **Editions:** the remaining transitions (new version, approve, withdraw, discard, send and expire) as pure functions; send time in both send modes; expiry.
+- **Reviser:** the agent, its output type and checks, restoring excluded records by item ID, and the check and judge steps treating reviewer feedback as a source, with one regeneration.
+- **Chat agent:** the seven tools, with the caller, the reviewer's message, the channel and the edition passed as dependencies; `build_newsletter` calling the build workflow and reporting a failed or empty build; the `approve` checks, including `approve v{version}` in the reviewer's own message; withdrawal by tool and by revision, refused once `send_started` is recorded; `revise_draft` emailing the new version only in a LibreChat run; each tool recording its effect as it happens; the instruction rules; text output, with no reply allowed in the email channel.
 - **Conversation runner:** the per-edition lock, loading history from the store, appending `new_messages()`, runs with no open edition, and appending nothing on failure.
-- **Email channel:** polling the conversation inbox, the reviewer and automatic-reply checks, `handled_messages`, reply-all to `reviewers` only carrying any new version, and `chat.max_attempts`.
-- **Periodic check:** send timing, the approval re-check, `send_started` and its alert, `replyTo` set to the submissions mailbox, and expiry.
+- **Email channel:** polling the conversation inbox; the reviewer and automatic-reply checks, moving failures to `Rejected`; recording feedback and `handled_messages`; reply-all to `reviewers` only, carrying any new version; `chat.max_attempts`, after which the message is moved to `Rejected`.
+- **Mailbox:** reply in a thread added to `Mailbox`, `FakeMailbox` and `GraphMailbox`, with mocked HTTP tests for `GraphMailbox` and the interface tests run against both.
+- **Periodic check:** send timing, the approval re-check, `send_started`, the send to `all_staff` with `replyTo` set to the submissions mailbox, marking the edition sent, no resend after `send_started` without `sent`, and expiry.
+- **Emails:** the review section's changes and feedback not applied; the newsletter without the review section; the notices to `reviewers` that a send was cancelled, that an edition was closed unsent, and that a newsletter was sent.
 
 Exit criteria:
 
-- a scenario test runs build, email feedback, revision, approval, withdrawal, a second approval and the periodic check, and asserts one email to `all_staff` containing the approved version;
-- tests show that submission text asking for approval cannot record one, and that tool refusals and `send_started` handling behave as designed;
+- a scenario test runs build, email feedback, revision, approval, withdrawal, a second approval and the periodic check, and asserts exactly one email to `all_staff`, containing the approved version and with `replyTo` set to the submissions mailbox, and the notices to `reviewers` along the way;
+- a test shows that a chat agent run calling `approve` without `approve v{version}` in the reviewer's message records nothing, and that submission text cannot supply it;
+- tests cover each tool refusal, a message from a non-reviewer, an automatic reply, `chat.max_attempts`, expiry, and `send_started` without `sent`;
 - a test confirms that no code path other than the periodic check can send to `all_staff`.
 
 ### Phase 7: live channels
@@ -269,15 +278,17 @@ Exit criteria:
 
 Scope:
 
-- **Graph:** the reply-in-thread operation in `GraphMailbox`, with mocked HTTP tests, the interface tests run against both mailboxes, and a live reply in the dev tenant confirming it stays in the reviewer's thread and reaches only `reviewers`.
-- **Chat endpoint:** the chat completions route on FastAPI, answering streamed and non-streamed requests, with progress notes in streamed responses, the bearer token check and `X-User-Email`; tested live through the dev agentgateway route, confirming the `backendAuth` bearer token and `X-User-Email` arrive as the design expects.
-- **`pulse serve`:** Uvicorn, the scheduler polling every `poll_interval_minutes`, the optional build cron and the periodic check, on one event loop.
+- **Chat endpoint:** `chat.port` and `chat.gateway_key_env` in configuration; the chat completions route on FastAPI, answering streamed and non-streamed requests, with progress notes in streamed responses; the bearer token check; the reviewer taken from `X-User-Email`; only the newest user message used. Tested offline against the route, then live through the dev agentgateway route once the LibreChat connection work has registered it.
+- **`pulse serve`:** `schedule.build_cron` (optional) and `poll_interval_minutes` in configuration; Uvicorn, the scheduler polling the conversation mailbox and running the periodic check every `poll_interval_minutes`, and the optional build cron, on one event loop; the cron library chosen and recorded in the technology choices table.
+- **Graph:** a live reply in the dev tenant.
 - **Agent quality:** instructions for the chat agent and reviser, tuned through the dev gateway; the `live` test extended with a scripted reviewer conversation.
-- **README:** the local setup for the second mailbox and the chat endpoint.
+- **README:** the local setup for `pulse serve` and the chat endpoint.
 
 Exit criteria:
 
-- in the dev environment, following the README, a reviewer requests a draft in LibreChat, gives feedback by email and in LibreChat, approves it, and the test distribution list receives the newsletter once;
+- following the README in the dev environment, a reviewer requests a draft in LibreChat, gives feedback by email and in LibreChat, approves it, and the test distribution list receives the newsletter once;
+- the email replies stay in the reviewer's thread and reach only `reviewers`;
+- through the dev agentgateway route, the `backendAuth` bearer token and `X-User-Email` arrive as the design expects, and a request without the bearer token is rejected;
 - a reviewer has read the revisions and replies and confirmed their quality.
 
 ### Phase 8: operations
@@ -288,13 +299,13 @@ Scope:
 
 - `pulse serve` as the container entrypoint, listening on `chat.port`;
 - on `SIGTERM`, finishing the current step or agent run, saving state and exiting;
-- operator alerts from the conversation mailbox for every alerting row of the failure table;
+- operator alerts from the conversation mailbox for every alerting row of the failure table: an invalid model response in a build, a gateway error in a scheduled build, an email reaching `chat.max_attempts`, and `send_started` without `sent`; if an alert cannot be sent, the error is logged;
 - the container reading configuration and the certificate from mounted paths, both gateway credentials from the environment, and writing the edition store and run artefacts to a mounted volume;
 - the README's deployment section, including the production requirements in the design: `RequireSenderAuthenticationEnabled` on both mailboxes, the all-staff list's sender restriction, the gateway route to the chat endpoint, and Entra ID sign-in for LibreChat.
 
 Exit criteria:
 
-- the container runs unattended in the dev environment through a scheduled build, an expiry and a scheduled send, including one forced failure and one `SIGTERM` during a build and during a chat run, all of which recover;
+- the container runs unattended in the dev environment, with `send.mode: scheduled` and `edition.expire_after_days: 1`, through a scheduled build, an expiry and a scheduled send, including one forced failure and one `SIGTERM` during a build and during a chat run, all of which recover;
 - the operator alert arrives for the forced failure;
 - the container is set up and run by following the README.
 

@@ -7,8 +7,9 @@ CLAUDE.md
 .env
 config.yaml
 
-# Run artefacts
+# Run artefacts and edition store
 runs/
+state/
 
 # Python and tooling
 .venv/

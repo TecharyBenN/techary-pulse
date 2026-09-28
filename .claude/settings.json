@@ -4,7 +4,8 @@
       "Read(**/*.pem)",
       "Read(**/*.pfx)",
       "Read(**/.env)",
-      "Read(runs/**)"
+      "Read(runs/**)",
+      "Read(state/**)"
     ]
   }
 }

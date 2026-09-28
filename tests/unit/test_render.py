@@ -3,12 +3,17 @@ from pathlib import Path
 
 from pulse.config import load_config
 from pulse.models import Draft
-from pulse.pipeline.render import Review, render_email, subject
+from pulse.pipeline.render import Review, render_email, reviewer_subject, subject
 
 
 def test_subject_uses_run_date(config_dir: Path) -> None:
     config = load_config(config_dir / "config.example.yaml")
-    assert subject(config, date(2026, 9, 25)) == "Pulse: week ending 25 September 2026"
+    assert subject(config, date(2026, 9, 25)) == "Pulse: 25 September 2026"
+
+
+def test_reviewer_subject_prefixes_the_version(config_dir: Path) -> None:
+    config = load_config(config_dir / "config.example.yaml")
+    assert reviewer_subject(config, 1, date(2026, 9, 25)) == "Draft v1: Pulse: 25 September 2026"
 
 
 def test_model_and_email_text_is_escaped(config_dir: Path) -> None:

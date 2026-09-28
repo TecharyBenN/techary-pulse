@@ -10,8 +10,9 @@ graph:
   certificate_path: /path/outside/repository/pulse-dev.pem
   max_retries: 5
 
-mailbox:
-  address: pulse@devtenant.onmicrosoft.com
+mailboxes:
+  submissions: pulse@devtenant.onmicrosoft.com
+  conversation: pulseagent@devtenant.onmicrosoft.com
   processed_folder: Processed
   rejected_folder: Rejected
 
@@ -29,14 +30,12 @@ allowed_recipient_domains:
   - devtenant.onmicrosoft.com
 allowed_sensitivity_labels: []
 
-schedule:
-  cron: "*/30 * * * *"
-  timezone: Europe/London
+timezone: Europe/London
 
 limits:
   max_words: 400
 
-subject_template: "Pulse: week ending {week_ending}"
+subject_template: "Pulse: {date}"
 
 headline_title: "Headline of the week"
 
@@ -62,6 +61,9 @@ llm:
     consolidator: gateway-mid-model
     drafter: gateway-mid-model
     judge: gateway-mid-model
+
+state:
+  db_path: ./state/pulse.db
 
 run_artefacts_dir: ./runs
 retention_days: 90

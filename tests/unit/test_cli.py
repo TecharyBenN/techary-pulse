@@ -11,11 +11,11 @@ def test_help_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:
         main(["--help"])
 
     assert exit_info.value.code == 0
-    assert "run" in capsys.readouterr().out
+    assert "build" in capsys.readouterr().out
 
 
 def test_invalid_config_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    code = main(["run", "--config", str(tmp_path / "missing.yaml")])
+    code = main(["build", "--config", str(tmp_path / "missing.yaml")])
 
     assert code == EXIT_FAILED
     entry = json.loads(capsys.readouterr().out.splitlines()[-1])
@@ -32,11 +32,11 @@ def test_schedule_reports_not_implemented(
     assert messages == ["configuration loaded", "command not implemented yet"]
 
 
-def test_run_without_the_certificate_fails_cleanly(
+def test_build_without_the_certificate_fails_cleanly(
     config_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code = main(["run", "--dry-run", "--config", str(config_dir / "config.example.yaml")])
+    code = main(["build", "--dry-run", "--config", str(config_dir / "config.example.yaml")])
 
     assert code == EXIT_FAILED
     last = json.loads(capsys.readouterr().out.splitlines()[-1])
-    assert last["message"] == "run failed" and last["error_type"] == "FileNotFoundError"
+    assert last["message"] == "build failed" and last["error_type"] == "FileNotFoundError"

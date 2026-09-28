@@ -9,6 +9,11 @@ CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 
 @pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@pytest.fixture
 def config_dir() -> Path:
     """The repository's example configuration directory."""
     return CONFIG_DIR
