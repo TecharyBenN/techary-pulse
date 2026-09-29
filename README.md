@@ -2,7 +2,7 @@
 
 Techary Pulse turns staff updates emailed to a Microsoft 365 submissions mailbox into a newsletter. An orchestrator agent drafts each newsletter, discusses it with reviewers over email or LibreChat, revises it from their feedback and, once a reviewer approves it, sends it to an all-staff distribution list. This README covers what Pulse needs to run and how to work on it. Behaviour is defined in the [design document](docs/techary-pulse-design.md), and delivery is planned in the [development plan](docs/development-plan.md).
 
-Pulse is being rebuilt to the current design, and none of its commands work yet. The development plan sets out the order in which they arrive.
+Pulse is being rebuilt to the current design. So far, `pulse serve` runs the chat endpoint, where reviewers talk to the orchestrator; the orchestrator has no tools yet. The development plan sets out the order in which the rest arrives.
 
 ## How it works
 
@@ -46,7 +46,7 @@ A container runtime on a server with outbound access to `graph.microsoft.com`, `
 - `/etc/pulse/pulse.pem`, the certificate and its private key;
 - `/var/lib/pulse/state`, a writable directory for the store.
 
-The files under `/etc/pulse` must be readable only by the account that runs the container.
+The files under `/etc/pulse` must be readable only by the account that runs the container. The container runs `pulse serve --config /config/config.yaml`, so `config.yaml` is mounted at `/config/config.yaml`, and `state.db_path` points into the mounted state directory.
 
 ## Configuration
 
@@ -70,3 +70,22 @@ Development needs [uv](https://docs.astral.sh/uv/), which installs the Python ve
 | `docker build -t techary-pulse .` | Build the container image |
 
 Run format, lint, type check and tests before every commit, and after every upgrade.
+
+### Running Pulse locally
+
+Copy [config/config.dev.example.yaml](config/config.dev.example.yaml) to `config.yaml` and fill in the dev tenant and gateway values. Put `PULSE_LLM_API_KEY` and `PULSE_CHAT_GATEWAY_KEY` in `.env`, then start the chat endpoint:
+
+```sh
+uv run --env-file .env pulse serve
+```
+
+Pulse reads `./config.yaml` unless `--config` names another file. It listens on `chat.port`, which must be free on the machine. To check the endpoint, send a non-streamed request, then the same request with `"stream": true` and `curl -N`, which returns progress notes and the reply as server-sent events ending in `data: [DONE]`:
+
+```sh
+set -a; . ./.env; set +a
+curl -s localhost:<chat.port>/v1/chat/completions \
+  -H "Authorization: Bearer $PULSE_CHAT_GATEWAY_KEY" \
+  -H "X-User-Email: <reviewer address from config.yaml>" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "pulse", "messages": [{"role": "user", "content": "Hello"}]}'
+```

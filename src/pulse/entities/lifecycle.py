@@ -17,7 +17,8 @@ Weekday = Literal["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 
 _WEEKDAYS: tuple[Weekday, ...] = get_args(Weekday)
 _HH_MM = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
-_CLOSED: tuple[State, ...] = ("sent", "abandoned")
+# A newsletter in any other state is open.
+CLOSED_STATES: tuple[State, ...] = ("sent", "abandoned")
 _NO_APPROVAL = {"approved_version": None, "approver": None, "approved_at": None, "send_time": None}
 
 
@@ -191,7 +192,7 @@ def _require_reviewer(caller: str | None, reviewers: Sequence[str]) -> str:
 
 
 def _require_changeable(newsletter: Newsletter) -> None:
-    if newsletter.state in _CLOSED:
+    if newsletter.state in CLOSED_STATES:
         raise Refusal(f"the newsletter is {newsletter.state}")
     if newsletter.send_started:
         raise Refusal("the send has started")

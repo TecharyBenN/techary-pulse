@@ -15,4 +15,4 @@ COPY --from=build /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 USER pulse
 ENTRYPOINT ["pulse"]
-CMD ["schedule", "--config", "/config/config.yaml"]
+CMD ["serve", "--config", "/config/config.yaml"]

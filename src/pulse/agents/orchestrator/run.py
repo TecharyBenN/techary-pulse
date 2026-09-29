@@ -1,0 +1,180 @@
+"""The entry point for every channel: one reviewer message in, the reply or no reply out."""
+
+import asyncio
+import logging
+import time
+from collections.abc import Awaitable, Callable, Sequence
+from datetime import timedelta
+
+from pydantic_ai import Agent, AgentRun, CallToolsNode, UsageLimits
+from pydantic_ai.exceptions import AgentRunError, UnexpectedModelBehavior
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    ModelMessage,
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    ToolReturnPart,
+)
+
+from pulse.agents.orchestrator.agent import NO_REPLY, user_prompt
+from pulse.entities.conversation import ReviewerMessage
+from pulse.entities.errors import PulseError, RunFailed
+from pulse.entities.store import HistoryRow, Store
+
+Progress = Callable[[str], Awaitable[None]]
+
+_INVALID_FINISH_REASONS = ("length", "content_filter")
+
+_log = logging.getLogger(__name__)
+
+
+async def _no_progress(note: str) -> None:
+    """For channels that show no progress notes."""
+
+
+class _History:
+    """The open newsletter's conversation history, saving each step as it is added.
+
+    With no open newsletter, the history starts empty and nothing is saved.
+    """
+
+    def __init__(self, store: Store, newsletter_id: str | None, rows: Sequence[HistoryRow]) -> None:
+        self._store = store
+        self.newsletter_id = newsletter_id
+        self.messages = [
+            m for row in rows for m in ModelMessagesTypeAdapter.validate_json(row.data)
+        ]
+        # The message whose run saved the latest step.
+        self.owner = rows[-1].message_id if rows else None
+
+    def unfinished(self) -> bool:
+        """Whether the latest run stopped before its final response."""
+        last = self.messages[-1] if self.messages else None
+        return isinstance(last, ModelRequest) or (
+            isinstance(last, ModelResponse) and bool(last.tool_calls)
+        )
+
+    async def add(self, message_id: str, message: ModelMessage) -> None:
+        self.messages.append(message)
+        self.owner = message_id
+        if self.newsletter_id is not None:
+            data = ModelMessagesTypeAdapter.dump_json([message])
+            await self._store.append_history(self.newsletter_id, message_id, data)
+
+
+class Orchestrator:
+    """Runs the orchestrator for each reviewer message, one run at a time, in arrival order."""
+
+    def __init__(
+        self,
+        agent: Agent[None, str],
+        store: Store,
+        max_tool_calls: int,
+        max_run_time: timedelta,
+    ) -> None:
+        self._agent = agent
+        self._store = store
+        self._max_tool_calls = max_tool_calls
+        self._max_run_time = max_run_time
+        # asyncio.Lock wakes its waiters first in, first out, which keeps arrival order.
+        self._lock = asyncio.Lock()
+
+    async def handle(
+        self, message: ReviewerMessage, on_progress: Progress = _no_progress
+    ) -> str | None:
+        """Return the reply, or None when the message needs none; raise RunFailed on failure."""
+        async with self._lock:
+            started = time.monotonic()
+            newsletter = await self._store.get_open_newsletter()
+            newsletter_id = newsletter.newsletter_id if newsletter else None
+            fields: dict[str, object] = {
+                "conversation_id": newsletter_id,
+                "message_id": message.message_id,
+                "channel": message.channel,
+            }
+            try:
+                async with asyncio.timeout(self._max_run_time.total_seconds()):
+                    reply = await self._converse(message, newsletter_id, on_progress)
+            except (AgentRunError, TimeoutError, PulseError) as error:
+                fields |= {"outcome": "failed", "error_type": type(error).__name__}
+                _log.info("orchestrator_run", extra=fields | {"duration_ms": _ms_since(started)})
+                raise RunFailed("the orchestrator run did not complete") from error
+            no_reply = reply.strip() == NO_REPLY
+            fields["outcome"] = "no_reply" if no_reply else "reply"
+            _log.info("orchestrator_run", extra=fields | {"duration_ms": _ms_since(started)})
+            return None if no_reply else reply
+
+    async def _converse(
+        self, message: ReviewerMessage, newsletter_id: str | None, on_progress: Progress
+    ) -> str:
+        rows: list[HistoryRow] = []
+        if newsletter_id is not None:
+            await self._store.record_feedback(newsletter_id, message)
+            rows = await self._store.load_history(newsletter_id)
+        history = _History(self._store, newsletter_id, rows)
+        if history.unfinished() and history.owner is not None:
+            owner = history.owner
+            reply = await self._run(None, owner, history, on_progress)
+            # A retried message is complete once its own run is; a different message still runs.
+            if owner == message.message_id:
+                return reply
+        return await self._run(user_prompt(message), message.message_id, history, on_progress)
+
+    async def _run(
+        self, prompt: str | None, message_id: str, history: _History, on_progress: Progress
+    ) -> str:
+        """Run the agent once; with no prompt, resume the unfinished run in the history."""
+        # A resumed run starts from the step it resumes from, which is already saved.
+        skip_step = prompt is None
+        async with self._agent.iter(
+            prompt,
+            message_history=list(history.messages),
+            conversation_id=history.newsletter_id,
+            usage_limits=UsageLimits(tool_calls_limit=self._max_tool_calls, request_limit=None),
+        ) as run:
+            async for node in run:
+                if Agent.is_model_request_node(node) or Agent.is_call_tools_node(node):
+                    step = (
+                        node.request if Agent.is_model_request_node(node) else node.model_response
+                    )
+                    if not skip_step:
+                        await history.add(message_id, step)
+                    skip_step = False
+                if Agent.is_call_tools_node(node):
+                    await _call_tools(node, run, history.newsletter_id, on_progress)
+        result = run.result
+        if result is None or result.response.finish_reason in _INVALID_FINISH_REASONS:
+            raise UnexpectedModelBehavior("the final response was truncated or refused")
+        return result.output
+
+
+async def _call_tools(
+    node: CallToolsNode[None, str],
+    run: AgentRun[None, str],
+    newsletter_id: str | None,
+    on_progress: Progress,
+) -> None:
+    """Run the node's tool calls, sending a progress note and a log entry for each."""
+    started: dict[str, float] = {}
+    async with node.stream(run.ctx) as events:
+        async for event in events:
+            if isinstance(event, FunctionToolCallEvent):
+                started[event.part.tool_call_id] = time.monotonic()
+                await on_progress(f"Running {event.part.tool_name}")
+            elif isinstance(event, FunctionToolResultEvent):
+                part = event.part
+                _log.info(
+                    "tool_call",
+                    extra={
+                        "conversation_id": newsletter_id,
+                        "tool": part.tool_name,
+                        "outcome": "returned" if isinstance(part, ToolReturnPart) else "retry",
+                        "duration_ms": _ms_since(started.pop(part.tool_call_id)),
+                    },
+                )
+
+
+def _ms_since(started: float) -> int:
+    return round((time.monotonic() - started) * 1000)
