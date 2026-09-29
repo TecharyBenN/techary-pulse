@@ -37,3 +37,15 @@ class GraphError(PulseError):
 
 class EditionStoreError(PulseError):
     """The edition store rejected a write, such as a duplicate item ID."""
+
+
+class EditionRefused(PulseError):
+    """An edition transition was refused because its preconditions were not met."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class ConversationError(PulseError):
+    """A chat agent run failed: the gateway or a tool raised. Nothing is appended to history."""

@@ -78,3 +78,7 @@ class AgentRunner:
     ) -> list[OutputT]:
         """Run one call per input in parallel, in input order; raises as ``run`` does."""
         return list(await asyncio.gather(*(self.run(agent, data) for data in inputs)))
+
+    def model(self, name: str) -> Model:
+        """Return the configured or stand-in model for an agent name, such as the chat agent's."""
+        return self._models[name]

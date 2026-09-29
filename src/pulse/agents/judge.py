@@ -9,12 +9,13 @@ class Judge(Agent[JudgeInput, JudgeResult]):
     output_type = JudgeResult
     INSTRUCTIONS = """\
 You check a draft of Techary Pulse, the internal staff newsletter, against the consolidated
-items it was written from. You receive the draft and the items as JSON.
+items it was written from. You receive the draft, the items and any reviewer feedback for this
+edition as JSON.
 
 - For the intro, set `supported` to `true` only if everything it says is supported by the facts
-  of the items.
+  of the items or the feedback.
 - For each entry, return its `item_id` and set `supported` to `true` only if everything its text
-  says is supported by the facts of that item.
+  says is supported by the facts of that item or the feedback.
 - When `supported` is `false`, give the claim that is not supported in `reason`. When it is
   `true`, leave `reason` empty.
 

@@ -383,8 +383,9 @@ The edition store is a SQLite database at `state.db_path`, on the mounted volume
 | Table | Contents |
 | --- | --- |
 | `editions` | Edition ID, build ID, state, trigger, created time, current version, approved version, approver, approval time, send time, `send_started`, sent time and closed time |
-| `versions` | Each version's draft, headline, included item IDs, check results, creator and creation time |
+| `versions` | Each version's draft, headline, included item IDs, check results, changes, feedback not applied, creator and creation time |
 | `items` | Each edition's consolidated items and excluded records, each with an item ID and source message IDs |
+| `sources` | Each build's snapshot messages with their outcome; included and excluded messages in full, rejected messages by subject only |
 | `feedback` | Each reviewer message: reviewer, channel, text and received time |
 | `messages` | Each chat agent run's new messages, serialised, in order, by edition |
 | `handled_messages` | IDs of conversation mailbox messages seen, each with its attempt count and whether it has been handled |

@@ -19,6 +19,8 @@ mailboxes:
 reviewers:
   - testuser@devtenant.onmicrosoft.com
 
+all_staff: all-staff-test@devtenant.onmicrosoft.com
+
 operator_alerts:
   - testuser@devtenant.onmicrosoft.com
 
@@ -31,6 +33,12 @@ allowed_recipient_domains:
 allowed_sensitivity_labels: []
 
 timezone: Europe/London
+
+send:
+  mode: on_approval
+
+chat:
+  max_attempts: 3
 
 limits:
   max_words: 400
@@ -61,6 +69,8 @@ llm:
     consolidator: gateway-mid-model
     drafter: gateway-mid-model
     judge: gateway-mid-model
+    reviser: gateway-mid-model
+    chat: gateway-mid-model
 
 state:
   db_path: ./state/pulse.db

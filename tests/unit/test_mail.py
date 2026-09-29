@@ -77,6 +77,10 @@ async def test_send_is_accepted(mailbox: Mailbox) -> None:
     await mailbox.send(EMAIL)
 
 
+async def test_reply_is_accepted(mailbox: Mailbox) -> None:
+    await mailbox.reply("m1", EMAIL.to, EMAIL.html)
+
+
 # Graph specifics.
 
 
@@ -130,6 +134,28 @@ async def test_send_omits_reply_to_when_empty(config: Config) -> None:
     graph = FakeGraph([])
     await graph_mailbox(config, graph).send(EMAIL_NO_REPLY_TO)
     assert "replyTo" not in graph.sent[0]
+
+
+async def test_reply_replaces_recipients_and_sets_the_html_body(config: Config) -> None:
+    graph = FakeGraph(MESSAGES)
+    await graph_mailbox(config, graph).reply("m1", EMAIL.to, EMAIL.html)
+    reply = graph.replies[0]
+    assert reply["source_message_id"] == "m1"
+    assert reply["toRecipients"] == [{"emailAddress": {"address": "r@techary.ai"}}]
+    assert reply["ccRecipients"] == []
+    assert reply["body"] == {"contentType": "HTML", "content": "<p>x</p>"}
+
+
+async def test_reply_requests_create_reply_patch_and_send_in_order(config: Config) -> None:
+    graph = FakeGraph(MESSAGES)
+    await graph_mailbox(config, graph).reply("m1", EMAIL.to, EMAIL.html)
+    methods = [(r.method, r.url.path.rsplit("/", 1)[-1]) for r in graph.requests]
+    assert methods == [
+        ("POST", "createReplyAll"),
+        ("PATCH", "reply-m1"),
+        ("POST", "send"),
+    ]
+    assert all('IdType="ImmutableId"' in r.headers["Prefer"] for r in graph.requests)
 
 
 async def test_throttling_waits_for_retry_after_then_succeeds(config: Config) -> None:

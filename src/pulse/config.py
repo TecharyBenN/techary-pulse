@@ -1,7 +1,8 @@
 """Configuration model and loader."""
 
+from datetime import time as TimeOfDay
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
@@ -60,18 +61,45 @@ class LlmConfig(_Model):
     models: dict[str, str]
 
 
+Weekday = Literal["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+
+
+class SendConfig(_Model):
+    mode: Literal["on_approval", "scheduled"]
+    day: Weekday | None = None
+    time: TimeOfDay | None = None
+
+    @model_validator(mode="after")
+    def _scheduled_needs_day_and_time(self) -> Self:
+        if self.mode == "scheduled" and (self.day is None or self.time is None):
+            raise ValueError("send.day and send.time are required when send.mode is scheduled")
+        return self
+
+
+class EditionConfig(_Model):
+    expire_after_days: int | None = None
+
+
+class ChatConfig(_Model):
+    max_attempts: int = 3
+
+
 class Config(_Model):
     """Contents of ``config.yaml``."""
 
     graph: GraphConfig
     mailboxes: MailboxesConfig
     reviewers: list[str]
+    all_staff: str
     operator_alerts: list[str]
     allowed_sender_domains: list[str]
     allowed_senders: list[str] = []
     allowed_recipient_domains: list[str]
     allowed_sensitivity_labels: list[str] = []
     timezone: str
+    send: SendConfig
+    edition: EditionConfig = EditionConfig()
+    chat: ChatConfig = ChatConfig()
     limits: LimitsConfig
     subject_template: str
     headline_title: str
@@ -102,7 +130,16 @@ class Config(_Model):
                     raise ValueError(
                         f"{field} address {address!r} is outside allowed_recipient_domains"
                     )
+        if domain_of(self.all_staff) not in allowed:
+            raise ValueError(
+                f"all_staff address {self.all_staff!r} is outside allowed_recipient_domains"
+            )
         return self
+
+
+def is_reviewer(config: Config, address: str) -> bool:
+    """Whether ``address`` is in ``reviewers``, compared exactly but ignoring case."""
+    return address.strip().lower() in {r.strip().lower() for r in config.reviewers}
 
 
 def load_config(path: Path) -> Config:

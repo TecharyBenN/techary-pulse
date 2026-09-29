@@ -1,19 +1,32 @@
-"""Test stand-ins: the fake mailbox, scripted models and message builders."""
+"""Test stand-ins: the fake mailbox, scripted models, message builders and a seeded edition."""
 
 import json
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pulse.models import Message, OutgoingEmail
+from pulse.errors import GraphError
+from pulse.models import Draft, Edition, Message, OutgoingEmail, Version
+from pulse.store import EditionStore, ItemRow, SourceRow
+
+REVIEWER = "reviewer@techary.ai"
+JUDGE_PASS = {"intro": {"supported": True, "reason": ""}, "entries": []}
 
 
-class MailboxFailure(Exception):
-    """Raised by the fake to simulate a mailbox failure."""
+class MailboxFailure(GraphError):
+    """Raised by the fake to simulate a mailbox failure, as GraphMailbox raises GraphError."""
+
+
+@dataclass(frozen=True)
+class Reply:
+    message_id: str
+    to: list[str]
+    html: str
 
 
 class FakeMailbox:
@@ -21,6 +34,7 @@ class FakeMailbox:
         self.inbox: dict[str, Message] = {message.id: message for message in messages}
         self.folders: dict[str, list[str]] = {}
         self.sent: list[OutgoingEmail] = []
+        self.replies: list[Reply] = []
         self.fail_send = False
         self.fail_move_after: int | None = None
         self._moves = 0
@@ -43,6 +57,11 @@ class FakeMailbox:
         if self.fail_send:
             raise MailboxFailure("send failed")
         self.sent.append(email)
+
+    async def reply(self, message_id: str, to: list[str], html: str) -> None:
+        if self.fail_send:
+            raise MailboxFailure("send failed")
+        self.replies.append(Reply(message_id, to, html))
 
 
 def scripted(responses: Iterable[Any]) -> FunctionModel:
@@ -69,6 +88,24 @@ def answering(fn: Callable[[str], Any]) -> FunctionModel:
         )
         response = fn(str(prompt))
         return ModelResponse(parts=[TextPart(json.dumps(response))])
+
+    return FunctionModel(respond)
+
+
+def calling(*steps: tuple[str, dict[str, Any]] | str) -> FunctionModel:
+    """A model that makes each tool call in `steps` in order, then returns the last as text.
+
+    Each step is either `(tool_name, args)`, to call a tool, or a plain string, the final reply.
+    """
+    remaining = list(steps)
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        step = remaining.pop(0)
+        if isinstance(step, str):
+            return ModelResponse(parts=[TextPart(step)])
+        name, args = step
+        call_id = f"call-{len(messages)}-{name}"
+        return ModelResponse(parts=[ToolCallPart(tool_name=name, args=args, tool_call_id=call_id)])
 
     return FunctionModel(respond)
 
@@ -106,8 +143,10 @@ class FakeGraph:
         self.inbox: list[Message] = list(messages)
         self.folders: dict[str, dict[str, Any]] = {}
         self.sent: list[dict[str, Any]] = []
+        self.replies: list[dict[str, Any]] = []
         self.requests: list[httpx.Request] = []
         self.injected: list[httpx.Response] = []
+        self._reply_drafts: dict[str, dict[str, Any]] = {}
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -159,4 +198,124 @@ class FakeGraph:
         if request.method == "POST" and path.endswith("/sendMail"):
             self.sent.append(json.loads(request.content)["message"])
             return httpx.Response(202)
+        if request.method == "POST" and path.endswith("/createReplyAll"):
+            message_id = path.split("/")[-2]
+            reply_id = f"reply-{message_id}"
+            self._reply_drafts[reply_id] = {"source_message_id": message_id}
+            return httpx.Response(201, json={"id": reply_id})
+        if request.method == "PATCH" and path.split("/")[-1] in self._reply_drafts:
+            reply_id = path.split("/")[-1]
+            self._reply_drafts[reply_id].update(json.loads(request.content))
+            return httpx.Response(200, json={"id": reply_id})
+        if request.method == "POST" and path.endswith("/send") and not path.endswith("/sendMail"):
+            reply_id = path.split("/")[-2]
+            self.replies.append(self._reply_drafts[reply_id])
+            return httpx.Response(202)
         return httpx.Response(404, json={"error": {"code": "NotFound"}})
+
+
+def at(day: int, hour: int = 9, minute: int = 0) -> datetime:
+    """A UTC time in September 2026, the month the tests are set in."""
+    return datetime(2026, 9, day, hour, minute, tzinfo=UTC)
+
+
+# A seeded edition: one included item from m01 and one record from m02 excluded for sensitivity.
+ITEM_ROWS = [
+    ItemRow(
+        item_id="item-1",
+        kind="item",
+        record={
+            "item_id": "item-1",
+            "category": "customer_win",
+            "facts": ["Signed Northwind Retail"],
+            "people": ["Priya Shah"],
+            "source_message_ids": ["m01"],
+            "sender_names": ["Priya Shah"],
+            "received_dates": [at(20).isoformat()],
+        },
+        source_message_ids=["m01"],
+    ),
+    ItemRow(
+        item_id="excluded-1",
+        kind="excluded",
+        record={
+            "message_id": "m02",
+            "is_update": True,
+            "exclusion_reason": None,
+            "category": "team_news",
+            "summary": "A promotion.",
+            "facts": ["Ben Carter was promoted"],
+            "people": ["Ben Carter"],
+            "sensitivity": [{"type": "personal", "evidence": "mentions a promotion"}],
+            "reason": "sensitivity",
+        },
+        source_message_ids=["m02"],
+    ),
+]
+SOURCE_ROWS = [
+    SourceRow(
+        message_id="m01",
+        outcome="included",
+        subject="Signed Northwind Retail",
+        sender_name="Priya Shah",
+        sender_address="priya.shah@techary.ai",
+        received_at=at(20),
+        body="I signed Northwind Retail.",
+    ),
+    SourceRow(
+        message_id="m02",
+        outcome="excluded",
+        subject="Ben's promotion",
+        sender_name="Ben Carter",
+        sender_address="ben.carter@techary.ai",
+        received_at=at(21),
+        body="I was promoted to senior service desk analyst.",
+    ),
+]
+DRAFT_V1 = Draft.model_validate(
+    {
+        "intro": "A good week.",
+        "sections": [
+            {
+                "category": "customer_win",
+                "entries": [
+                    {
+                        "item_id": "item-1",
+                        "text": "Priya Shah signed Northwind Retail.",
+                        "people": ["Priya Shah"],
+                    }
+                ],
+            }
+        ],
+    }
+)
+
+
+async def seed_edition(
+    store: EditionStore, created_at: datetime | None = None, draft: Draft = DRAFT_V1
+) -> str:
+    """Create the seeded edition, at version 1, and return its ID."""
+    version = Version(
+        number=1,
+        draft=draft,
+        headline="A strong week",
+        item_ids=["item-1"],
+        check_results=[],
+        creator="pulse",
+        created_at=created_at or at(22),
+    )
+    edition = await store.create_edition(
+        build_id="b1", trigger="command", items=ITEM_ROWS, sources=SOURCE_ROWS, version=version
+    )
+    return edition.id
+
+
+async def approve_seeded(store: EditionStore, **changes: Any) -> Edition:
+    """Mark the open edition approved at version 1 by REVIEWER, with any further changes."""
+    edition = await store.open_edition()
+    assert edition is not None
+    approved = edition.model_copy(
+        update={"state": "approved", "approved_version": 1, "approver": REVIEWER, **changes}
+    )
+    await store.update_edition(approved)
+    return approved

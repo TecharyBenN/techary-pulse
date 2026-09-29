@@ -7,6 +7,7 @@ from pulse.models import Draft, ExtractRecord
 from pulse.pipeline.rules import (
     exclude,
     exclusion_reason,
+    is_automatic_reply,
     prefilter,
     rejection_reason,
     sections_in_order,
@@ -67,6 +68,19 @@ def test_allowed_senders_limits_contributors_when_set(config: Config) -> None:
     limited = config.model_copy(update={"allowed_senders": ["tom.evans@techary.ai"]})
     assert rejection_reason(message(), limited) == "sender is not allowed"
     assert rejection_reason(message(sender_address="Tom.Evans@techary.ai"), limited) is None
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{"auto-submitted": "auto-replied"}, {"x-auto-response-suppress": "All"}],
+)
+def test_is_automatic_reply_true(headers: dict[str, str]) -> None:
+    assert is_automatic_reply(message(headers=headers)) is True
+
+
+@pytest.mark.parametrize("headers", [{}, {"auto-submitted": "no"}])
+def test_is_automatic_reply_false(headers: dict[str, str]) -> None:
+    assert is_automatic_reply(message(headers=headers)) is False
 
 
 def test_prefilter_splits_messages(config: Config) -> None:

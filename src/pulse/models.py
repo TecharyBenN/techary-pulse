@@ -135,10 +135,49 @@ class DraftInput(_Frozen):
 class JudgeInput(_Frozen):
     draft: Draft
     items: list[ItemWithSenders]
+    feedback: list[str] = []
+
+
+class NotApplied(BaseModel):
+    """Feedback the reviser could not apply, with the reason; stored unchanged in the version."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    feedback: str
+    reason: str
+
+
+class ExcludedForReviser(_Frozen):
+    """An excluded record as given to the reviser, so it can restore one by item ID."""
+
+    item_id: str
+    record: ExtractRecord
+    reason: str
+    sender_names: list[str]
+
+
+class ReviseInput(_Frozen):
+    draft: Draft
+    headline: str
+    items: list[ItemWithSenders]
+    excluded: list[ExcludedForReviser]
+    feedback: list[str]
+    instruction: str
+    reviewer_message: str
+    failures: list[str]
+
+
+class Revision(_Output):
+    headline: str
+    draft: Draft
+    item_ids: list[str]
+    changes: list[str]
+    not_applied: list[NotApplied]
 
 
 EditionState = Literal["in_review", "approved", "sent", "expired", "discarded"]
 Trigger = Literal["schedule", "reviewer", "command"]
+Channel = Literal["email", "librechat"]
 
 
 class Edition(_Frozen):
@@ -153,3 +192,37 @@ class Edition(_Frozen):
     trigger: Trigger
     created_at: datetime
     current_version: int
+    approved_version: int | None = None
+    approver: str | None = None
+    approved_at: datetime | None = None
+    send_at: datetime | None = None
+    send_started: bool = False
+    sent_at: datetime | None = None
+    closed_at: datetime | None = None
+
+
+class Version(_Frozen):
+    """One draft version of an edition."""
+
+    number: int
+    draft: Draft
+    headline: str
+    item_ids: list[str]
+    check_results: list[str]
+    changes: list[str] = []
+    not_applied: list[NotApplied] = []
+    creator: str
+    created_at: datetime
+
+
+class Feedback(_Frozen):
+    reviewer: str
+    channel: Channel
+    text: str
+    received_at: datetime
+
+
+class ReviewerMessage(Feedback):
+    """A reviewer message from either channel: the feedback it is saved as, and who sent it."""
+
+    reviewer_name: str

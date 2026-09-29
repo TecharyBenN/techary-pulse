@@ -37,6 +37,10 @@ class Mailbox(Protocol):
         """Send an email from the mailbox."""
         ...
 
+    async def reply(self, message_id: str, to: list[str], html: str) -> None:
+        """Reply-all in the thread of `message_id`, addressed to `to` only, with `html`."""
+        ...
+
 
 def load_certificate(path: Path) -> tuple[str, str]:
     """Return the private key as PEM and the certificate's SHA-1 thumbprint from ``path``.
@@ -75,6 +79,10 @@ def msal_token(graph: GraphConfig) -> Callable[[], str]:
         return str(result["access_token"])
 
     return token
+
+
+def _recipients(addresses: list[str]) -> list[dict[str, Any]]:
+    return [{"emailAddress": {"address": a}} for a in addresses]
 
 
 def _message(raw: dict[str, Any]) -> Message:
@@ -165,14 +173,25 @@ class GraphMailbox:
         )
 
     async def send(self, email: OutgoingEmail) -> None:
-        def recipients(addresses: list[str]) -> list[dict[str, Any]]:
-            return [{"emailAddress": {"address": a}} for a in addresses]
-
         message: dict[str, Any] = {
             "subject": email.subject,
             "body": {"contentType": "HTML", "content": email.html},
-            "toRecipients": recipients(email.to),
+            "toRecipients": _recipients(email.to),
         }
         if email.reply_to:
-            message["replyTo"] = recipients(email.reply_to)
+            message["replyTo"] = _recipients(email.reply_to)
         await self._request("POST", f"{self._user}/sendMail", json={"message": message})
+
+    async def reply(self, message_id: str, to: list[str], html: str) -> None:
+        created = await self._request("POST", f"{self._user}/messages/{message_id}/createReplyAll")
+        reply_id = created.json()["id"]
+        await self._request(
+            "PATCH",
+            f"{self._user}/messages/{reply_id}",
+            json={
+                "toRecipients": _recipients(to),
+                "ccRecipients": [],
+                "body": {"contentType": "HTML", "content": html},
+            },
+        )
+        await self._request("POST", f"{self._user}/messages/{reply_id}/send")

@@ -1,17 +1,16 @@
-"""Runs the build workflow's nine steps in order."""
+"""The build workflow's nine steps, and the revision workflow that shares its check loop."""
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
-from zoneinfo import ZoneInfo
 
 from pydantic import TypeAdapter
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 
-from pulse.agents import Consolidator, Drafter, Extractor, Judge
+from pulse.agents import Consolidator, Drafter, Extractor, Judge, Reviser
 from pulse.agents.runner import AgentRunner
 from pulse.config import Config
 from pulse.errors import LockHeldError, StopRequested
@@ -22,16 +21,19 @@ from pulse.models import (
     Draft,
     DraftInput,
     Edition,
+    ExcludedForReviser,
     ExtractRecord,
     ItemWithSenders,
     JudgeInput,
     Message,
-    OutgoingEmail,
+    ReviseInput,
+    Revision,
     Trigger,
+    Version,
 )
 from pulse.pipeline.check import check_draft, judge_failures
-from pulse.pipeline.render import Review, Source, render_email, reviewer_subject
-from pulse.pipeline.rules import Exclusion, Rejection, exclude, prefilter
+from pulse.pipeline.render import version_email
+from pulse.pipeline.rules import Exclusion, exclude, prefilter
 from pulse.state import (
     Manifest,
     Outcome,
@@ -41,7 +43,7 @@ from pulse.state import (
     run_lock,
     save_manifest,
 )
-from pulse.store import EditionStore, ItemRow
+from pulse.store import EditionStore, ItemRow, SourceRow
 
 log = logging.getLogger("pulse.pipeline")
 
@@ -49,6 +51,8 @@ Clock = Callable[[], datetime]
 
 # The build's creator of record for version 1; later versions are created by a reviewer.
 BUILDER = "pulse"
+
+DraftAttempt = Callable[[list[str]], Awaitable[tuple[Draft, str, Sequence[ItemWithSenders]]]]
 
 
 @dataclass(frozen=True)
@@ -97,52 +101,36 @@ async def _resume(root: Path, submissions: Mailbox, config: Config, store: Editi
     save_manifest(run_dir, manifest)
 
 
-def _source(message: Message) -> Source:
-    return Source(
-        sender=message.sender_name, subject=message.subject, received_at=message.received_at
-    )
-
-
-def _review(
-    failures: list[str],
-    rejected: list[Rejection],
-    excluded: list[Exclusion],
-    passed: list[Message],
-    items: list[ItemWithSenders],
-    draft: Draft,
-    messages: dict[str, Message],
-) -> Review:
-    entry_text = {e.item_id: e.text for s in draft.sections for e in s.entries}
-    return Review(
-        check_failures=failures,
-        sensitivity_exclusions=[
-            (_source(messages[e.record.message_id]), s.type, s.evidence)
-            for e in excluded
-            for s in e.record.sensitivity
-        ],
-        other_exclusions=[
-            (_source(messages[e.record.message_id]), e.reason)
-            for e in excluded
-            if e.reason != "sensitivity"
-        ],
-        rejected_subjects=[r.message.subject for r in rejected],
-        with_attachments=[_source(m) for m in passed if m.has_attachments],
-        source_map=[
-            (
-                entry_text.get(item.item_id, item.item_id),
-                [_source(messages[i]) for i in item.source_message_ids],
-            )
-            for item in items
-        ],
-    )
-
-
 def _history_note(version: int, trigger: Trigger, requested_by: str | None) -> ModelRequest:
     """The conversation history entry recording that a version was sent."""
     text = f"Pulse note: version {version} was sent to reviewers."
     if trigger == "reviewer" and requested_by:
         text += f" {requested_by} asked for this build."
     return ModelRequest(parts=[UserPromptPart(content=text)])
+
+
+def _source_rows(snapshot: list[Message], outcomes: dict[str, Outcome]) -> dict[str, SourceRow]:
+    """Each snapshot message with its outcome, in received order.
+
+    A rejected message keeps only its subject.
+    """
+    rows = {}
+    for message in snapshot:
+        status = outcomes[message.id].status
+        if status == "rejected":
+            rows[message.id] = SourceRow(message.id, "rejected", message.subject)
+        else:
+            rows[message.id] = SourceRow(
+                message_id=message.id,
+                outcome=status,
+                subject=message.subject,
+                sender_name=message.sender_name,
+                sender_address=message.sender_address,
+                received_at=message.received_at,
+                body=message.body,
+                has_attachments=message.has_attachments,
+            )
+    return rows
 
 
 def _item_rows(items: list[ItemWithSenders], excluded: list[Exclusion]) -> list[ItemRow]:
@@ -165,6 +153,38 @@ def _item_rows(items: list[ItemWithSenders], excluded: list[Exclusion]) -> list[
         for n, exclusion in enumerate(excluded, start=1)
     ]
     return rows
+
+
+async def draft_check_loop(
+    agents: AgentRunner,
+    draft_once: DraftAttempt,
+    sources: Mapping[str, SourceRow],
+    config: Config,
+    feedback: Sequence[str] = (),
+    on_attempt: Callable[[int, Draft, list[str]], None] = lambda *_: None,
+) -> tuple[Draft, str, list[str]]:
+    """Run the draft, judge and check loop (steps 6 and 7), regenerating once on failure.
+
+    `draft_once` receives the previous attempt's failures (empty on the first attempt) and
+    returns the next draft, headline and the items it was written from, so a build's fixed
+    items and a revision's items, which can change with each attempt, work the same way.
+    Returns the final draft, headline and failures (empty if the draft passed).
+    """
+    failures: list[str] = []
+    draft: Draft
+    headline: str
+    for attempt in (1, 2):
+        draft, headline, items = await draft_once(failures)
+        verdict = await agents.run(
+            Judge(), JudgeInput(draft=draft, items=list(items), feedback=list(feedback))
+        )
+        failures = check_draft(draft, headline, items, sources, config, feedback) + judge_failures(
+            verdict
+        )
+        on_attempt(attempt, draft, failures)
+        if not failures:
+            break
+    return draft, headline, failures
 
 
 async def run_build(
@@ -253,6 +273,7 @@ async def run_build(
                 )
             log.info("extract", extra={"included": len(included), "excluded": len(excluded)})
             boundary("extract")
+            sources = _source_rows(snapshot, manifest.outcomes)
 
             if not included:
                 # Empty build: no newsletter; rejected messages still move, everything else stays.
@@ -282,34 +303,41 @@ async def run_build(
             boundary("consolidate")
 
             # Steps 6 and 7: draft and check, regenerating once on failure.
-            failures: list[str] = []
-            for attempt in (1, 2):
+            async def drafter_attempt(
+                failures: list[str],
+            ) -> tuple[Draft, str, Sequence[ItemWithSenders]]:
                 draft = await agents.run(
                     Drafter(),
                     DraftInput(items=items, max_words=config.limits.max_words, failures=failures),
                 )
-                verdict = await agents.run(Judge(), JudgeInput(draft=draft, items=items))
-                failures = check_draft(draft, headline, items, messages, config) + judge_failures(
-                    verdict
-                )
+                return draft, headline, items
+
+            def on_attempt(attempt: int, draft: Draft, failures: list[str]) -> None:
                 artefacts.write_json(f"draft-{attempt}.json", draft)
                 artefacts.write_text(
                     f"checks-{attempt}.json",
                     TypeAdapter(list[str]).dump_json(failures, indent=2).decode(),
                 )
                 log.info("draft checked", extra={"attempt": attempt, "failures": len(failures)})
-                if not failures:
-                    break
+
+            draft, headline, failures = await draft_check_loop(
+                agents, drafter_attempt, sources, config, on_attempt=on_attempt
+            )
             boundary("check")
 
             # Step 8: send and save version 1.
-            review = _review(failures, rejected, excluded, passed, items, draft, messages)
-            html = render_email(config, headline, draft, review)
-            artefacts.write_text("reviewer-email.html", html)
-            run_date = now.astimezone(ZoneInfo(config.timezone)).date()
-            email = OutgoingEmail(
-                to=config.reviewers, subject=reviewer_subject(config, 1, run_date), html=html
+            version = Version(
+                number=1,
+                draft=draft,
+                headline=headline,
+                item_ids=[item.item_id for item in items],
+                check_results=failures,
+                creator=BUILDER,
+                created_at=now,
             )
+            item_rows = _item_rows(items, excluded)
+            email = version_email(config, now, version, item_rows, sources)
+            artefacts.write_text("reviewer-email.html", email.html)
             if not dry_run:
                 await conversation.send(email)
                 log.info("draft sent", extra={"reviewers": len(config.reviewers)})
@@ -323,13 +351,9 @@ async def run_build(
             edition = await store.create_edition(
                 build_id=manifest.run_id,
                 trigger=trigger,
-                created_at=now,
-                items=_item_rows(items, excluded),
-                draft=draft.model_dump(mode="json"),
-                headline=headline,
-                included_item_ids=[item.item_id for item in items],
-                check_results=failures,
-                creator=BUILDER,
+                items=item_rows,
+                sources=list(sources.values()),
+                version=version,
                 history=[_history_note(1, trigger, requested_by)],
             )
 
@@ -340,3 +364,121 @@ async def run_build(
             return BuildResult("created", edition, manifest, artefacts.dir)
     except LockHeldError:
         return BuildResult("in_progress", None, None, None)
+
+
+# The revision workflow, run by the chat agent's revise_draft tool.
+
+
+def _category_for(item_id: str, draft: Draft) -> str:
+    return next((s.category for s in draft.sections for e in s.entries if e.item_id == item_id), "")
+
+
+def _sender_names(message_id: str, sources: Mapping[str, SourceRow]) -> list[str]:
+    name = sources[message_id].sender_name
+    return [name] if name else []
+
+
+def _excluded_for_reviser(row: ItemRow, sources: Mapping[str, SourceRow]) -> ExcludedForReviser:
+    record, reason = row.excluded()
+    return ExcludedForReviser(
+        item_id=row.item_id,
+        record=record,
+        reason=reason,
+        sender_names=_sender_names(record.message_id, sources),
+    )
+
+
+def _item(row: ItemRow, sources: Mapping[str, SourceRow], draft: Draft) -> ItemWithSenders:
+    """The item a draft was written from.
+
+    A restored excluded record takes the category of the section the draft placed it in.
+    """
+    if row.kind == "item":
+        return ItemWithSenders.model_validate(row.record)
+    record, _ = row.excluded()
+    received_at = sources[record.message_id].received_at
+    return ItemWithSenders(
+        item_id=row.item_id,
+        category=_category_for(row.item_id, draft),
+        facts=record.facts,
+        people=record.people,
+        source_message_ids=[record.message_id],
+        sender_names=_sender_names(record.message_id, sources),
+        received_dates=[received_at] if received_at else [],
+    )
+
+
+def _items(
+    item_ids: Sequence[str],
+    rows: Mapping[str, ItemRow],
+    sources: Mapping[str, SourceRow],
+    draft: Draft,
+) -> list[ItemWithSenders]:
+    return [_item(rows[item_id], sources, draft) for item_id in item_ids]
+
+
+async def run_revision(
+    config: Config,
+    store: EditionStore,
+    agents: AgentRunner,
+    edition_id: str,
+    new_version_number: int,
+    instruction: str,
+    reviewer_message: str,
+    creator: str,
+    now: datetime,
+) -> tuple[Version, list[str]]:
+    """Revise an edition's current draft from reviewer feedback.
+
+    Runs the reviser, then the same judge and check loop as a build, with reviewer feedback
+    counting as a source, regenerating once on failure. A second failing revision is still
+    returned, with its failures listed first in the review section.
+
+    Raises:
+        AgentResponseError: If the reviser returns an invalid response twice.
+        GatewayError: If the gateway fails.
+    """
+    current = await store.current_version(edition_id)
+    rows = {row.item_id: row for row in await store.items(edition_id)}
+    sources = await store.sources(edition_id)
+    feedback = [f.text for f in await store.feedback(edition_id)]
+
+    included = _items(current.item_ids, rows, sources, current.draft)
+    revise_input = ReviseInput(
+        draft=current.draft,
+        headline=current.headline,
+        items=included,
+        excluded=[
+            _excluded_for_reviser(row, sources)
+            for row in rows.values()
+            if row.kind == "excluded" and row.item_id not in current.item_ids
+        ],
+        feedback=feedback,
+        instruction=instruction,
+        reviewer_message=reviewer_message,
+        failures=[],
+    )
+    reviser = Reviser(config.sections)
+    latest: list[Revision] = []
+
+    async def draft_once(failures: list[str]) -> tuple[Draft, str, Sequence[ItemWithSenders]]:
+        result = await agents.run(reviser, revise_input.model_copy(update={"failures": failures}))
+        latest.append(result)
+        return result.draft, result.headline, _items(result.item_ids, rows, sources, result.draft)
+
+    draft, headline, failures = await draft_check_loop(
+        agents, draft_once, sources, config, feedback=feedback
+    )
+    revision = latest[-1]
+    version = Version(
+        number=new_version_number,
+        draft=draft,
+        headline=headline,
+        item_ids=revision.item_ids,
+        check_results=failures,
+        changes=revision.changes,
+        not_applied=revision.not_applied,
+        creator=creator,
+        created_at=now,
+    )
+    return version, failures

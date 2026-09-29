@@ -16,6 +16,8 @@ mailboxes:
 reviewers:
   - reviewer@techary.ai
 
+all_staff: all-staff@techary.ai
+
 operator_alerts:
   - operator@techary.ai
 
@@ -27,6 +29,17 @@ allowed_recipient_domains:
 allowed_sensitivity_labels: []
 
 timezone: Europe/London
+
+send:
+  mode: scheduled
+  day: MON
+  time: "09:00"
+
+edition:
+  expire_after_days: 7
+
+chat:
+  max_attempts: 3
 
 limits:
   max_words: 400
@@ -57,6 +70,8 @@ llm:
     consolidator: gateway-mid-model
     drafter: gateway-mid-model
     judge: gateway-mid-model
+    reviser: gateway-mid-model
+    chat: gateway-mid-model
 
 state:
   db_path: /var/lib/pulse/state/pulse.db

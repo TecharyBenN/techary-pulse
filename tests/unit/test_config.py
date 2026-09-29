@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from pulse.config import domain_of, load_config
+from pulse.config import domain_of, is_reviewer, load_config
 from pulse.errors import ConfigError
 
 WriteConfig = Callable[[dict[str, Any]], Path]
@@ -22,6 +22,22 @@ def test_recipient_outside_allowed_domains_is_rejected(
 ) -> None:
     example_config[field] = ["someone@example.com"]
     with pytest.raises(ConfigError, match="outside allowed_recipient_domains"):
+        load_config(write_config(example_config))
+
+
+def test_all_staff_outside_allowed_domains_is_rejected(
+    example_config: dict[str, Any], write_config: WriteConfig
+) -> None:
+    example_config["all_staff"] = "all-staff@example.com"
+    with pytest.raises(ConfigError, match="outside allowed_recipient_domains"):
+        load_config(write_config(example_config))
+
+
+def test_scheduled_send_mode_without_a_day_is_rejected(
+    example_config: dict[str, Any], write_config: WriteConfig
+) -> None:
+    example_config["send"] = {"mode": "scheduled"}
+    with pytest.raises(ConfigError, match=r"send\.day and send\.time are required"):
         load_config(write_config(example_config))
 
 
@@ -73,3 +89,20 @@ def test_domain_of(address: str, domain: str) -> None:
 def test_domain_of_rejects_non_addresses(address: str) -> None:
     with pytest.raises(ValueError, match="not an email address"):
         domain_of(address)
+
+
+def test_scheduled_send_day_and_time_are_validated_at_load(
+    example_config: dict[str, Any], write_config: WriteConfig
+) -> None:
+    example_config["send"] = {"mode": "scheduled", "day": "Monday", "time": "09:00"}
+    with pytest.raises(ConfigError, match=r"send\.day"):
+        load_config(write_config(example_config))
+    example_config["send"] = {"mode": "scheduled", "day": "MON", "time": "9 o'clock"}
+    with pytest.raises(ConfigError, match=r"send\.time"):
+        load_config(write_config(example_config))
+
+
+def test_is_reviewer_ignores_case_and_surrounding_space(config_dir: Path) -> None:
+    config = load_config(config_dir / "config.example.yaml")
+    assert is_reviewer(config, " Reviewer@TECHARY.ai ")
+    assert not is_reviewer(config, "reviewer@techary.ai.example.com")

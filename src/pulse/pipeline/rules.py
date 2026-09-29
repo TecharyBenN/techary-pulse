@@ -20,6 +20,18 @@ def label_ids(message: Message) -> set[str]:
     return {m.lower() for m in _ENABLED_LABEL.findall(message.headers.get("msip_labels", ""))}
 
 
+def is_automatic_reply(message: Message) -> bool:
+    """Whether `message` carries the headers of an automatic reply.
+
+    Used by the pre-filter, for the submissions mailbox, and by the email channel, for the
+    conversation mailbox, so automatic replies can never start a loop in either.
+    """
+    auto_submitted = message.headers.get("auto-submitted")
+    if auto_submitted is not None and auto_submitted.strip().lower() != "no":
+        return True
+    return "x-auto-response-suppress" in message.headers
+
+
 def rejection_reason(message: Message, config: Config) -> str | None:
     """Return why the pre-filter rejects the message, or None if it passes."""
     sender = message.sender_address.strip().lower()
@@ -35,10 +47,7 @@ def rejection_reason(message: Message, config: Config) -> str | None:
     allowed_labels = {label.strip().lower() for label in config.allowed_sensitivity_labels}
     if label_ids(message) - allowed_labels:
         return "sensitivity label is not allowed"
-    auto_submitted = message.headers.get("auto-submitted")
-    if auto_submitted is not None and auto_submitted.strip().lower() != "no":
-        return "automatic reply"
-    if "x-auto-response-suppress" in message.headers:
+    if is_automatic_reply(message):
         return "automatic reply"
     return None
 
