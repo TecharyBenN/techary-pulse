@@ -1,7 +1,7 @@
 [project]
 name = "techary-pulse"
 version = "0.1.0"
-description = "Turns staff updates emailed to a shared mailbox into a weekly draft newsletter for human review."
+description = "Drafts a staff newsletter from emailed updates, discusses it with reviewers and sends it once approved."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pulse = "pulse.cli:main"
+pulse = "pulse.main:main"
 
 [build-system]
 requires = ["uv_build>=0.12.19"]

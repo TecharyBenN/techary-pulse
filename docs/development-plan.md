@@ -16,7 +16,7 @@ Each phase:
 - adds the design's failure handling for what it builds;
 - ends with a review against the engineering principles, PEP 8 and the dependency rule, with every finding fixed;
 - is one commit, made by the user;
-- updates the design if it changes behaviour or code structure, and this plan if it changes a technology.
+- updates the design if it changes behaviour or code structure, this plan if it changes a technology, and the README if it changes how Pulse is run, deployed or developed.
 
 A phase with a live check is complete only when the check has passed against the dev tenant or gateway.
 
@@ -63,9 +63,15 @@ A phase with a live check is complete only when the check has passed against the
 
 ### Phase 0: clean start
 
-The user tags the current commit `pre-rebuild` and creates a branch from it. The first commit on that branch deletes everything under `src/pulse/` and `tests/` except the two email templates and the synthetic corpus, and adds the empty package tree from the design.
+Scope:
 
-Kept: `pyproject.toml`, `uv.lock`, `.python-version`, `Dockerfile`, `.dockerignore`, `.gitignore`, `.claude/settings.json`, `README.md`, `docs/`, `tests/corpus/corpus.yaml`, and `newsletter.html.j2` and `notice.html.j2`, which move to the templates folder under `adapters`. The golden files are deleted and regenerated in phase 6. The example configurations are rewritten in phase 1.
+- delete everything under `src/pulse/` and `tests/` except `tests/corpus/corpus.yaml` and the two email templates, `newsletter.html.j2` and `notice.html.j2`, which move to the templates folder under `adapters`;
+- add the empty package tree from the design;
+- point the `pulse` command in `pyproject.toml` at `pulse.main`, and update the package description;
+- rewrite the README to describe the current design, keeping its deployment requirements, and drop the old commands;
+- once the user has deleted the local `runs/` directory of old run artefacts, remove its rules from `.gitignore` and `.claude/settings.json`.
+
+The golden files are regenerated in phase 6, and the example configurations are rewritten in phase 1. The old code stays in the git history.
 
 Exit criteria: format, lint and type check pass on the empty tree.
 
@@ -93,7 +99,7 @@ Scope:
 - run limits from `orchestrator.max_tool_calls` and `orchestrator.max_run_minutes`;
 - the store interface and the SQLite store, with the `newsletters`, `feedback` and `messages` tables, one transaction per write, and file modes `0600` and `0700`;
 - the HTTP server and chat completions route: the gateway credential check, reviewer identity from `X-User-Email`, the reply to a non-reviewer, only the newest user message taken, streamed responses with progress notes, and non-streamed responses;
-- `pulse serve`, running the HTTP server until stopped.
+- `pulse serve`, running the HTTP server until stopped, and the container's default command changed to `pulse serve`.
 
 Tests seed an open newsletter in the store to cover history, because `start_newsletter` arrives in phase 4.
 

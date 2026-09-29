@@ -7,7 +7,7 @@ CLAUDE.md
 .env
 config.yaml
 
-# Run artefacts and edition store
+# Old run artefacts and the store
 runs/
 state/
 

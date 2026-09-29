@@ -1,14 +1,14 @@
 # Techary Pulse
 
-Techary Pulse is a service that turns staff updates emailed to a Microsoft 365 submissions mailbox into a newsletter. A chat agent drafts each edition, discusses it with human reviewers over email or LibreChat, revises it from their feedback and, once a reviewer approves it, sends it to an all-staff distribution list. This README covers what Pulse needs to run and how to work on it. Behaviour is defined in the [design document](docs/techary-pulse-design.md), and delivery is planned in the [development plan](docs/development-plan.md).
+Techary Pulse turns staff updates emailed to a Microsoft 365 submissions mailbox into a newsletter. An orchestrator agent drafts each newsletter, discusses it with reviewers over email or LibreChat, revises it from their feedback and, once a reviewer approves it, sends it to an all-staff distribution list. This README covers what Pulse needs to run and how to work on it. Behaviour is defined in the [design document](docs/techary-pulse-design.md), and delivery is planned in the [development plan](docs/development-plan.md).
 
-Pulse is under development. The build workflow works today as `pulse build`, which creates a draft edition, if none is open, and emails version 1 to reviewers from the conversation mailbox; `pulse serve` is not implemented, and `pulse schedule` remains its stub until then. The development plan adds the conversation, approval and all-staff send in phases 6 to 8. The running and development instructions below describe what works now.
+Pulse is being rebuilt to the current design, and none of its commands work yet. The development plan sets out the order in which they arrive.
 
 ## How it works
 
-A build reads the messages in the submissions mailbox inbox, rejects anything that is not a genuine update from an allowed sender, and uses a fixed sequence of model calls through an AI gateway to extract, consolidate and draft the updates. Code checks the draft, renders it with a review section listing sensitivity flags, exclusions and sources, and emails it to the configured reviewers. Processed messages then move to the `Processed` or `Rejected` folder. A build runs on a schedule, when a reviewer asks, or from the command line, and at most one edition is open at a time.
+Staff email updates to the submissions mailbox at any time. On a schedule, when a reviewer asks, or when an operator runs `pulse draft`, the orchestrator takes every pending message, has code reject anything that is not from an allowed sender, and uses specialist agents to extract, consolidate and write the updates into a draft. It emails each draft to the reviewers with a review section listing check results, exclusions and sources.
 
-Reviewers reply to the draft by email, or talk to Pulse in LibreChat, with questions, feedback or approval. The chat agent answers, revises the draft and sends each new version to the reviewers. When a reviewer approves the current version, Pulse sends it to the all-staff list straight away or at the next configured send slot. A reviewer can withdraw an approval until the send starts, an unapproved edition expires after a configured period, and a reviewer can discard an edition.
+Reviewers reply by email, or talk to the orchestrator in LibreChat, with questions, feedback or approval. The orchestrator answers, revises the draft and emails each new version. An approved newsletter is sent to the all-staff list at the configured send time, or straight away if that time has passed, and its submissions then move to the `Processed` or `Rejected` folder. A reviewer can withdraw an approval until the send starts, or ask for a newsletter to be abandoned.
 
 ## Deployment requirements
 
@@ -39,49 +39,24 @@ LibreChat reaches Pulse through the gateway as a custom endpoint and passes the 
 
 ### Host
 
-A container runtime on a server with outbound access to `graph.microsoft.com`, `login.microsoftonline.com` and the gateway. The container needs:
+A container runtime on a server with outbound access to `graph.microsoft.com`, `login.microsoftonline.com` and the gateway, accepting connections on `chat.port` from the gateway only. The container needs:
 
 - `/etc/pulse/config.yaml`, copied from [config/config.example.yaml](config/config.example.yaml);
-- `/etc/pulse/pulse.env`, containing `PULSE_LLM_API_KEY=<gateway credential>`;
+- `/etc/pulse/pulse.env`, containing `PULSE_LLM_API_KEY=<gateway credential>` and `PULSE_CHAT_GATEWAY_KEY=<chat endpoint credential>`;
 - `/etc/pulse/pulse.pem`, the certificate and its private key;
-- `/var/lib/pulse/runs`, a writable directory for run artefacts;
-- `/var/lib/pulse/state`, a writable directory for the edition store.
+- `/var/lib/pulse/state`, a writable directory for the store.
 
 The files under `/etc/pulse` must be readable only by the account that runs the container.
 
 ## Configuration
 
-Pulse stops at start-up if any reviewer or alert address is outside `allowed_recipient_domains`.
-
-## Running
-
-```bash
-docker build -t techary-pulse .
-docker run --rm \
-  -v /etc/pulse/config.yaml:/config/config.yaml:ro \
-  -v /etc/pulse/pulse.pem:/run/secrets/pulse.pem:ro \
-  -v /var/lib/pulse/runs:/var/lib/pulse/runs \
-  -v /var/lib/pulse/state:/var/lib/pulse/state \
-  --env-file /etc/pulse/pulse.env \
-  techary-pulse
-```
-
-The container runs `pulse schedule` by default, which is not yet implemented. `pulse build` creates a draft edition, if none is open, and exits; `pulse build --dry-run` runs every step without sending or moving mail.
+Pulse reads `config.yaml`, described in the [design](docs/techary-pulse-design.md#configuration). It stops at start-up if any recipient is outside `allowed_recipient_domains`.
 
 ## Development
 
-Development needs [uv](https://docs.astral.sh/uv/), which installs the Python version and dependencies Pulse uses.
+Development needs [uv](https://docs.astral.sh/uv/), which installs the Python version and dependencies Pulse uses. Development runs against the dev tenant and dev gateway, never the production mailboxes.
 
-To run Pulse locally against the dev tenant:
-
-1. Copy `config/config.dev.example.yaml` to `config.yaml` at the repository root, fill in the dev tenant and gateway values, and set `mailboxes.submissions` and `mailboxes.conversation` to the two dev tenant mailbox addresses.
-2. Put `PULSE_LLM_API_KEY=<dev gateway credential>` in `.env` at the repository root.
-3. Put the dev certificate outside the repository, and set `graph.certificate_path` to its full path.
-4. Run `uv run --env-file .env pulse build --dry-run`.
-
-To run the synthetic test emails through the agents on the dev gateway, after steps 1 and 2, run `uv run --env-file .env pytest -m live -s`. It is a dry run against a fake mailbox, so nothing is sent or moved, and it prints where the reviewer email is saved.
-
-`config.yaml`, `.env`, `*.pem`, `runs/` and `state/` are git-ignored.
+`config.yaml`, `.env`, `*.pem` and `state/` are git-ignored.
 
 | Command | Purpose |
 | --- | --- |
@@ -90,8 +65,8 @@ To run the synthetic test emails through the agents on the dev gateway, after st
 | `uv run ruff check` | Lint |
 | `uv run mypy src tests` | Type check |
 | `uv run pytest` | Run tests; `live` tests are excluded by default |
-| `uv run --env-file .env pytest -m live -s` | Run the synthetic emails through the agents on the dev gateway, as a dry run, and print where the reviewer email is saved |
-| `uv run --env-file .env pulse build --dry-run` | Run one build locally with `./config.yaml` and the credentials in `./.env` |
+| `uv run --env-file .env pytest -m live -s` | Run the tests that call the dev tenant or gateway |
 | `uv lock --upgrade` | Upgrade every dependency to its latest version, then run the checks |
+| `docker build -t techary-pulse .` | Build the container image |
 
 Run format, lint, type check and tests before every commit, and after every upgrade.
