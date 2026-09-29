@@ -26,19 +26,27 @@ allowed_sender_domains:
 allowed_senders: []
 allowed_recipient_domains:
   - techary.ai
-allowed_sensitivity_labels: []
+allowed_sensitivity_labels:
+  - 00000000-0000-0000-0000-000000000000
 
 timezone: Europe/London
+
+schedule:
+  draft_cron: "30 17 * * FRI"
+  poll_interval_minutes: 5
 
 send:
   mode: scheduled
   day: MON
   time: "09:00"
 
-edition:
-  expire_after_days: 7
+orchestrator:
+  max_tool_calls: 40
+  max_run_minutes: 15
 
 chat:
+  port: 8080
+  gateway_key_env: PULSE_CHAT_GATEWAY_KEY
   max_attempts: 3
 
 limits:
@@ -66,15 +74,13 @@ llm:
   base_url: https://gateway.example.internal
   api_key_env: PULSE_LLM_API_KEY
   models:
+    orchestrator: gateway-mid-model
     extractor: gateway-small-model
     consolidator: gateway-mid-model
-    drafter: gateway-mid-model
+    writer: gateway-mid-model
     judge: gateway-mid-model
-    reviser: gateway-mid-model
-    chat: gateway-mid-model
 
 state:
   db_path: /var/lib/pulse/state/pulse.db
 
-run_artefacts_dir: /var/lib/pulse/runs
 retention_days: 90

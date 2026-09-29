@@ -81,7 +81,9 @@ Pulse follows the ports and adapters pattern. Source code dependencies point inw
 src/pulse/
 ├── entities/          Rules and data: submissions and the pre-filter, extract records and the
 │                      exclusion rules, drafts and the draft checks, the newsletter lifecycle,
-│                      and the interfaces the other layers implement
+│                      the specialist agents' output types, which entities extend, Pulse's
+│                      exception types, and the interfaces the other layers implement,
+│                      including the mailbox and the clock
 ├── agents/            Every agent, one folder each
 │   ├── runner.py      Runs any specialist agent: validates its answer and retries once
 │   ├── orchestrator/  agent.py, prompt.md, tools.py, and run.py for one orchestrator run
@@ -92,14 +94,15 @@ src/pulse/
 ├── services/          Code the tools and the scheduler call
 │   ├── operations.py  Start, present, approve, withdraw and abandon: state change, save, email
 │   └── delivery.py    Sends an approved newsletter, moves its submissions, recovers a partial send
-├── adapters/          Microsoft Graph mail, the AI gateway, the SQLite store, and HTML emails with
-│                      their templates
+├── adapters/          Microsoft Graph mail, the AI gateway, the SQLite store, the system clock,
+│                      and HTML emails with their templates
 ├── entrypoints/       The email channel, the LibreChat endpoint, the scheduler and the command line
 ├── config.py          Reading and validating config.yaml
 ├── logging.py         The JSON log format
 └── main.py            Creates the adapters and connects them to the agents, services and entrypoints
 
-tests/                 Mirrors src/pulse/; fakes/ holds the fake mailbox, fake Graph and stand-in models
+tests/                 Mirrors src/pulse/; fakes/ holds the fake mailbox, fake Graph, controlled clock
+                       and stand-in models
 ```
 
 ## Newsletters
@@ -139,8 +142,10 @@ Code applies the pre-filter to every submission. The sender is the address in th
 
 - whose sender domain is not in `allowed_sender_domains`;
 - whose sender is not in `allowed_senders`, when that list is not empty;
-- carrying any sensitivity label whose ID is not in `allowed_sensitivity_labels`, read from the `msip_labels` header; messages with no label are allowed;
+- carrying an enabled sensitivity label whose ID is not in `allowed_sensitivity_labels`; messages with no label are allowed. The `msip_labels` header lists each label's properties as `MSIP_Label_<id>_<property>=<value>` entries separated by semicolons, and a label is enabled when its `Enabled` value is `true`, ignoring case. Label IDs are compared ignoring case. A message whose `msip_labels` header holds an entry not in that form is rejected, because an unreadable header may hide a label;
 - carrying an `Auto-Submitted` header other than `no`, or an `X-Auto-Response-Suppress` header.
+
+Header names are compared ignoring case. A rejected submission records the first rule it fails, in the order above, as `sender_domain`, `sender_not_allowed`, `sensitivity_label` or `automatic_reply`.
 
 Short and empty messages are left to the extractor, because company email signatures make message length unreliable.
 
@@ -296,7 +301,7 @@ Pulse sends every model call to `llm.base_url` in the OpenAI-compatible chat com
 | `category` | One of the configured section categories; `null` for an excluded record |
 | `sensitivity.type` | `commercial` (deal values, margins, pricing, revenue), `personal` (health, family, performance, HR matters; a birthday is newsletter content, not personal), `unannounced` (confidential, draft or not yet announced) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
 
-The extractor states only facts in the message. Code excludes every record that is not an update, is unclear, has no matching category or carries a sensitivity flag, and gives each excluded record an ID so it can be restored.
+The extractor states only facts in the message. Code excludes every record that is not an update, is unclear, has no matching category or carries a sensitivity flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries any sensitivity flag; the record's `exclusion_reason`; `not_an_update`, when `is_update` is `false`; and `no_matching_section`, when `category` is `null`.
 
 ### Consolidate
 
@@ -315,14 +320,14 @@ The extractor states only facts in the message. Code excludes every record that 
 }
 ```
 
-The consolidator merges records describing the same news and writes the headline. Its output checks require every source message ID to come from its input and every input record to appear in exactly one item. Code adds each item's sender names and received dates. The headline is one short line in sentence case.
+The consolidator merges records describing the same news and writes the headline. Item IDs have the form `item-{n}`, numbered from 1. Its output checks require that form, every source message ID to come from its input, and every input record to appear in exactly one item. The `write` tool adds each item's sender names and received dates to the writer's input, from the item's source submissions. The headline is one short line in sentence case.
 
 ### Write
 
 ```json
 {
-  "headline": "A new retail customer and a thank-you to the service desk",
-  "draft": {
+  "content": {
+    "headline": "A new retail customer and a thank-you to the service desk",
     "intro": "A strong week for new customers and some well-earned thanks.",
     "sections": [
       {
@@ -331,9 +336,9 @@ The consolidator merges records describing the same news and writes the headline
           {"item_id": "item-2", "text": "Priya Shah and Tom Evans signed our newest retail customer, with onboarding starting in October.", "people": ["Priya Shah", "Tom Evans"]}
         ]
       }
-    ]
+    ],
+    "item_ids": ["item-2"]
   },
-  "item_ids": ["item-2"],
   "changes": ["Shortened the headline"],
   "not_applied": [
     {"feedback": "Add the contract value", "reason": "The item is excluded for commercial sensitivity"}
@@ -341,7 +346,7 @@ The consolidator merges records describing the same news and writes the headline
 }
 ```
 
-The writer returns a complete draft, the headline, the included item IDs, a list of changes and any feedback it did not apply; the changes and feedback not applied are empty for a first draft. When revising, it can remove items, including by received date, and restore an excluded record. Its output checks require every item ID to be a known item or excluded record, and every entry's item to be in `item_ids`. A restored record takes the category of the section it is placed in.
+The writer returns the complete content (the headline, the intro, the sections and the included item IDs), a list of changes and any feedback it did not apply; the changes and feedback not applied are empty for a first draft. When revising, it can remove items, including by received date, and restore an excluded record. Its output checks require every item ID to be a known item or excluded record, and every entry's item to be in `item_ids`. A restored record takes the category of the section it is placed in.
 
 Code renders the headline under `headline_title`, then the intro, then each section under its configured title, in configuration order, omitting sections with no entries. The draft has no subject: code builds it from `subject_template`. The writer's instructions apply these rules:
 
@@ -355,11 +360,11 @@ Code renders the headline under `headline_title`, then the intro, then each sect
 
 ### Judge
 
-The judge returns, for the intro and each entry, whether its text is supported by the facts of the items and the feedback, and the unsupported claim when it is not.
+The judge returns, for the intro and each entry, whether its text is supported by the facts of the items and the feedback, and the unsupported claim when it is not. Each verdict has a `target`, which is `intro` or the entry's item ID, `supported`, and `claim`, which is `null` when the text is supported.
 
 ## Draft checks
 
-Code checks a draft for these conditions:
+Code checks a draft for these conditions. A source message's text is its subject and body. A word is any run of characters between whitespace. A name or digit sequence matches when it appears anywhere in the text it is checked against, ignoring case.
 
 - the newsletter's visible text, including titles and the headline but not the review section, is at most `max_words` words;
 - no em dashes or en dashes appear;
@@ -369,6 +374,8 @@ Code checks a draft for these conditions:
 - every entry names every sender of its item;
 - every entry references an included item, and every included item appears exactly once;
 - only configured categories appear.
+
+Each check verifies an entry against its item, or against the excluded record when the entry restores one. Each failure names the check, where it occurred (the headline title, the headline, the intro, an entry's item ID, a section's category, or the whole draft for the word count) and the offending detail, such as the name, the digit sequence or the count.
 
 The checks run through `check` and again in `present_draft`. A version can be presented with failures; its reviewer email lists them first.
 
@@ -421,7 +428,7 @@ The store is a SQLite database at `state.db_path`, on the mounted volume. Every 
 | `extract_records` | Each submission's extract record and exclusion outcome, with the ID given to an excluded record |
 | `items` | Each newsletter's current consolidated items and headline |
 | `drafts` | Each newsletter's working draft, and the judge's latest verdicts on it |
-| `versions` | Each presented version's draft, headline, included item IDs, check results, judge verdicts, changes, feedback not applied and creation time |
+| `versions` | Each presented version's content, changes, feedback not applied, judge verdicts, check results and creation time |
 | `feedback` | Each reviewer message: reviewer, channel, text and received time |
 | `messages` | Each orchestrator run's model requests, responses and tool results, serialised, in order, by newsletter |
 | `handled_messages` | IDs of conversation mailbox messages seen, each with its attempt count and whether it has been handled |
@@ -448,6 +455,8 @@ The scoping consists of an Exchange service principal for the app, a management 
 | Move | `POST /users/{mailbox}/messages/{id}/move`, body `{"destinationId": "<folder-id>"}` |
 | Send new message | `POST /users/pulseagent@techary.ai/sendMail` |
 | Reply in thread | `POST /users/pulseagent@techary.ai/messages/{id}/createReplyAll`, then `PATCH` the reply's `toRecipients` to `reviewers` and `ccRecipients` to empty, then `POST /messages/{reply-id}/send` |
+
+Pulse reaches each mailbox through one mailbox interface, with one instance for the submissions mailbox and one for the conversation mailbox. The interface has four operations: list the inbox, move a message to a named folder, send a new message and reply in a thread. Moving finds the folder, and creates it when it is not found. A reply has a plain-text body; every new message is HTML.
 
 Every request sends `Prefer: IdType="ImmutableId"`, so message IDs stay the same when messages move folders. List requests also send `Prefer: outlook.body-content-type="text"`, so bodies are returned as plain text. `uniqueBody` contains only the new content of a message, without quoted replies, and `internetMessageHeaders` supplies the headers used by the pre-filter. Pulse follows `@odata.nextLink` for paging and sorts results in code. On HTTP 429 or 503, Pulse waits for the `Retry-After` interval and retries, up to `graph.max_retries` times.
 
@@ -492,7 +501,7 @@ Deployment requirements, documented in the README and outside the codebase:
 | SIGTERM | Pulse finishes the current tool call or delivery step, saves state and exits. |
 | Graph HTTP 429 or 503 | Pulse waits for the `Retry-After` interval and retries, up to `graph.max_retries`. |
 
-Logs are structured JSON on standard output. Every orchestrator run is logged with its newsletter ID as `conversation_id`, and every tool call with its name, duration and outcome. Logs carry IDs, counts, durations and error types, never email content, reviewer messages or model output. Operator alerts are sent from `pulseagent@techary.ai` to `operator_alerts`; if an alert cannot be sent, Pulse logs the error.
+Logs are JSON objects on standard output, one per line, with `time`, `level` and `event` fields. Every orchestrator run is logged with its newsletter ID as `conversation_id`, and every tool call with its name, duration and outcome. Logs carry IDs, counts, durations and error types, never email content, reviewer messages or model output. Operator alerts are sent from `pulseagent@techary.ai` to `operator_alerts`; if an alert cannot be sent, Pulse logs the error.
 
 ## Commands and packaging
 
@@ -591,7 +600,7 @@ state:
 retention_days: 90
 ```
 
-With `schedule.draft_cron` unset, newsletters start only when a reviewer asks or an operator runs `pulse draft`.
+`send.day` takes `MON` to `SUN` and `send.time` a 24-hour `HH:MM` time; both are required when `send.mode` is `scheduled`, and neither is accepted when it is `on_approval`. Configuration fails to load if it has a key not shown above, if a count, interval, limit or port is not a positive integer, or if two sections share a category. With `schedule.draft_cron` unset, newsletters start only when a reviewer asks or an operator runs `pulse draft`.
 
 ## Development and testing
 
@@ -627,6 +636,7 @@ A synthetic corpus of test submissions is kept for manual runs against the dev t
 | --- | --- |
 | AI gateway | Proxy between Pulse and model providers that holds provider credentials and forwards requests, and that routes LibreChat requests to Pulse. |
 | All-staff list | Distribution list that receives the approved newsletter. |
+| Content | The headline, intro, sections and included items that a working draft or version holds, and that is rendered and sent. |
 | Conversation mailbox | `pulseagent@techary.ai`, used for all reviewer communication and the newsletter send. |
 | Delivery | Scheduled code that sends an approved newsletter and moves its submissions. |
 | Extract record | The facts, people, category and sensitivity flags the extractor finds in one submission. |

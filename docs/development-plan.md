@@ -82,7 +82,7 @@ Scope:
 - `config.py`: every key in the design's configuration, the example configurations in `config/`, recipient validation against `allowed_recipient_domains`, and a model entry for every agent;
 - `logging.py`: the JSON log format;
 - Pulse's exception types;
-- entities, from the design: submissions and the pre-filter, extract records and the exclusion rules, items, drafts and the draft checks, versions, feedback, the newsletter states and transitions, the send time and the approval check;
+- entities, from the design, holding only what the phase 1 rules read and produce: submissions and the pre-filter, the extractor's output and the exclusion rules, content and the draft checks, the newsletter states and transitions, the send time and the approval check; other entities arrive with the phase whose tool first uses them;
 - the mailbox interface, with the operations in the design's Graph operations table, and `FakeMailbox` with the interface tests every mailbox must pass;
 - the clock interface and a controlled clock for tests;
 - a stub `main.py`.

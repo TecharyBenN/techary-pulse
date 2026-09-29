@@ -1,8 +1,10 @@
 # Dev tenant example. Placeholders only: copy to config.yaml outside the
 # repository and fill in the dev tenant values. config.yaml is git-ignored.
 #
-# The dev mailbox accepts external senders, so the Techary work domain is allowed
-# as a sender. Reviewers and alerts go only to the dev tenant's test user.
+# The dev submissions mailbox accepts external senders, so the Techary work
+# domain is allowed as a sender. Reviewers, alerts and the all-staff stand-in
+# are limited to the dev tenant. Newsletters start only when a reviewer asks or
+# an operator runs `pulse draft`, and are sent on approval.
 
 graph:
   tenant_id: 00000000-0000-0000-0000-000000000000
@@ -34,10 +36,19 @@ allowed_sensitivity_labels: []
 
 timezone: Europe/London
 
+schedule:
+  poll_interval_minutes: 5
+
 send:
   mode: on_approval
 
+orchestrator:
+  max_tool_calls: 40
+  max_run_minutes: 15
+
 chat:
+  port: 8080
+  gateway_key_env: PULSE_CHAT_GATEWAY_KEY
   max_attempts: 3
 
 limits:
@@ -62,18 +73,16 @@ sections:
     definition: "A named colleague is being thanked or recognised for their work."
 
 llm:
-  base_url: https://dev-gateway.example.internal
+  base_url: http://localhost:3000
   api_key_env: PULSE_LLM_API_KEY
   models:
+    orchestrator: gateway-mid-model
     extractor: gateway-small-model
     consolidator: gateway-mid-model
-    drafter: gateway-mid-model
+    writer: gateway-mid-model
     judge: gateway-mid-model
-    reviser: gateway-mid-model
-    chat: gateway-mid-model
 
 state:
   db_path: ./state/pulse.db
 
-run_artefacts_dir: ./runs
 retention_days: 90
