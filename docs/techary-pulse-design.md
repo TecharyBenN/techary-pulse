@@ -75,7 +75,7 @@ flowchart LR
 
 ## Code structure
 
-Pulse follows the ports and adapters pattern. Source code dependencies point inward: `entities` imports nothing else from Pulse; `agents` and `services` import `entities`; `adapters` implement the interfaces defined in `entities`; `entrypoints` call `agents` and `services`. Only `main.py` imports everything, because it creates the adapters and connects them.
+Pulse follows the ports and adapters pattern. Source code dependencies point inward: `entities` imports nothing else from Pulse; `services` import `entities`; `agents` import `entities` and `services`, because the tools call the services, and `services` never import `agents`; `adapters` implement the interfaces defined in `entities`; `entrypoints` call `agents` and `services`. Only `main.py` imports everything, because it creates the adapters and connects them.
 
 ```text
 src/pulse/
@@ -302,7 +302,7 @@ Pulse sends every model call to `llm.base_url` in the OpenAI-compatible chat com
 | `category` | One of the configured section categories; `null` for an excluded record |
 | `sensitivity.type` | `commercial` (deal values, margins, pricing, revenue), `personal` (health, family, performance, HR matters; a birthday is newsletter content, not personal), `unannounced` (confidential, draft or not yet announced) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
 
-The extractor states only facts in the message. Code excludes every record that is not an update, is unclear, has no matching category or carries a sensitivity flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries any sensitivity flag; the record's `exclusion_reason`; `not_an_update`, when `is_update` is `false`; and `no_matching_section`, when `category` is `null`.
+The extractor states only facts in the message. Code excludes every record that is not an update, is unclear, has no matching category or carries a sensitivity flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. Extracting a submission again replaces its extract record, which keeps its excluded ID while it stays excluded. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries any sensitivity flag; the record's `exclusion_reason`; `not_an_update`, when `is_update` is `false`; and `no_matching_section`, when `category` is `null`.
 
 ### Consolidate
 
@@ -456,7 +456,7 @@ The scoping consists of an Exchange service principal for the app, a management 
 | Move | `POST /users/{mailbox}/messages/{id}/move`, body `{"destinationId": "<folder-id>"}` |
 | Send new message | `POST /users/pulseagent@techary.ai/sendMail` |
 | Find user | `GET /users/{address}?$select=id`, whose `id` is the user's Entra object ID |
-| Reply in thread | `POST /users/pulseagent@techary.ai/messages/{id}/createReplyAll`, then `PATCH` the reply's `toRecipients` to `reviewers` and `ccRecipients` to empty, then `POST /messages/{reply-id}/send` |
+| Reply in thread | `POST /users/pulseagent@techary.ai/messages/{id}/createReplyAll`, then `PATCH` the reply's `toRecipients` to `reviewers`, `ccRecipients` to empty and `body` to the plain-text reply, then `POST /messages/{reply-id}/send` |
 
 Pulse reaches each mailbox through one mailbox interface, with one instance for the submissions mailbox and one for the conversation mailbox. The interface has four operations: list the inbox, move a message to a named folder, send a new message and reply in a thread. Moving finds the folder, and creates it when it is not found. A reply has a plain-text body; every new message is HTML.
 

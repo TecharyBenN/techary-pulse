@@ -19,3 +19,11 @@ class RunFailed(PulseError):
 
 class InvalidToken(PulseError):
     """A bearer token failed verification."""
+
+
+class MailboxError(PulseError):
+    """A mailbox operation failed; the message names the status, never the content."""
+
+
+class SpecialistFailed(PulseError):
+    """A specialist agent gave no valid response after its retry."""

@@ -45,7 +45,7 @@ def db_path(tmp_path: Path) -> Path:
 async def store(db_path: Path) -> SqliteStore:
     store = SqliteStore(db_path)
     await store.initialise()
-    await store.add_newsletter(make_newsletter())
+    await store.save_start(make_newsletter(), [])
     return store
 
 

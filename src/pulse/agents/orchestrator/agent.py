@@ -4,6 +4,7 @@ from importlib.resources import files
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
+from pydantic_ai.toolsets import AbstractToolset
 
 from pulse.entities.conversation import ReviewerMessage
 
@@ -13,8 +14,10 @@ NO_REPLY = "NO_REPLY"
 INSTRUCTIONS = files(__package__).joinpath("prompt.md").read_text(encoding="utf-8")
 
 
-def build_agent(model: Model) -> Agent[None, str]:
-    return Agent(model, output_type=str, instructions=INSTRUCTIONS, name="orchestrator")
+def build_agent(model: Model, toolset: AbstractToolset[None]) -> Agent[None, str]:
+    return Agent(
+        model, output_type=str, instructions=INSTRUCTIONS, toolsets=[toolset], name="orchestrator"
+    )
 
 
 def user_prompt(message: ReviewerMessage) -> str:

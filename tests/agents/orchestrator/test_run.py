@@ -5,19 +5,22 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
     TextPart,
+    ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.models.function import AgentInfo
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from pulse.adapters.store import SqliteStore
 from pulse.agents.orchestrator.agent import user_prompt
+from pulse.agents.orchestrator.run import Orchestrator
 from pulse.entities.errors import RunFailed
 from pulse.entities.store import HistoryRow
 from tests.fakes.models import (
@@ -43,7 +46,7 @@ def db_path(tmp_path: Path) -> Path:
 async def store(db_path: Path) -> SqliteStore:
     store = SqliteStore(db_path)
     await store.initialise()
-    await store.add_newsletter(make_newsletter())
+    await store.save_start(make_newsletter(), [])
     return store
 
 
@@ -319,3 +322,31 @@ async def test_logs_a_failed_run_with_its_error_type(
 
     run = _logged(caplog, "orchestrator_run")
     assert (run["outcome"], run["error_type"]) == ("failed", "ModelHTTPError")
+
+
+async def test_exchange_that_opens_a_newsletter_becomes_its_history(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "pulse.db"
+    store = SqliteStore(db_path)
+    await store.initialise()
+
+    async def opening_tool() -> str:
+        await store.save_start(make_newsletter("n-9"), [])
+        return "opened"
+
+    model = responses(
+        ModelResponse(parts=[ToolCallPart("opening_tool", {})]), text_response("Started.")
+    )
+    agent = Agent(FunctionModel(model), output_type=str, tools=[opening_tool])
+    orchestrator = Orchestrator(agent, store, 40, timedelta(minutes=15))
+
+    reply = await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))
+
+    assert reply == "Started."
+    history = await store.load_history("n-9")
+    assert [row.message_id for row in history] == ["r01"] * 4
+    assert _prompts([_load(row) for row in history]) == [
+        user_prompt(make_message("r01", text="Please draft a newsletter."))
+    ]
+    assert _feedback_ids(db_path) == ["r01"]

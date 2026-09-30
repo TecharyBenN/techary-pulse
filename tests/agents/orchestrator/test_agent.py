@@ -1,4 +1,5 @@
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.toolsets import FunctionToolset
 
 from pulse.agents.orchestrator.agent import INSTRUCTIONS, NO_REPLY, build_agent, user_prompt
 from tests.messages import REVIEWER, make_message
@@ -9,13 +10,19 @@ def test_instructions_are_loaded_and_name_the_no_reply_answer() -> None:
     assert NO_REPLY in INSTRUCTIONS
 
 
-def test_agent_has_the_instructions_and_no_tools() -> None:
-    model = TestModel()
+def _get_newsletter() -> str:
+    """Summarise the open newsletter."""
+    return "No newsletter is open."
 
-    build_agent(model).run_sync("hello")
+
+def test_agent_offers_the_toolset_and_nothing_else() -> None:
+    model = TestModel(call_tools=[])
+
+    build_agent(model, FunctionToolset([_get_newsletter])).run_sync("hello")
 
     assert model.last_model_request_parameters is not None
-    assert model.last_model_request_parameters.function_tools == []
+    tools = model.last_model_request_parameters.function_tools
+    assert [tool.name for tool in tools] == ["_get_newsletter"]
 
 
 def test_user_prompt_delimits_the_reviewer_text() -> None:

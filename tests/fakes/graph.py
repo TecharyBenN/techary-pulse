@@ -1,0 +1,103 @@
+"""A fake Microsoft Graph for one mailbox, served through httpx.MockTransport."""
+
+import json
+import re
+from collections.abc import Iterable
+from typing import Any
+from urllib.parse import unquote
+
+import httpx
+
+from pulse.adapters.graph import GRAPH_URL
+from pulse.entities.mail import InboundEmail
+
+MAILBOX = "pulse@techary.ai"
+PAGE_SIZE = 2
+
+
+def graph_message(email: InboundEmail) -> dict[str, Any]:
+    """The message as Graph lists it."""
+    return {
+        "id": email.message_id,
+        "from": {"emailAddress": {"name": email.sender_name, "address": email.sender_address}},
+        "subject": email.subject,
+        "receivedDateTime": email.received.isoformat().replace("+00:00", "Z"),
+        "uniqueBody": {"contentType": "text", "content": email.body},
+        "internetMessageHeaders": [{"name": k, "value": v} for k, v in email.headers.items()],
+        "hasAttachments": email.has_attachments,
+    }
+
+
+class FakeGraph:
+    """Holds one mailbox's inbox and folders, and records every request."""
+
+    def __init__(self, inbox: Iterable[InboundEmail] = ()) -> None:
+        self.inbox = [graph_message(email) for email in inbox]
+        self.folders: dict[str, str] = {}
+        self.moved: dict[str, list[str]] = {}
+        self.sent: list[dict[str, Any]] = []
+        self.drafts: dict[str, dict[str, Any]] = {}
+        self.requests: list[httpx.Request] = []
+        # Status codes to answer with, in order, before handling requests normally.
+        self.failures: list[httpx.Response] = []
+
+    def client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(self.handle), base_url=GRAPH_URL)
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if self.failures:
+            return self.failures.pop(0)
+        path = unquote(request.url.path.removeprefix("/v1.0"))
+        prefix = f"/users/{MAILBOX}"
+        if not path.startswith(prefix):
+            return httpx.Response(404)
+        return self._route(request, path.removeprefix(prefix))
+
+    def _route(self, request: httpx.Request, path: str) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        method = request.method
+        if method == "GET" and path == "/mailFolders/inbox/messages":
+            return self._page(request)
+        if method == "GET" and path == "/mailFolders":
+            wanted = re.fullmatch(r"displayName eq '(.*)'", request.url.params["$filter"])
+            assert wanted is not None
+            name = wanted.group(1).replace("''", "'")
+            found = [{"id": self.folders[name]}] if name in self.folders else []
+            return httpx.Response(200, json={"value": found})
+        if method == "POST" and path == "/mailFolders":
+            folder_id = f"folder-{len(self.folders) + 1}"
+            self.folders[body["displayName"]] = folder_id
+            return httpx.Response(201, json={"id": folder_id})
+        if method == "POST" and path == "/sendMail":
+            self.sent.append(body["message"])
+            return httpx.Response(202)
+        if match := re.fullmatch(r"/messages/([^/]+)/(move|createReplyAll|send)", path):
+            return self._message_action(match.group(1), match.group(2), body)
+        if method == "PATCH" and (match := re.fullmatch(r"/messages/([^/]+)", path)):
+            self.drafts[match.group(1)] |= body
+            return httpx.Response(200, json={"id": match.group(1)})
+        return httpx.Response(404)
+
+    def _message_action(self, message_id: str, action: str, body: dict[str, Any]) -> httpx.Response:
+        if action == "send":
+            self.sent.append(self.drafts.pop(message_id))
+            return httpx.Response(202)
+        if not any(message["id"] == message_id for message in self.inbox):
+            return httpx.Response(404)
+        if action == "createReplyAll":
+            reply_id = f"reply-{len(self.drafts) + 1}"
+            self.drafts[reply_id] = {"replyTo": message_id, "ccRecipients": [{"x": 1}]}
+            return httpx.Response(201, json={"id": reply_id})
+        folder = next(name for name, id_ in self.folders.items() if id_ == body["destinationId"])
+        self.inbox = [message for message in self.inbox if message["id"] != message_id]
+        self.moved.setdefault(folder, []).append(message_id)
+        return httpx.Response(201, json={"id": message_id})
+
+    def _page(self, request: httpx.Request) -> httpx.Response:
+        skip = int(request.url.params.get("$skip", "0"))
+        page = self.inbox[skip : skip + PAGE_SIZE]
+        body: dict[str, Any] = {"value": page}
+        if skip + PAGE_SIZE < len(self.inbox):
+            body["@odata.nextLink"] = str(request.url.copy_set_param("$skip", skip + PAGE_SIZE))
+        return httpx.Response(200, json=body)

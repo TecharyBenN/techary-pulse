@@ -19,13 +19,12 @@ from pydantic_ai.messages import (
 )
 
 from pulse.agents.orchestrator.agent import NO_REPLY, user_prompt
+from pulse.agents.runner import is_truncated_or_refused
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import PulseError, RunFailed
-from pulse.entities.store import HistoryRow, Store
+from pulse.entities.store import Store
 
 Progress = Callable[[str], Awaitable[None]]
-
-_INVALID_FINISH_REASONS = ("length", "content_filter")
 
 _log = logging.getLogger(__name__)
 
@@ -37,16 +36,27 @@ async def _no_progress(note: str) -> None:
 class _History:
     """The open newsletter's conversation history, saving each step as it is added.
 
-    With no open newsletter, the history starts empty and nothing is saved.
+    With no open newsletter, the history starts empty and is held until a tool opens one; the
+    exchange then becomes the new newsletter's history, and its message the first feedback.
     """
 
-    def __init__(self, store: Store, newsletter_id: str | None, rows: Sequence[HistoryRow]) -> None:
+    def __init__(self, store: Store, message: ReviewerMessage, newsletter_id: str | None) -> None:
         self._store = store
+        self._message = message
         self.newsletter_id = newsletter_id
+        self.messages: list[ModelMessage] = []
+        # The message whose run saved the latest step.
+        self.owner: str | None = None
+
+    async def load(self) -> None:
+        """Record the message as feedback, then load the saved steps."""
+        if self.newsletter_id is None:
+            return
+        await self._store.record_feedback(self.newsletter_id, self._message)
+        rows = await self._store.load_history(self.newsletter_id)
         self.messages = [
             m for row in rows for m in ModelMessagesTypeAdapter.validate_json(row.data)
         ]
-        # The message whose run saved the latest step.
         self.owner = rows[-1].message_id if rows else None
 
     def unfinished(self) -> bool:
@@ -60,8 +70,21 @@ class _History:
         self.messages.append(message)
         self.owner = message_id
         if self.newsletter_id is not None:
+            await self._save(self.newsletter_id, message_id, [message])
+            return
+        newsletter = await self._store.get_open_newsletter()
+        if newsletter is not None:
+            self.newsletter_id = newsletter.newsletter_id
+            await self._store.record_feedback(self.newsletter_id, self._message)
+            # Every step so far belongs to this message's run, because the history started empty.
+            await self._save(self.newsletter_id, message_id, self.messages)
+
+    async def _save(
+        self, newsletter_id: str, message_id: str, messages: Sequence[ModelMessage]
+    ) -> None:
+        for message in messages:
             data = ModelMessagesTypeAdapter.dump_json([message])
-            await self._store.append_history(self.newsletter_id, message_id, data)
+            await self._store.append_history(newsletter_id, message_id, data)
 
 
 class Orchestrator:
@@ -94,26 +117,25 @@ class Orchestrator:
                 "message_id": message.message_id,
                 "channel": message.channel,
             }
+            history = _History(self._store, message, newsletter_id)
             try:
                 async with asyncio.timeout(self._max_run_time.total_seconds()):
-                    reply = await self._converse(message, newsletter_id, on_progress)
+                    reply = await self._converse(message, history, on_progress)
             except (AgentRunError, TimeoutError, PulseError) as error:
+                fields["conversation_id"] = history.newsletter_id
                 fields |= {"outcome": "failed", "error_type": type(error).__name__}
                 _log.info("orchestrator_run", extra=fields | {"duration_ms": _ms_since(started)})
                 raise RunFailed("the orchestrator run did not complete") from error
             no_reply = reply.strip() == NO_REPLY
+            fields["conversation_id"] = history.newsletter_id
             fields["outcome"] = "no_reply" if no_reply else "reply"
             _log.info("orchestrator_run", extra=fields | {"duration_ms": _ms_since(started)})
             return None if no_reply else reply
 
     async def _converse(
-        self, message: ReviewerMessage, newsletter_id: str | None, on_progress: Progress
+        self, message: ReviewerMessage, history: _History, on_progress: Progress
     ) -> str:
-        rows: list[HistoryRow] = []
-        if newsletter_id is not None:
-            await self._store.record_feedback(newsletter_id, message)
-            rows = await self._store.load_history(newsletter_id)
-        history = _History(self._store, newsletter_id, rows)
+        await history.load()
         if history.unfinished() and history.owner is not None:
             owner = history.owner
             reply = await self._run(None, owner, history, on_progress)
@@ -145,7 +167,7 @@ class Orchestrator:
                 if Agent.is_call_tools_node(node):
                     await _call_tools(node, run, history.newsletter_id, on_progress)
         result = run.result
-        if result is None or result.response.finish_reason in _INVALID_FINISH_REASONS:
+        if result is None or is_truncated_or_refused(result.response):
             raise UnexpectedModelBehavior("the final response was truncated or refused")
         return result.output
 

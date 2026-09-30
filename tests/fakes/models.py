@@ -1,11 +1,19 @@
-"""Stand-in models for the orchestrator, and a test-only tool."""
+"""Stand-in models for the orchestrator and the extractor, and a test-only tool."""
 
-from collections.abc import Awaitable, Callable
+import json
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from pulse.agents.orchestrator.agent import INSTRUCTIONS
@@ -16,7 +24,7 @@ ModelFunction = Callable[[list[ModelMessage], AgentInfo], Awaitable[ModelRespons
 
 
 class Tools:
-    """A test-only tool, because the orchestrator has none until phase 4."""
+    """A test-only tool, so run tests do not depend on the orchestrator's real tools."""
 
     def __init__(self) -> None:
         self.calls = 0
@@ -72,3 +80,17 @@ def responses(*answers: ModelResponse | Exception) -> ModelFunction:
         return answer
 
     return model
+
+
+def extractor_model(outputs: Mapping[str, str]) -> FunctionModel:
+    """Answer each submission with the JSON set for its message ID, found in the prompt."""
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        [request] = messages
+        assert isinstance(request, ModelRequest)
+        [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
+        assert isinstance(prompt, str)
+        submission = json.loads(prompt.split("\n")[1])
+        return text_response(outputs[submission["message_id"]])
+
+    return FunctionModel(model)

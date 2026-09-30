@@ -125,7 +125,7 @@ Exit criteria: the test user chats with the orchestrator in LibreChat, and a req
 
 Scope:
 
-- the Graph mailbox: certificate sign-in through MSAL, the thumbprint logged at start-up, listing the inbox with paging, `ImmutableId` and plain-text bodies, and retries on HTTP 429 and 503; it passes the mailbox interface tests;
+- the Graph mailbox: certificate sign-in through MSAL, the thumbprint logged at start-up, and every operation in the mailbox interface: listing the inbox with paging, `ImmutableId` and plain-text bodies, moving to a folder found or created by name, `sendMail`, and reply in thread through `createReplyAll`; retries on HTTP 429 and 503; it passes the mailbox interface tests;
 - the `submissions` and `extract_records` tables;
 - `start_newsletter`: opening a newsletter with every inbox message, adding new messages to an open one, applying the pre-filter, and its refusals;
 - `list_submissions` and `get_newsletter`;
@@ -136,7 +136,7 @@ Scope:
 Exit criteria:
 
 - tests cover each tool's effect and refusals, with the extractor's model replaced by a stand-in;
-- tests cover the Graph mailbox against mocked HTTP, including paging, throttling and errors;
+- tests cover the Graph mailbox against mocked HTTP, including paging, throttling, folders, replies and errors;
 - live check: the corpus is sent to the dev submissions mailbox, and a LibreChat request to start a newsletter extracts it through the dev gateway, with rejected, excluded and included submissions as the corpus expects.
 
 ### Phase 5: consolidate
@@ -153,7 +153,6 @@ Scope:
 - the writer with its output checks, and `write`, for first drafts and revisions, including removing items and restoring excluded records;
 - `get_draft`;
 - rendering: the templates, the newsletter, the reviewer email with the review section items available so far, and golden files;
-- the Graph mailbox's `sendMail`;
 - `present_draft`: saving the next version and emailing it to `reviewers` from the conversation mailbox;
 - replacing superseded tool results with placeholders when history is loaded;
 - the orchestrator instructions for presenting, revising from feedback and restoring records.
@@ -172,7 +171,6 @@ Scope:
 
 - `approve`, with every check from the design, and the send time;
 - delivery, running every `schedule.poll_interval_minutes` inside `pulse serve`: the approval re-check, `send_started`, rendering without the review section, sending to `all_staff` with `replyTo` set to the submissions mailbox, marking the newsletter `sent`, the `Sent:` notice, moving submissions and the history note;
-- the Graph mailbox's folder lookup, folder creation and moves;
 - operator alerts, sent to `operator_alerts`;
 - the orchestrator instructions for approval.
 
@@ -188,7 +186,6 @@ Exit criteria: tests cover each tool and the state changes; live check: an appro
 
 Scope:
 
-- the Graph mailbox's reply in thread: `createReplyAll`, replacing the recipients with `reviewers`, then sending;
 - polling the conversation mailbox every `schedule.poll_interval_minutes`: checking Exchange's internal authentication header, resolving each sender to their Entra object ID through a Graph user lookup, rejecting automatic replies, moving messages to `Processed` or `Rejected`, the `handled_messages` table, and the `chat.max_attempts` limit with its operator alert;
 - the `NO_REPLY` reply and the channel-switch summary.
 

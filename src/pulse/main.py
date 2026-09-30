@@ -1,25 +1,35 @@
 """Creates the adapters and connects them to the agents, services and entrypoints."""
 
 import asyncio
+import functools
 import logging
 import os
 from collections.abc import Sequence
 from datetime import timedelta
 
+import httpx
 import pydantic_ai
+from pydantic_ai.models import Model
 
 from pulse.adapters.clock import SystemClock
 from pulse.adapters.gateway import gateway_model
+from pulse.adapters.graph import GRAPH_URL, CertificateCredential, GraphMailbox
 from pulse.adapters.store import SqliteStore
 from pulse.adapters.tokens import JwtVerifier
+from pulse.agents.extractor.agent import build_extractor
 from pulse.agents.orchestrator.agent import build_agent
 from pulse.agents.orchestrator.run import Orchestrator
+from pulse.agents.orchestrator.tools import Tools
 from pulse.config import Config, ConfigError, load_config
+from pulse.entities.clock import Clock
 from pulse.entities.errors import PulseError
+from pulse.entities.mail import Mailbox
 from pulse.entities.store import Store
+from pulse.entities.submissions import screen
 from pulse.entrypoints.chat import create_app, serve
 from pulse.entrypoints.cli import parse_args
 from pulse.logging import configure_logging
+from pulse.services.operations import Operations
 
 _log = logging.getLogger(__name__)
 
@@ -41,18 +51,42 @@ async def _serve(config: Config) -> None:
     llm_key = _environment(config.llm.api_key_env)
     store = SqliteStore(config.state.db_path)
     await store.initialise()
-    orchestrator = build_orchestrator(config, store, llm_key)
     clock = SystemClock()
-    auth = config.auth
-    verifier = JwtVerifier(auth.issuer, auth.audience, auth.jwks, clock)
-    app = create_app(orchestrator, verifier, auth.reviewer_role, clock)
-    await serve(app, config.chat.port)
+    graph = config.graph
+    credential = CertificateCredential(graph.tenant_id, graph.client_id, graph.certificate_path)
+    _log.info("graph_certificate", extra={"thumbprint": credential.thumbprint})
+    async with httpx.AsyncClient(base_url=GRAPH_URL) as client:
+        submissions = GraphMailbox(
+            client, credential.token, config.mailboxes.submissions, graph.max_retries
+        )
+        orchestrator = build_orchestrator(config, store, submissions, llm_key, clock)
+        auth = config.auth
+        verifier = JwtVerifier(auth.issuer, auth.audience, auth.jwks, clock)
+        app = create_app(orchestrator, verifier, auth.reviewer_role, clock)
+        await serve(app, config.chat.port)
 
 
-def build_orchestrator(config: Config, store: Store, llm_key: str) -> Orchestrator:
-    model = gateway_model(config.llm.base_url, llm_key, config.llm.models["orchestrator"])
+def build_orchestrator(
+    config: Config, store: Store, submissions: Mailbox, llm_key: str, clock: Clock
+) -> Orchestrator:
+    def model(agent: str) -> Model:
+        return gateway_model(config.llm.base_url, llm_key, config.llm.models[agent])
+
+    screen_email = functools.partial(
+        screen,
+        allowed_sender_domains=config.allowed_sender_domains,
+        allowed_senders=config.allowed_senders,
+        allowed_sensitivity_labels=config.allowed_sensitivity_labels,
+    )
+    categories = {section.category: section.definition for section in config.sections}
+    tools = Tools(
+        Operations(store, submissions, screen_email, clock),
+        store,
+        build_extractor(model("extractor"), categories),
+        categories,
+    )
     return Orchestrator(
-        build_agent(model),
+        build_agent(model("orchestrator"), tools.toolset()),
         store,
         config.orchestrator.max_tool_calls,
         timedelta(minutes=config.orchestrator.max_run_minutes),

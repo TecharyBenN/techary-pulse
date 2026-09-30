@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from pulse.adapters.graph import GraphMailbox
 from pulse.entities.mail import (
     InboundEmail,
     Mailbox,
@@ -13,6 +14,7 @@ from pulse.entities.mail import (
     is_automatic_reply,
 )
 from tests.emails import make_email
+from tests.fakes.graph import MAILBOX, FakeGraph
 from tests.fakes.mailbox import FakeMailbox
 
 
@@ -71,9 +73,17 @@ def _email(message_id: str, day: int, **changes: object) -> InboundEmail:
     return make_email(message_id, received=datetime(2026, 9, day, 15, 30, tzinfo=UTC), **changes)
 
 
-@pytest.fixture(params=["fake"])
+async def _token() -> str:
+    return "token-1"
+
+
+def _graph_mailbox(inbox: list[InboundEmail]) -> Mailbox:
+    return GraphMailbox(FakeGraph(inbox).client(), _token, MAILBOX, max_retries=2)
+
+
+@pytest.fixture(params=["fake", "graph"])
 def make_mailbox(request: pytest.FixtureRequest) -> MailboxFactory:
-    factories: dict[str, MailboxFactory] = {"fake": FakeMailbox}
+    factories: dict[str, MailboxFactory] = {"fake": FakeMailbox, "graph": _graph_mailbox}
     return factories[request.param]
 
 
