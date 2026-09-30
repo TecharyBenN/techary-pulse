@@ -7,16 +7,31 @@ from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
 from pulse.adapters.store import SqliteStore
+from pulse.agents.consolidator.agent import build_consolidator
 from pulse.agents.extractor.agent import build_extractor
 from pulse.agents.orchestrator.agent import build_agent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import Tools
 from pulse.entities.lifecycle import start_send
 from pulse.services.operations import Operations
-from tests.emails import corpus_email, corpus_messages, make_email, make_output, screen_email
+from tests.emails import (
+    CORPUS_ITEM_SOURCES,
+    CORPUS_OUTCOMES,
+    corpus_consolidation,
+    corpus_email,
+    corpus_messages,
+    make_consolidation,
+    make_consolidator_item,
+    make_consolidator_output,
+    make_email,
+    make_item,
+    make_output,
+    screen_email,
+    stored_outcomes,
+)
 from tests.fakes.clock import ControlledClock
 from tests.fakes.mailbox import FakeMailbox
-from tests.fakes.models import extractor_model, responses, text_response
+from tests.fakes.models import extractor_model, reply_with, responses, text_response
 from tests.messages import OPENED, make_message
 
 pytestmark = pytest.mark.anyio
@@ -28,11 +43,14 @@ INBOX = [
     make_email("m03", body="Thanks!"),
     make_email("m13", sender_address="alex.morgan@example.com"),
 ]
+# The extractor stand-in finds each email by its body.
 OUTPUTS = {
-    "m01": make_output("m01").model_dump_json(),
-    "m02": make_output("m02", category=None).model_dump_json(),
-    "m03": make_output("m03", is_update=False, category=None).model_dump_json(),
+    INBOX[0].body: make_output().model_dump_json(),
+    INBOX[1].body: make_output(category=None).model_dump_json(),
+    INBOX[2].body: make_output(category=None).model_dump_json(),
 }
+CONSOLIDATOR_OUTPUT = make_consolidator_output(make_consolidator_item("m01"))
+CONSOLIDATION = make_consolidation(make_item(source_message_ids=["m01"]))
 
 
 @pytest.fixture
@@ -42,10 +60,29 @@ async def store(tmp_path: Path) -> SqliteStore:
     return store
 
 
-def _tools(store: SqliteStore, extractor: FunctionModel | None = None) -> Tools:
+def _tools(
+    store: SqliteStore,
+    extractor: FunctionModel | None = None,
+    consolidator: FunctionModel | None = None,
+) -> Tools:
     operations = Operations(store, FakeMailbox(INBOX), screen_email, ControlledClock(OPENED))
-    model = extractor or extractor_model(OUTPUTS)
-    return Tools(operations, store, build_extractor(model, CATEGORIES), CATEGORIES)
+    return Tools(
+        operations,
+        store,
+        build_extractor(extractor or extractor_model(OUTPUTS), CATEGORIES),
+        build_consolidator(
+            consolidator or FunctionModel(reply_with(CONSOLIDATOR_OUTPUT.model_dump_json()))
+        ),
+        CATEGORIES,
+    )
+
+
+async def _extracted(tools: Tools) -> str:
+    """Start a newsletter and extract its screened emails, returning the newsletter ID."""
+    started = await tools.start_newsletter()
+    assert not isinstance(started, str)
+    await tools.extract(["m01", "m02", "m03"])
+    return started.newsletter_id
 
 
 async def test_toolset_offers_each_tool(store: SqliteStore) -> None:
@@ -54,8 +91,10 @@ async def test_toolset_offers_each_tool(store: SqliteStore) -> None:
     assert set(toolset.tools) == {
         "start_newsletter",
         "get_newsletter",
-        "list_submissions",
+        "list_screened_emails",
         "extract",
+        "consolidate",
+        "get_items",
     }
 
 
@@ -95,16 +134,19 @@ async def test_get_newsletter_summarises_the_open_newsletter(store: SqliteStore)
         "latest_version": None,
         "approved_version": None,
         "send_time": None,
+        "items": 0,
+        # m01 is included but not yet consolidated.
+        "items_up_to_date": False,
         "excluded_records": 2,
     }
 
 
-async def test_list_submissions_never_returns_subjects_or_bodies(store: SqliteStore) -> None:
+async def test_list_screened_emails_never_returns_subjects_or_bodies(store: SqliteStore) -> None:
     tools = _tools(store)
     await tools.start_newsletter()
     await tools.extract(["m01"])
 
-    listed = await tools.list_submissions()
+    listed = await tools.list_screened_emails()
 
     assert not isinstance(listed, str)
     assert [(s["message_id"], s["rejection"]) for s in listed] == [
@@ -131,8 +173,10 @@ async def test_list_submissions_never_returns_subjects_or_bodies(store: SqliteSt
 async def test_tools_refuse_without_an_open_newsletter(store: SqliteStore) -> None:
     tools = _tools(store)
 
-    assert await tools.list_submissions() == "Refused: no newsletter is open"
+    assert await tools.list_screened_emails() == "Refused: no newsletter is open"
     assert await tools.extract(["m01"]) == "Refused: no newsletter is open"
+    assert await tools.consolidate(["m01"]) == "Refused: no newsletter is open"
+    assert await tools.get_items() == "Refused: no newsletter is open"
 
 
 async def test_extract_stores_each_record_with_its_exclusion(store: SqliteStore) -> None:
@@ -140,13 +184,19 @@ async def test_extract_stores_each_record_with_its_exclusion(store: SqliteStore)
     started = await tools.start_newsletter()
     assert not isinstance(started, str)
 
-    outcomes = await tools.extract(["m01", "m02", "m03"])
+    result = await tools.extract(["m01", "m02", "m03"])
 
-    assert not isinstance(outcomes, str)
+    assert not isinstance(result, str)
+    assert (result.included, result.excluded, result.failed) == (
+        1,
+        {"no_category": 2},
+        0,
+    )
+    outcomes = result.outcomes
     assert [(o.message_id, o.exclusion, o.error) for o in outcomes] == [
         ("m01", None, None),
-        ("m02", "no_matching_section", None),
-        ("m03", "not_an_update", None),
+        ("m02", "no_category", None),
+        ("m03", "no_category", None),
     ]
     # Parallel extractions are numbered in the order they finish.
     assert outcomes[0].excluded_id is None
@@ -155,31 +205,33 @@ async def test_extract_stores_each_record_with_its_exclusion(store: SqliteStore)
     assert {r.message_id for r in records} == {"m01", "m02", "m03"}
 
 
-async def test_extract_refuses_rejected_and_unknown_submissions(store: SqliteStore) -> None:
+async def test_extract_refuses_rejected_and_unknown_emails(store: SqliteStore) -> None:
     tools = _tools(store)
     await tools.start_newsletter()
 
-    outcomes = await tools.extract(["m13", "m99"])
+    result = await tools.extract(["m13", "m99"])
 
-    assert not isinstance(outcomes, str)
-    assert [(o.message_id, o.error) for o in outcomes] == [
+    assert not isinstance(result, str)
+    assert (result.included, result.excluded, result.failed) == (0, {}, 2)
+    assert [(o.message_id, o.error) for o in result.outcomes] == [
         ("m13", "the pre-filter rejected it: sender_domain"),
-        ("m99", "not a submission of the open newsletter"),
+        ("m99", "not a screened email of the open newsletter"),
     ]
 
 
 async def test_extract_reports_an_invalid_response_and_stores_nothing(store: SqliteStore) -> None:
-    invalid = {"m01": make_output("m02").model_dump_json()}
+    invalid = {INBOX[0].body: make_output(category="gossip").model_dump_json()}
     tools = _tools(store, extractor_model(invalid))
     started = await tools.start_newsletter()
     assert not isinstance(started, str)
 
-    outcomes = await tools.extract(["m01"])
+    result = await tools.extract(["m01"])
 
-    assert not isinstance(outcomes, str)
-    [outcome] = outcomes
+    assert not isinstance(result, str)
+    assert result.failed == 1
+    [outcome] = result.outcomes
     assert outcome.error is not None
-    assert "not the submission's message ID" in outcome.error
+    assert "gossip is not a configured category" in outcome.error
     assert await store.list_extract_records(started.newsletter_id) == []
 
 
@@ -195,37 +247,10 @@ async def test_extract_again_replaces_the_record(store: SqliteStore) -> None:
     assert record.excluded_id == "excluded-1"
 
 
-# Written out by hand from the corpus cases, not derived from the rules under test.
-CORPUS_OUTCOMES = {
-    "m01": "included",
-    "m02": "included",
-    "m03": "included",
-    "m04": "included",
-    "m05": "included",
-    "m06": "included",
-    "m07": "rejected: automatic_reply",
-    "m08": "excluded: not_an_update",
-    "m09": "excluded: not_an_update",
-    "m10": "excluded: not_an_update",
-    "m11": "excluded: unclear",
-    "m12": "excluded: no_matching_section",
-    "m13": "rejected: sender_domain",
-    "m14": "rejected: sensitivity_label",
-    "m15": "excluded: sensitivity",
-    "m16": "excluded: sensitivity",
-    "m17": "excluded: not_an_update",
-    "m18": "excluded: not_an_update",
-}
-
-
 async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteStore) -> None:
     messages = corpus_messages()
     inbox = [corpus_email(message, n) for n, message in enumerate(messages)]
-    outputs = {
-        m["id"]: json.dumps({"message_id": m["id"]} | m["extract"])
-        for m in messages
-        if "extract" in m
-    }
+    outputs = {m["body"]: json.dumps(m["extract"]) for m in messages if "extract" in m}
     categories = {
         "customer_win": "A new customer has signed.",
         "delivery_highlight": "A project has been delivered.",
@@ -233,15 +258,22 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
         "shout_out": "A colleague is thanked.",
     }
     operations = Operations(store, FakeMailbox(inbox), screen_email, ControlledClock(OPENED))
+    consolidator = FunctionModel(reply_with(corpus_consolidation().model_dump_json()))
     tools = Tools(
-        operations, store, build_extractor(extractor_model(outputs), categories), categories
+        operations,
+        store,
+        build_extractor(extractor_model(outputs), categories),
+        build_consolidator(consolidator),
+        categories,
     )
     passed = [m for m, outcome in CORPUS_OUTCOMES.items() if not outcome.startswith("rejected")]
+    included = [m for m, outcome in CORPUS_OUTCOMES.items() if outcome == "included"]
     model = responses(
         _call("get_newsletter"),
         _call("start_newsletter"),
-        _call("list_submissions"),
+        _call("list_screened_emails"),
         _call("extract", {"message_ids": passed}),
+        _call("consolidate", {"message_ids": included}),
         text_response("Done."),
     )
     orchestrator = Orchestrator(
@@ -252,22 +284,90 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
 
     newsletter = await store.get_open_newsletter()
     assert newsletter is not None
-    submissions = await store.list_submissions(newsletter.newsletter_id)
-    records = {r.message_id: r for r in await store.list_extract_records(newsletter.newsletter_id)}
-    outcomes = {}
-    for submission in submissions:
-        record = records.get(submission.message_id)
-        if submission.rejection is not None:
-            outcomes[submission.message_id] = f"rejected: {submission.rejection}"
-        elif record is None:
-            outcomes[submission.message_id] = "not extracted"
-        elif record.exclusion is None:
-            outcomes[submission.message_id] = "included"
-        else:
-            outcomes[submission.message_id] = f"excluded: {record.exclusion}"
-    assert outcomes == CORPUS_OUTCOMES
-    excluded_ids = sorted(r.excluded_id for r in records.values() if r.excluded_id)
+    assert await stored_outcomes(store, newsletter.newsletter_id) == CORPUS_OUTCOMES
+    records = await store.list_extract_records(newsletter.newsletter_id)
+    excluded_ids = sorted(r.excluded_id for r in records if r.excluded_id)
     assert excluded_ids == sorted(f"excluded-{n}" for n in range(1, 10))
+    items = await store.get_items(newsletter.newsletter_id)
+    assert items is not None
+    assert [item.source_message_ids for item in items.items] == CORPUS_ITEM_SOURCES
+
+
+async def test_consolidate_stores_the_items_and_headline(store: SqliteStore) -> None:
+    tools = _tools(store)
+    newsletter_id = await _extracted(tools)
+
+    result = await tools.consolidate(["m01"])
+
+    assert result == {
+        "headline": "A new retail customer",
+        "item_count": 1,
+        "items": [{"item_id": "item-1", "category": "customer_win", "source_message_ids": ["m01"]}],
+    }
+    assert await store.get_items(newsletter_id) == CONSOLIDATION
+    newsletter = await tools.get_newsletter()
+    assert isinstance(newsletter, dict)
+    assert (newsletter["items"], newsletter["items_up_to_date"]) == (1, True)
+
+
+async def test_consolidate_refuses_excluded_records(store: SqliteStore) -> None:
+    tools = _tools(store)
+    newsletter_id = await _extracted(tools)
+
+    result = await tools.consolidate(["m01", "m02"])
+
+    assert isinstance(result, str)
+    assert result.startswith("Refused: m02 is excluded as excluded-")
+    assert await store.get_items(newsletter_id) is None
+
+
+async def test_consolidate_reports_an_invalid_response_and_stores_nothing(
+    store: SqliteStore,
+) -> None:
+    invalid = make_consolidator_output(make_consolidator_item("m01", "m09")).model_dump_json()
+    consolidator = FunctionModel(responses(text_response(invalid), text_response(invalid)))
+    tools = _tools(store, consolidator=consolidator)
+    newsletter_id = await _extracted(tools)
+
+    result = await tools.consolidate(["m01"])
+
+    assert result == (
+        "Failed: consolidator gave no valid response: source m09 is not an input record"
+    )
+    assert await store.get_items(newsletter_id) is None
+
+
+async def test_get_items_before_consolidation(store: SqliteStore) -> None:
+    tools = _tools(store)
+    await _extracted(tools)
+
+    items = await tools.get_items()
+
+    assert isinstance(items, dict)
+    assert (items["headline"], items["items"]) == (None, [])
+    assert {r["message_id"] for r in items["excluded_records"]} == {"m02", "m03"}
+
+
+async def test_get_items_adds_sources_and_never_returns_subjects_or_bodies(
+    store: SqliteStore,
+) -> None:
+    tools = _tools(store)
+    await _extracted(tools)
+    await tools.consolidate(["m01"])
+
+    items = await tools.get_items()
+
+    assert isinstance(items, dict)
+    assert items["headline"] == "A new retail customer"
+    [item] = items["items"]
+    assert (item["item_id"], item["sender_names"], item["received"]) == (
+        "item-1",
+        ["Priya Shah"],
+        ["2026-09-22T15:30:00Z"],
+    )
+    text = json.dumps(items)
+    assert "Signed Northwind Retail today" not in text
+    assert "Nothing to report." not in text
 
 
 def _call(tool: str, args: dict[str, object] | None = None) -> ModelResponse:

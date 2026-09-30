@@ -8,9 +8,10 @@ import pytest
 
 from pulse.adapters.store import SqliteStore
 from pulse.entities.errors import StoreError
+from pulse.entities.extracts import Sensitivity
 from pulse.entities.lifecycle import abandon, present, update
 from pulse.entities.store import HistoryRow
-from tests.emails import make_output, make_submission
+from tests.emails import make_consolidation, make_item, make_output, make_screened_email
 from tests.messages import OPENED, REVIEWER, make_message, make_newsletter
 
 pytestmark = pytest.mark.anyio
@@ -99,10 +100,10 @@ async def test_empty_history(store: SqliteStore) -> None:
 
 async def test_failed_write_changes_nothing(store: SqliteStore, tmp_path: Path) -> None:
     with sqlite3.connect(tmp_path / "state" / "pulse.db") as connection:
-        connection.execute("DROP TABLE submissions")
+        connection.execute("DROP TABLE screened_emails")
 
     with pytest.raises(StoreError):
-        await store.save_start(make_newsletter(), [make_submission()])
+        await store.save_start(make_newsletter(), [make_screened_email()])
 
     assert await store.get_open_newsletter() is None
 
@@ -115,58 +116,58 @@ async def test_unreadable_database_raises_store_error(tmp_path: Path) -> None:
         await SqliteStore(path).initialise()
 
 
-async def test_start_saves_the_newsletter_and_its_submissions(store: SqliteStore) -> None:
+async def test_start_saves_the_newsletter_and_its_screened_emails(store: SqliteStore) -> None:
     newsletter = make_newsletter()
-    submissions = [make_submission("m02", received=OPENED), make_submission("m01")]
+    emails = [make_screened_email("m02", received=OPENED), make_screened_email("m01")]
 
-    await store.save_start(newsletter, submissions)
+    await store.save_start(newsletter, emails)
 
     assert await store.get_open_newsletter() == newsletter
-    assert await store.list_submissions("n-1") == sorted(
-        submissions, key=lambda s: (s.received, s.message_id)
+    assert await store.list_screened_emails("n-1") == sorted(
+        emails, key=lambda s: (s.received, s.message_id)
     )
 
 
-async def test_start_updates_the_newsletter_and_ignores_known_submissions(
+async def test_start_updates_the_newsletter_and_ignores_known_emails(
     store: SqliteStore,
 ) -> None:
-    await store.save_start(make_newsletter(), [make_submission("m01")])
+    await store.save_start(make_newsletter(), [make_screened_email("m01")])
     updated = update(make_newsletter(), OPENED + timedelta(days=1))
 
     await store.save_start(
-        updated, [make_submission("m01", subject="Changed"), make_submission("m02")]
+        updated, [make_screened_email("m01", subject="Changed"), make_screened_email("m02")]
     )
 
     assert await store.get_open_newsletter() == updated
-    listed = await store.list_submissions("n-1")
+    listed = await store.list_screened_emails("n-1")
     assert [(s.message_id, s.subject) for s in listed] == [
         ("m01", "Signed Northwind Retail today"),
         ("m02", "Signed Northwind Retail today"),
     ]
 
 
-async def test_submissions_belong_to_their_newsletter(store: SqliteStore) -> None:
-    await store.save_start(make_newsletter(), [make_submission("m01")])
-    await store.save_start(make_newsletter("n-2"), [make_submission("m01")])
+async def test_screened_emails_belong_to_their_newsletter(store: SqliteStore) -> None:
+    await store.save_start(make_newsletter(), [make_screened_email("m01")])
+    await store.save_start(make_newsletter("n-2"), [make_screened_email("m01")])
 
-    assert [s.message_id for s in await store.list_submissions("n-2")] == ["m01"]
+    assert [s.message_id for s in await store.list_screened_emails("n-2")] == ["m01"]
 
 
-async def test_rejected_submission_round_trip(store: SqliteStore) -> None:
-    rejected = make_submission("m13", sender_address="alex.morgan@example.com")
+async def test_rejected_screened_email_round_trip(store: SqliteStore) -> None:
+    rejected = make_screened_email("m13", sender_address="alex.morgan@example.com")
     await store.save_start(make_newsletter(), [rejected])
 
-    assert await store.list_submissions("n-1") == [rejected]
+    assert await store.list_screened_emails("n-1") == [rejected]
 
 
 async def test_extract_records_are_numbered_within_the_newsletter(store: SqliteStore) -> None:
     await store.save_start(make_newsletter(), [])
     await store.save_start(make_newsletter("n-2"), [])
-    await store.save_extract("n-2", make_output("m09", category=None))
+    await store.save_extract("n-2", "m09", make_output(category=None))
 
-    first = await store.save_extract("n-1", make_output("m01", category=None))
-    included = await store.save_extract("n-1", make_output("m02"))
-    second = await store.save_extract("n-1", make_output("m03", category=None))
+    first = await store.save_extract("n-1", "m01", make_output(category=None))
+    included = await store.save_extract("n-1", "m02", make_output())
+    second = await store.save_extract("n-1", "m03", make_output(category=None))
 
     assert (first.excluded_id, included.excluded_id, second.excluded_id) == (
         "excluded-1",
@@ -178,19 +179,40 @@ async def test_extract_records_are_numbered_within_the_newsletter(store: SqliteS
 
 async def test_replaced_extract_record_keeps_its_excluded_id(store: SqliteStore) -> None:
     await store.save_start(make_newsletter(), [])
-    await store.save_extract("n-1", make_output("m01", category=None))
+    await store.save_extract("n-1", "m01", make_output(category=None))
 
-    replaced = await store.save_extract("n-1", make_output("m01", is_update=False))
+    flag = Sensitivity(type="commercial", evidence="mentions a contract value")
+    replaced = await store.save_extract("n-1", "m01", make_output(sensitivity=[flag]))
 
-    assert (replaced.exclusion, replaced.excluded_id) == ("not_an_update", "excluded-1")
+    assert (replaced.exclusion, replaced.excluded_id) == ("sensitivity", "excluded-1")
     assert await store.list_extract_records("n-1") == [replaced]
+
+
+async def test_no_items_before_consolidation(store: SqliteStore) -> None:
+    await store.save_start(make_newsletter(), [])
+
+    assert await store.get_items("n-1") is None
+
+
+async def test_saved_items_replace_earlier_items(store: SqliteStore) -> None:
+    await store.save_start(make_newsletter(), [])
+    await store.save_start(make_newsletter("n-2"), [])
+    other = make_consolidation(make_item(source_message_ids=["m09"]))
+    await store.save_items("n-2", other)
+    await store.save_items("n-1", make_consolidation(make_item()))
+
+    replacement = make_consolidation(make_item(), make_item("item-2"))
+    await store.save_items("n-1", replacement)
+
+    assert await store.get_items("n-1") == replacement
+    assert await store.get_items("n-2") == other
 
 
 async def test_parallel_extracts_get_distinct_excluded_ids(store: SqliteStore) -> None:
     await store.save_start(make_newsletter(), [])
 
     records = await asyncio.gather(
-        *(store.save_extract("n-1", make_output(f"m{n:02}", category=None)) for n in range(10))
+        *(store.save_extract("n-1", f"m{n:02}", make_output(category=None)) for n in range(10))
     )
 
     assert sorted(r.excluded_id or "" for r in records) == sorted(

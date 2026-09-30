@@ -16,6 +16,7 @@ from pulse.adapters.gateway import gateway_model
 from pulse.adapters.graph import GRAPH_URL, CertificateCredential, GraphMailbox
 from pulse.adapters.store import SqliteStore
 from pulse.adapters.tokens import JwtVerifier
+from pulse.agents.consolidator.agent import build_consolidator
 from pulse.agents.extractor.agent import build_extractor
 from pulse.agents.orchestrator.agent import build_agent
 from pulse.agents.orchestrator.run import Orchestrator
@@ -23,9 +24,8 @@ from pulse.agents.orchestrator.tools import Tools
 from pulse.config import Config, ConfigError, load_config
 from pulse.entities.clock import Clock
 from pulse.entities.errors import PulseError
-from pulse.entities.mail import Mailbox
+from pulse.entities.mail import Mailbox, screen
 from pulse.entities.store import Store
-from pulse.entities.submissions import screen
 from pulse.entrypoints.chat import create_app, serve
 from pulse.entrypoints.cli import parse_args
 from pulse.logging import configure_logging
@@ -83,6 +83,7 @@ def build_orchestrator(
         Operations(store, submissions, screen_email, clock),
         store,
         build_extractor(model("extractor"), categories),
+        build_consolidator(model("consolidator")),
         categories,
     )
     return Orchestrator(

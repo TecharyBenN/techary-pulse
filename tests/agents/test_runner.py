@@ -1,7 +1,7 @@
 import pytest
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent, NativeOutput
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from pulse.agents.runner import run_specialist
@@ -24,12 +24,14 @@ def _positive(output: _Output) -> list[str]:
     return [] if output.count > 0 else ["count must be positive"]
 
 
-def _agent(*answers: ModelResponse | Exception) -> tuple[Agent[None, _Output], list[int]]:
+def _agent(
+    *answers: ModelResponse | Exception,
+) -> tuple[Agent[None, _Output], list[list[ModelMessage]]]:
     remaining = list(answers)
-    calls: list[int] = []
+    calls: list[list[ModelMessage]] = []
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        calls.append(len(messages))
+        calls.append(list(messages))
         answer = remaining.pop(0)
         if isinstance(answer, Exception):
             raise answer
@@ -49,22 +51,35 @@ async def test_returns_a_valid_response() -> None:
     assert len(calls) == 1
 
 
+def _prompt(request: ModelMessage) -> str:
+    assert isinstance(request, ModelRequest)
+    [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
+    assert isinstance(prompt, str)
+    return prompt
+
+
 @pytest.mark.parametrize(
-    "invalid",
+    ("invalid", "problem"),
     [
-        _json('{"count": 3, "extra": 1}'),
-        _json("not json"),
-        _json('{"count": 3}', "length"),
-        _json('{"count": 3}', "content_filter"),
-        _json('{"count": 0}'),
+        (_json('{"count": 3, "extra": 1}'), "the response did not match the output type"),
+        (_json("not json"), "the response did not match the output type"),
+        (_json('{"count": 3}', "length"), "the response was truncated or refused"),
+        (_json('{"count": 3}', "content_filter"), "the response was truncated or refused"),
+        (_json('{"count": 0}'), "count must be positive"),
     ],
 )
-async def test_retries_an_invalid_response_once_afresh(invalid: ModelResponse) -> None:
+async def test_retry_sends_the_problems_back_with_the_invalid_response(
+    invalid: ModelResponse, problem: str
+) -> None:
     agent, calls = _agent(invalid, _json('{"count": 4}'))
 
     assert await run_specialist(agent, "Count", _positive) == _Output(count=4)
-    # The retry starts afresh, without the invalid response in its history.
-    assert calls == [1, 1]
+    first, retry = calls
+    assert len(first) == 1
+    [request, response, correction] = retry
+    assert _prompt(request) == "Count"
+    assert response.parts == invalid.parts
+    assert f"- {problem}" in _prompt(correction)
 
 
 async def test_fails_after_two_invalid_responses() -> None:

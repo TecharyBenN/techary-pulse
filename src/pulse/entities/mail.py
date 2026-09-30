@@ -1,17 +1,29 @@
-"""Email as Pulse sees it, the mailbox interface, and the rules that apply to any email."""
+"""Email in Pulse: its stages, the mailbox interface, the rules that apply to any email,
+and the pre-filter."""
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import AwareDatetime
 
 from pulse.entities.base import Entity
 
+# Graph's immutable message ID, which stays the same when a message moves folders.
+MessageId = str
+
+RejectionReason = Literal[
+    "sender_domain", "sender_not_allowed", "sensitivity_label", "automatic_reply"
+]
+
+# Label IDs are GUIDs, so the first underscore after the ID starts the property name.
+_LABEL_ENTRY = re.compile(r"MSIP_Label_([^_=]+)_([^=]+)=(.*)")
+
 
 class Email(Entity):
     """A message received in a Pulse mailbox."""
 
-    message_id: str
+    message_id: MessageId
     sender_name: str
     sender_address: str
     subject: str
@@ -34,6 +46,14 @@ class OutboundEmail(Entity):
     reply_to: str | None
 
 
+class ScreenedEmail(Email):
+    """An email from the submissions mailbox after the pre-filter, as Pulse stores it."""
+
+    rejection: RejectionReason | None
+    # Kept only when the email passed the pre-filter, so rejected content is never stored.
+    body: str | None
+
+
 class Mailbox(Protocol):
     """A Pulse mailbox; main creates one for the submissions mailbox and one for the
     conversation mailbox."""
@@ -42,13 +62,13 @@ class Mailbox(Protocol):
         """Every inbox message, sorted by received time, then message ID."""
         ...
 
-    async def move(self, message_id: str, folder: str) -> None:
+    async def move(self, message_id: MessageId, folder: str) -> None:
         """Move a message to the named folder, creating the folder if it is absent."""
         ...
 
     async def send(self, email: OutboundEmail) -> None: ...
 
-    async def reply(self, message_id: str, to: Sequence[str], text: str) -> None:
+    async def reply(self, message_id: MessageId, to: Sequence[str], text: str) -> None:
         """Reply in the message's thread to `to` only, with a plain-text body."""
         ...
 
@@ -74,3 +94,64 @@ def is_automatic_reply(headers: Mapping[str, str]) -> bool:
     return (
         auto_submitted is not None and auto_submitted.strip().casefold() != "no"
     ) or header_value(headers, "X-Auto-Response-Suppress") is not None
+
+
+def screen(
+    email: InboundEmail,
+    allowed_sender_domains: Sequence[str],
+    allowed_senders: Sequence[str],
+    allowed_sensitivity_labels: Sequence[str],
+) -> ScreenedEmail:
+    """Apply the pre-filter to an inbox message."""
+    rejection = _rejection(
+        email, allowed_sender_domains, allowed_senders, allowed_sensitivity_labels
+    )
+    return ScreenedEmail(
+        **email.model_dump(include=set(Email.model_fields)),
+        rejection=rejection,
+        body=email.body if rejection is None else None,
+    )
+
+
+def source_text(email: ScreenedEmail) -> str:
+    """The text names and numbers in a draft are checked against."""
+    return "\n".join(part for part in (email.subject, email.body) if part)
+
+
+def sender_names(emails: Iterable[ScreenedEmail]) -> list[str]:
+    """Each sender's name once, in the order of the emails."""
+    return list(dict.fromkeys(email.sender_name for email in emails))
+
+
+def _rejection(
+    email: InboundEmail,
+    allowed_sender_domains: Sequence[str],
+    allowed_senders: Sequence[str],
+    allowed_sensitivity_labels: Sequence[str],
+) -> RejectionReason | None:
+    if not domain_in(email.sender_address, allowed_sender_domains):
+        return "sender_domain"
+    if allowed_senders and not address_in(email.sender_address, allowed_senders):
+        return "sender_not_allowed"
+    if not _labels_allowed(email.headers, allowed_sensitivity_labels):
+        return "sensitivity_label"
+    if is_automatic_reply(email.headers):
+        return "automatic_reply"
+    return None
+
+
+def _labels_allowed(headers: Mapping[str, str], allowed: Sequence[str]) -> bool:
+    value = header_value(headers, "msip_labels")
+    if value is None:
+        return True
+    allowed_ids = {label.casefold() for label in allowed}
+    for entry in filter(None, (part.strip() for part in value.split(";"))):
+        match = _LABEL_ENTRY.fullmatch(entry)
+        # A header Pulse cannot read may hide a label, so it is not allowed.
+        if match is None:
+            return False
+        label_id, name, setting = match.groups()
+        enabled = name == "Enabled" and setting.strip().casefold() == "true"
+        if enabled and label_id.casefold() not in allowed_ids:
+            return False
+    return True

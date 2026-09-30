@@ -5,6 +5,7 @@ import pytest
 
 from pulse.adapters.graph import GraphMailbox
 from pulse.entities.mail import (
+    Email,
     InboundEmail,
     Mailbox,
     OutboundEmail,
@@ -12,10 +13,16 @@ from pulse.entities.mail import (
     domain_in,
     header_value,
     is_automatic_reply,
+    screen,
+    sender_names,
+    source_text,
 )
-from tests.emails import make_email
+from tests.emails import make_email, make_screened_email
 from tests.fakes.graph import MAILBOX, FakeGraph
 from tests.fakes.mailbox import FakeMailbox
+
+LABEL = "3a1b7f0e-5c2d-4e8a-9b6f-1d2c3e4f5a6b"
+OTHER_LABEL = "9c8d7e6f-0000-4e8a-9b6f-1d2c3e4f5a6b"
 
 
 def test_address_in_ignores_case() -> None:
@@ -134,3 +141,162 @@ async def test_reply_is_accepted(make_mailbox: MailboxFactory) -> None:
     mailbox = make_mailbox([_email("m01", 22)])
 
     await mailbox.reply("m01", ["reviewer@techary.ai"], "Version 2 is on its way.")
+
+
+def _sender_email(
+    sender_address: str = "priya.shah@techary.ai", headers: dict[str, str] | None = None
+) -> InboundEmail:
+    return make_email(sender_address=sender_address, headers=headers or {}, has_attachments=True)
+
+
+def _screen(
+    email: InboundEmail, senders: list[str] | None = None, labels: list[str] | None = None
+) -> str | None:
+    return screen(email, ["techary.ai"], senders or [], labels or []).rejection
+
+
+def test_screened_email_is_the_email_with_its_outcome() -> None:
+    email = _sender_email()
+
+    screened = screen(email, ["techary.ai"], [], [])
+
+    assert isinstance(screened, Email)
+    assert screened.model_dump(include=set(Email.model_fields)) == email.model_dump(
+        include=set(Email.model_fields)
+    )
+
+
+def test_passing_screened_email_keeps_its_fields_and_body() -> None:
+    screened = screen(_sender_email(), ["techary.ai"], [], [])
+
+    assert screened.rejection is None
+    assert screened.message_id == "m01"
+    assert screened.sender_name == "Priya Shah"
+    assert screened.sender_address == "priya.shah@techary.ai"
+    assert screened.subject == "Signed Northwind Retail today"
+    assert screened.received == datetime(2026, 9, 22, 15, 30, tzinfo=UTC)
+    assert screened.has_attachments
+    assert screened.body == "Tom Evans and I signed Northwind Retail on 22 September."
+
+
+def test_rejected_screened_email_drops_its_body() -> None:
+    screened = screen(_sender_email("alex.morgan@example.com"), ["techary.ai"], [], [])
+
+    assert screened.rejection == "sender_domain"
+    assert screened.body is None
+    assert screened.subject == "Signed Northwind Retail today"
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [
+        ("priya.shah@techary.ai", None),
+        ("Priya.Shah@TECHARY.ai", None),
+        ("alex.morgan@example.com", "sender_domain"),
+        ("alex.morgan@mail.techary.ai", "sender_domain"),
+        ("alex.morgan@techary.ai.example.com", "sender_domain"),
+        ("no-domain", "sender_domain"),
+    ],
+)
+def test_sender_domain(address: str, expected: str | None) -> None:
+    assert _screen(_sender_email(address)) == expected
+
+
+def test_empty_allowed_senders_allows_any_sender_in_domain() -> None:
+    assert _screen(_sender_email("anyone@techary.ai"), senders=[]) is None
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [
+        ("priya.shah@techary.ai", None),
+        ("PRIYA.SHAH@techary.ai", None),
+        ("tom.evans@techary.ai", "sender_not_allowed"),
+    ],
+)
+def test_allowed_senders(address: str, expected: str | None) -> None:
+    assert _screen(_sender_email(address), senders=["priya.shah@techary.ai"]) == expected
+
+
+def test_domain_is_checked_before_allowed_senders() -> None:
+    email = _sender_email("alex.morgan@example.com")
+
+    assert _screen(email, senders=["alex.morgan@example.com"]) == "sender_domain"
+
+
+def _labels(value: str) -> InboundEmail:
+    return _sender_email(headers={"msip_labels": value})
+
+
+@pytest.mark.parametrize(
+    ("header", "allowed", "expected"),
+    [
+        (f"MSIP_Label_{LABEL}_Enabled=true", [], "sensitivity_label"),
+        (f"MSIP_Label_{LABEL}_Enabled=TRUE", [], "sensitivity_label"),
+        (f"MSIP_Label_{LABEL}_Enabled=true", [LABEL], None),
+        (f"MSIP_Label_{LABEL}_Enabled=true", [LABEL.upper()], None),
+        (f"MSIP_Label_{LABEL}_Enabled=false", [], None),
+        (f"MSIP_Label_{LABEL}_Name=Confidential; MSIP_Label_{LABEL}_SiteId=x", [], None),
+        (
+            f"MSIP_Label_{LABEL}_Enabled=true; MSIP_Label_{LABEL}_Name=General;"
+            f" MSIP_Label_{OTHER_LABEL}_Enabled=true;",
+            [LABEL],
+            "sensitivity_label",
+        ),
+        (
+            f"MSIP_Label_{LABEL}_Enabled=true; MSIP_Label_{OTHER_LABEL}_Enabled=true",
+            [LABEL, OTHER_LABEL],
+            None,
+        ),
+        ("", [], None),
+        ("not a label entry", [LABEL], "sensitivity_label"),
+        (f"MSIP_Label_{LABEL}_Enabled=true; garbage", [LABEL], "sensitivity_label"),
+    ],
+)
+def test_sensitivity_labels(header: str, allowed: list[str], expected: str | None) -> None:
+    assert _screen(_labels(header), labels=allowed) == expected
+
+
+def test_label_header_name_ignores_case() -> None:
+    email = _sender_email(headers={"MSIP_Labels": f"MSIP_Label_{LABEL}_Enabled=true"})
+
+    assert _screen(email) == "sensitivity_label"
+
+
+def test_unlabelled_message_is_allowed() -> None:
+    assert _screen(_sender_email(), labels=[LABEL]) is None
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"Auto-Submitted": "no"}, None),
+        ({"Auto-Submitted": "auto-replied"}, "automatic_reply"),
+        ({"X-Auto-Response-Suppress": "All"}, "automatic_reply"),
+    ],
+)
+def test_automatic_replies(headers: dict[str, str], expected: str | None) -> None:
+    assert _screen(_sender_email(headers=headers)) == expected
+
+
+def test_source_text_is_subject_and_body() -> None:
+    text = source_text(screen(_sender_email(), ["techary.ai"], [], []))
+
+    assert "Signed Northwind Retail today" in text
+    assert "22 September" in text
+
+
+def test_source_text_of_rejected_screened_email_is_subject_only() -> None:
+    text = source_text(screen(_sender_email("alex.morgan@example.com"), ["techary.ai"], [], []))
+
+    assert text == "Signed Northwind Retail today"
+
+
+def test_sender_names_are_each_sender_once_in_order() -> None:
+    emails = [
+        make_screened_email("m01", sender_name="Tom Evans"),
+        make_screened_email("m02"),
+        make_screened_email("m03", sender_name="Tom Evans"),
+    ]
+
+    assert sender_names(emails) == ["Tom Evans", "Priya Shah"]

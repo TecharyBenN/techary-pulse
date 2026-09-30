@@ -8,7 +8,7 @@ Techary Pulse turns staff updates emailed to `pulse@techary.ai` into a newslette
 
 ## Scope
 
-Any Techary staff member can email updates to `pulse@techary.ai` at any time. On a configured schedule, when a reviewer asks, or when an operator runs `pulse draft`, the orchestrator drafts a newsletter from the pending submissions and presents it to the reviewers. Reviewers reply by email or in LibreChat with questions, feedback or approval. The orchestrator answers questions, revises the draft and presents each new version. An approved newsletter is sent to the all-staff distribution list at its send time, or straight away if that time has passed. A reviewer can withdraw an approval until the send starts, and can ask the orchestrator to abandon a newsletter.
+Any Techary staff member can email updates to `pulse@techary.ai` at any time. On a configured schedule, when a reviewer asks, or when an operator runs `pulse draft`, the orchestrator drafts a newsletter from the pending emails and presents it to the reviewers. Reviewers reply by email or in LibreChat with questions, feedback or approval. The orchestrator answers questions, revises the draft and presents each new version. An approved newsletter is sent to the all-staff distribution list at its send time, or straight away if that time has passed. A reviewer can withdraw an approval until the send starts, and can ask the orchestrator to abandon a newsletter.
 
 The MVS excludes:
 
@@ -57,8 +57,8 @@ flowchart LR
     OR -- "model calls" --> GW
     SP -- "model calls" --> GW
     CH -- "read and reply to reviewer mail" --> M365
-    TL -- "read submissions, email reviewers" --> M365
-    DL -- "send the newsletter, move submissions" --> M365
+    TL -- "read pending emails, email reviewers" --> M365
+    DL -- "send the newsletter, move screened emails" --> M365
 ```
 
 *Figure 1: Pulse's components and the two external systems it connects to.*
@@ -70,8 +70,8 @@ flowchart LR
 | Orchestrator | Runs the newsletter conversation and decides which tools to call. |
 | Tools | The orchestrator's only means of acting. Each tool enforces its own checks in code. |
 | Specialist agents | The extractor, consolidator, writer and judge, each called through a tool. |
-| Delivery | Sends an approved newsletter at its send time and moves its submissions. |
-| Store | SQLite database holding newsletters, their submissions, drafts, versions, feedback and conversation history. |
+| Delivery | Sends an approved newsletter at its send time and moves its screened emails. |
+| Store | SQLite database holding newsletters, their screened emails, drafts, versions, feedback and conversation history. |
 
 ## Code structure
 
@@ -79,11 +79,12 @@ Pulse follows the ports and adapters pattern. Source code dependencies point inw
 
 ```text
 src/pulse/
-├── entities/          Rules and data: submissions and the pre-filter, extract records and the
-│                      exclusion rules, drafts and the draft checks, the newsletter lifecycle,
-│                      the specialist agents' output types, which entities extend, Pulse's
-│                      exception types, and the interfaces the other layers implement,
-│                      including the mailbox, the store, the token verifier and the clock
+├── entities/          Rules and data: email, its stages and the pre-filter, extract records,
+│                      the exclusion rules and items, drafts and the draft checks, the
+│                      newsletter lifecycle, the specialist agents' output types, which
+│                      entities extend, Pulse's exception types, and the interfaces the other
+│                      layers implement, including the mailbox, the store, the token verifier
+│                      and the clock
 ├── agents/            Every agent, one folder each
 │   ├── runner.py      Runs any specialist agent: validates its answer and retries once
 │   ├── orchestrator/  agent.py, prompt.md, tools.py, and run.py for one orchestrator run
@@ -93,7 +94,7 @@ src/pulse/
 │   └── judge/         agent.py and prompt.md
 ├── services/          Code the tools and the scheduler call
 │   ├── operations.py  Start, present, approve, withdraw and abandon: state change, save, email
-│   └── delivery.py    Sends an approved newsletter, moves its submissions, recovers a partial send
+│   └── delivery.py    Sends an approved newsletter, moves its screened emails, recovers a partial send
 ├── adapters/          Microsoft Graph mail, the AI gateway, the SQLite store, the system clock,
 │                      bearer token verification, and HTML emails with their templates
 ├── entrypoints/       The email channel, the LibreChat endpoint, the scheduler and the command line
@@ -107,7 +108,7 @@ tests/                 Mirrors src/pulse/; fakes/ holds the fake mailbox, fake G
 
 ## Newsletters
 
-A newsletter is one conversation with the reviewers, together with the submissions it draws on and the draft versions presented in it, from when it is opened until it is sent or abandoned. A newsletter that is not sent or abandoned is open. At most one newsletter is open at a time. The newsletter ID is also the `conversation_id` of its conversation history.
+A newsletter is one conversation with the reviewers, together with the screened emails it draws on and the draft versions presented in it, from when it is opened until it is sent or abandoned. A newsletter that is not sent or abandoned is open. At most one newsletter is open at a time. The newsletter ID is also the `conversation_id` of its conversation history.
 
 ```mermaid
 stateDiagram-v2
@@ -134,22 +135,22 @@ stateDiagram-v2
 | Abandon | Reviewer request, before the send starts | Orchestrator, through `abandon` |
 | Send | Approved newsletter whose send time has come | Delivery |
 
-### Submissions
+### Screened emails
 
-The `pulse@techary.ai` inbox holds the pending submissions: messages move out of it only when a newsletter is sent. When `start_newsletter` opens a newsletter, every message in the inbox at that moment becomes one of its submissions. When it is called on an open newsletter, it adds the messages that have arrived since.
+The `pulse@techary.ai` inbox holds the pending emails: messages move out of it only when a newsletter is sent. When `start_newsletter` opens a newsletter, every message in the inbox at that moment becomes one of its screened emails. When it is called on an open newsletter, it adds the messages that have arrived since.
 
-Code applies the pre-filter to every submission. The sender is the address in the message's `from` field. The pre-filter rejects messages:
+Code applies the pre-filter to every pending email it adds, and stores the result as a screened email. The sender is the address in the message's `from` field. The pre-filter rejects messages:
 
 - whose sender domain is not in `allowed_sender_domains`;
 - whose sender is not in `allowed_senders`, when that list is not empty;
 - carrying an enabled sensitivity label whose ID is not in `allowed_sensitivity_labels`; messages with no label are allowed. The `msip_labels` header lists each label's properties as `MSIP_Label_<id>_<property>=<value>` entries separated by semicolons, and a label is enabled when its `Enabled` value is `true`, ignoring case. Label IDs are compared ignoring case. A message whose `msip_labels` header holds an entry not in that form is rejected, because an unreadable header may hide a label;
 - carrying an `Auto-Submitted` header other than `no`, or an `X-Auto-Response-Suppress` header.
 
-Header names are compared ignoring case. A rejected submission records the first rule it fails, in the order above, as `sender_domain`, `sender_not_allowed`, `sensitivity_label` or `automatic_reply`.
+Header names are compared ignoring case. A rejected screened email records the first rule it fails, in the order above, as `sender_domain`, `sender_not_allowed`, `sensitivity_label` or `automatic_reply`.
 
 Short and empty messages are left to the extractor, because company email signatures make message length unreliable.
 
-When a newsletter is sent, delivery moves its extracted submissions, included and excluded, to `Processed`, and its rejected submissions to `Rejected`. Submissions the orchestrator did not extract stay in the inbox. An abandoned newsletter moves nothing, so all its submissions remain pending for the next newsletter.
+When a newsletter is sent, delivery moves its extracted screened emails, included and excluded, to `Processed`, and its rejected screened emails to `Rejected`. Screened emails the orchestrator did not extract stay in the inbox. An abandoned newsletter moves nothing, so all its emails remain pending for the next newsletter.
 
 ### Versions and approval
 
@@ -166,7 +167,7 @@ Presenting a new version of an approved newsletter withdraws the approval first.
 
 A newsletter starts when the orchestrator calls `start_newsletter`. It does so in response to the start instruction, a fixed message asking it to draft a newsletter, or to a reviewer asking for one. The scheduler posts the start instruction on `schedule.draft_cron`, and `pulse draft` posts the same message.
 
-When a newsletter is already open, `start_newsletter` adds the submissions that have arrived since it was opened or last updated. The orchestrator folds any new submissions into the working draft, keeping all feedback, and presents a new version only if the draft changed. The scheduler and `pulse draft` do not post the start instruction while the open newsletter is approved and its send has not happened; they log the skipped trigger instead.
+When a newsletter is already open, `start_newsletter` adds the emails that have arrived since it was opened or last updated. The orchestrator folds any new screened emails into the working draft, keeping all feedback, and presents a new version only if the draft changed. The scheduler and `pulse draft` do not post the start instruction while the open newsletter is approved and its send has not happened; they log the skipped trigger instead.
 
 A run started by the start instruction has no reviewer present and no channel to reply through. When it presents a version, the reviewer email opens the conversation with the reviewers, or continues it if the newsletter was already open.
 
@@ -190,28 +191,28 @@ When the history is loaded, tool results from before the latest presented versio
 
 A reviewer message received when no newsletter is open starts a run with an empty history. If the run calls `start_newsletter`, the exchange becomes the new newsletter's history.
 
-The orchestrator's rules are set with `instructions`, which Pydantic AI sends with every request rather than storing in the history. Reviewer messages reach the orchestrator only as user content, and submissions only as extract records in tool results; neither ever enters its instructions. Each run may make at most `orchestrator.max_tool_calls` tool calls and last at most `orchestrator.max_run_minutes` minutes.
+The orchestrator's rules are set with `instructions`, which Pydantic AI sends with every request rather than storing in the history. Reviewer messages reach the orchestrator only as user content, and staff emails only as extract records in tool results; neither ever enters its instructions. Each run may make at most `orchestrator.max_tool_calls` tool calls and last at most `orchestrator.max_run_minutes` minutes.
 
 ### Tools
 
 | Tool | Kind | Effect |
 | --- | --- | --- |
-| `start_newsletter` | Action | Opens a newsletter with the pending submissions, or adds those that have arrived since to the open one, and applies the pre-filter to them. |
-| `list_submissions` | Read | Returns each submission's message ID, sender name, received time, attachment flag, pre-filter outcome, and extract record if one exists. Never returns subjects or bodies. |
-| `extract` | Specialist | Runs the extractor on the named submissions, in parallel, and stores each extract record with its exclusion outcome. |
-| `consolidate` | Specialist | Runs the consolidator on the named extract records and stores the resulting items and headline. |
+| `start_newsletter` | Action | Opens a newsletter with the pending emails, or adds those that have arrived since to the open one, and applies the pre-filter to them. |
+| `list_screened_emails` | Read | Returns each screened email's message ID, sender name, received time, attachment flag, pre-filter outcome, and extract record if one exists. Never returns subjects or bodies. |
+| `extract` | Specialist | Runs the extractor on the named screened emails, in parallel, and stores each extract record with its exclusion outcome. Returns each email's outcome and the totals included, excluded by reason, and failed. |
+| `consolidate` | Specialist | Runs the consolidator on the named extract records and stores the resulting items and headline, replacing any earlier ones. Returns the headline, the item count and each item's ID, category and sources. |
 | `write` | Specialist | Runs the writer on the items, the excluded records, all feedback, the orchestrator's instruction and, when revising, the working draft, and stores the result as the working draft. |
 | `judge` | Specialist | Runs the judge on the working draft and stores its verdicts. |
 | `check` | Read | Runs the code checks in [draft checks](#draft-checks) on the working draft and returns every failure. |
-| `get_newsletter` | Read | Returns a summary: state, versions presented, item and excluded record counts, whether the working draft has changed since the latest version, approved version and send time. |
+| `get_newsletter` | Read | Returns a summary: state, versions presented, item and excluded record counts, whether the items are up to date (built from exactly the included records), whether the working draft has changed since the latest version, approved version and send time. |
 | `get_draft` | Read | Returns the working draft, or a named version. |
-| `get_items` | Read | Returns the current items and excluded records. |
+| `get_items` | Read | Returns the headline, the current items with the sender names and received times of their source emails, and the excluded records. |
 | `present_draft` | Action | Saves the working draft as the next version with its check results and the judge's latest verdicts, and emails its reviewer email to `reviewers`, withdrawing any approval as described in [versions and approval](#versions-and-approval). |
 | `approve` | Action | Records approval of a named version and sets the send time. |
 | `withdraw_approval` | Action | Returns an approved newsletter to `in_review`. |
 | `abandon` | Action | Closes the newsletter unsent and emails the reviewers that it was abandoned. |
 
-Tools return IDs, counts and short summaries; `get_draft` and `get_items` return detail when the orchestrator needs it.
+Tools return IDs, counts and short summaries, with totals wherever the orchestrator would otherwise have to count; `get_draft` and `get_items` return detail when the orchestrator needs it.
 
 Every tool checks its preconditions in code, records its effect in the store as it happens, and returns the reason when it refuses:
 
@@ -219,14 +220,14 @@ Every tool checks its preconditions in code, records its effect in the store as 
 - `withdraw_approval` and `abandon` require the run's caller to be a verified reviewer, so they refuse in runs started by the start instruction.
 - `start_newsletter`, `present_draft`, `withdraw_approval` and `abandon` refuse once `send_started` is recorded.
 - `present_draft` refuses when there is no working draft.
-- `extract` refuses submissions the pre-filter rejected, and `consolidate` refuses excluded records.
+- `extract` refuses emails the pre-filter rejected, and `consolidate` refuses excluded records, emails with no extract record, and a call naming no records.
 
 ### Behaviour
 
 The orchestrator's instructions apply these rules:
 
 - before acting on a message, call `get_newsletter`, and treat the store as the record of what has already been done;
-- on the start instruction, or when a reviewer asks for a newsletter, call `start_newsletter`, then present a draft built from the newsletter's submissions;
+- on the start instruction, or when a reviewer asks for a newsletter, call `start_newsletter`, then present a draft built from the newsletter's screened emails;
 - treat a message that asks for changes as feedback, even if it also mentions approval: revise the draft, present the new version and ask the reviewer to confirm approval of it;
 - fix a failing check or unsupported claim with the smallest change that corrects it, such as revising only the affected entries;
 - accept a check failure that cannot be corrected without losing content; the review section lists it;
@@ -258,11 +259,11 @@ The chat endpoint speaks the OpenAI chat completions format at `POST /v1/chat/co
 
 ## Specialist agents
 
-Each specialist agent is a Pydantic AI agent whose instructions are part of its definition. Pulse validates every response against the agent's output type, and runs the agent's output checks after type validation; a failed output check counts as an invalid response. An invalid response is retried once.
+Each specialist agent is a Pydantic AI agent whose instructions are part of its definition. An agent's output type holds only what needs the model's judgement; code assigns every value it can take or derive from the agent's input, such as IDs, and the entity that code builds extends the output type with them. Pulse validates every response against the agent's output type, and runs the agent's output checks after type validation; a failed output check counts as an invalid response. An invalid response is retried once, continuing the same conversation with a message from code that lists the problems found, so the agent sees its response and what was wrong.
 
 | Agent | Called by | Input | Model tier |
 | --- | --- | --- | --- |
-| `extractor` | `extract`, once per submission | Message ID, sender name and address from `from`, subject, received time and `uniqueBody` | Small |
+| `extractor` | `extract`, once per screened email | Sender name and address from `from`, subject, received time and `uniqueBody` | Small |
 | `consolidator` | `consolidate` | Extract records that were not excluded | Mid |
 | `writer` | `write` | Consolidated items with sender names and received dates, excluded records, all feedback, the orchestrator's instruction and, when revising, the working draft | Mid |
 | `judge` | `judge` | Working draft, items and all feedback | Mid |
@@ -279,10 +280,8 @@ Pulse sends every model call to `llm.base_url` in the OpenAI-compatible chat com
 
 ```json
 {
-  "message_id": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A...",
-  "is_update": true,
-  "exclusion_reason": null,
   "category": "customer_win",
+  "exclusion_reason": null,
   "summary": "Sales signed a managed service contract with a new retail customer.",
   "facts": [
     "Contract signed on 22 September 2026",
@@ -297,12 +296,11 @@ Pulse sends every model call to `llm.base_url` in the OpenAI-compatible chat com
 
 | Field | Values |
 | --- | --- |
-| `is_update` | `false` for out-of-office and other automatic replies, test emails, one-word messages, newsletters and mailing-list mail |
-| `exclusion_reason` | `not_an_update`, `unclear` (the facts cannot be stated without assumptions) or `no_matching_section` (the update fits none of the configured category definitions); `null` for an included record |
-| `category` | One of the configured section categories; `null` for an excluded record |
+| `category` | The configured section category that the news stated in the email fits; `null` when it fits none, including emails that state no news, such as automatic replies, test emails, newsletters and vague messages |
+| `exclusion_reason` | `null` when `category` is set; otherwise one short sentence for the reviewers saying why the email fits no category |
 | `sensitivity.type` | `commercial` (deal values, margins, pricing, revenue), `personal` (health, family, performance, HR matters; a birthday is newsletter content, not personal), `unannounced` (confidential, draft or not yet announced) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
 
-The extractor states only facts in the message. Code excludes every record that is not an update, is unclear, has no matching category or carries a sensitivity flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. Extracting a submission again replaces its extract record, which keeps its excluded ID while it stays excluded. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries any sensitivity flag; the record's `exclusion_reason`; `not_an_update`, when `is_update` is `false`; and `no_matching_section`, when `category` is `null`.
+The extractor states only facts in the message, writing the sender's name where the message says I or we, so each fact names who it is about. Code attaches the email's message ID to the extractor's output, making it the email's extract record, and excludes every record that has no category or carries a sensitivity flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. Extracting an email again replaces its extract record, which keeps its excluded ID while it stays excluded. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries any sensitivity flag, and `no_category`, when `category` is `null`. The extractor's output checks require exactly one of `category` and `exclusion_reason`, and the category to be configured.
 
 ### Consolidate
 
@@ -311,17 +309,15 @@ The extractor states only facts in the message. Code excludes every record that 
   "headline": "A new retail customer and a thank-you to the service desk",
   "items": [
     {
-      "item_id": "item-2",
       "category": "customer_win",
       "facts": ["Contract signed on 22 September 2026", "Onboarding starts in October"],
-      "people": ["Priya Shah", "Tom Evans"],
       "source_message_ids": ["AAkALg...01", "AAkALg...07"]
     }
   ]
 }
 ```
 
-The consolidator merges records describing the same news and writes the headline. Item IDs have the form `item-{n}`, numbered from 1. Its output checks require that form, every source message ID to come from its input, and every input record to appear in exactly one item. The `write` tool adds each item's sender names and received dates to the writer's input, from the item's source submissions. The headline is one short line in sentence case.
+The consolidator merges records describing the same news and writes the headline. Its output checks require every source message ID to come from its input, and every input record to appear in exactly one item. Code turns each merged entry into an item: it gives the item an ID of the form `item-{n}`, numbered from 1 in the order the consolidator returned them, and the people of its source records, each once. The `write` tool adds each item's sender names and received dates to the writer's input, from the item's source emails. The headline is one short line in sentence case.
 
 ### Write
 
@@ -388,12 +384,12 @@ The reviewer email for a version has the subject `subject_template` prefixed wit
 2. the judge's unsupported claims, or a note that the version was not judged;
 3. for version 2 onwards, the changes and any feedback not applied;
 4. restored records;
-5. submissions excluded for sensitivity, with sender, subject, sensitivity type and evidence;
-6. other excluded submissions, with sender, subject and reason;
-7. submissions that passed the pre-filter but were not extracted, with sender and subject;
-8. rejected submissions, by subject line only;
-9. included and excluded submissions with attachments, whose attachment content is not included;
-10. the source map, linking each item to its source submissions by sender, subject and received date.
+5. emails excluded for sensitivity, with sender, subject, sensitivity type and evidence;
+6. other excluded emails, with sender, subject and the extractor's exclusion reason;
+7. emails that passed the pre-filter but were not extracted, with sender and subject;
+8. rejected emails, by subject line only;
+9. included and excluded emails with attachments, whose attachment content is not included;
+10. the source map, linking each item to its source emails by sender, subject and received date.
 
 Notices to `reviewers` use the subject `subject_template` prefixed with `Send cancelled:`, `Abandoned:` or `Sent:`.
 
@@ -401,7 +397,7 @@ Notices to `reviewers` use the subject `subject_template` prefixed with `Send ca
 
 Every `schedule.poll_interval_minutes`, delivery:
 
-1. completes the moves of any sent newsletter whose submissions were not all moved;
+1. completes the moves of any sent newsletter whose screened emails were not all moved;
 2. sends the open newsletter if it is `approved`, not sent, and its send time has come.
 
 To send, delivery:
@@ -409,9 +405,9 @@ To send, delivery:
 1. checks that the approved version is the latest presented version; if it is not, it does not send, and sends an operator alert;
 2. records `send_started`;
 3. renders the approved version without the review section, with the subject built from `subject_template`;
-4. sends it from `pulseagent@techary.ai` to `all_staff`, with `replyTo` set to the submissions mailbox, so staff replies arrive as submissions;
+4. sends it from `pulseagent@techary.ai` to `all_staff`, with `replyTo` set to the submissions mailbox, so staff replies arrive as pending emails;
 5. marks the newsletter `sent` and emails `reviewers` a confirmation;
-6. moves the newsletter's submissions as described in [submissions](#submissions), recording each move;
+6. moves the newsletter's screened emails as described in [screened emails](#screened-emails), recording each move;
 7. appends a note to the conversation history that the newsletter was sent.
 
 If delivery finds a newsletter with `send_started` recorded but not marked `sent`, it does not send it again: it sends an operator alert to check the conversation mailbox's Sent Items.
@@ -425,8 +421,8 @@ The store is a SQLite database at `state.db_path`, on the mounted volume. Every 
 | Table | Contents |
 | --- | --- |
 | `newsletters` | Newsletter ID, state, time opened, time last updated, latest version, approved version, approver, approval time, send time, `send_started`, sent time and closed time |
-| `submissions` | Each newsletter's submissions: message ID, sender name and address, subject, received time, attachment flag, pre-filter outcome and reason, and whether the message has been moved; the body for submissions that passed the pre-filter |
-| `extract_records` | Each submission's extract record and exclusion outcome, with the ID given to an excluded record |
+| `screened_emails` | Each newsletter's screened emails: message ID, sender name and address, subject, received time, attachment flag, pre-filter outcome and reason, and whether the message has been moved; the body for emails that passed the pre-filter |
+| `extract_records` | Each screened email's extract record and exclusion outcome, with the ID given to an excluded record |
 | `items` | Each newsletter's current consolidated items and headline |
 | `drafts` | Each newsletter's working draft, and the judge's latest verdicts on it |
 | `versions` | Each presented version's content, changes, feedback not applied, judge verdicts, check results and creation time |
@@ -473,7 +469,7 @@ Within Pulse:
 - only verified reviewers can start an orchestrator run: in the chat endpoint, callers whose verified token carries the reviewer role, and in the email channel, senders Exchange authenticated as internal; otherwise, only the scheduler and `pulse draft` start one, and only with the start instruction;
 - conversation history is loaded only from the store, never from a client;
 - the extractor is the only agent that reads message subjects and bodies, and it has no tools; every other agent receives extract records, which it treats as untrusted data;
-- staff submissions and reviewer messages never enter agent instructions or system prompts;
+- staff emails and reviewer messages never enter agent instructions or system prompts;
 - the orchestrator's tools are those listed in [tools](#tools), and each enforces its own checks in code;
 - the pre-filter rejects senders outside `allowed_sender_domains`, and outside `allowed_senders` when that list is not empty, and messages whose sensitivity label is not allowed;
 - the extractor flags sensitive and inappropriate content, and code excludes every flagged record unless a reviewer's feedback restores it;
@@ -618,7 +614,7 @@ Development runs against a Microsoft 365 dev tenant with Exchange Online, separa
 
 | Object | Purpose |
 | --- | --- |
-| Submissions shared mailbox | Receives submissions. Unlicensed. |
+| Submissions shared mailbox | Receives staff emails. Unlicensed. |
 | Conversation shared mailbox | Sends drafts and the newsletter, and receives reviewer messages. Unlicensed. |
 | Licensed test user | Internal sender and sole reviewer. |
 | Test distribution list | Stands in for the all-staff list, with the test user as its only member. |
@@ -626,7 +622,7 @@ Development runs against a Microsoft 365 dev tenant with Exchange Online, separa
 | App registration | Pulse's identity, authenticated by a certificate whose private key stays in the development workspace. |
 | Exchange scoping | Service principal, management scope and role assignments limiting the app to the two shared mailboxes. |
 
-The dev submissions mailbox accepts external senders, and the dev configuration adds the Techary work domain to `allowed_sender_domains`, so submissions can be sent from Techary work accounts. `reviewers`, `all_staff` and `allowed_recipient_domains` are limited to the test reviewers list, the test distribution list and the dev tenant domain. The dev configuration leaves `schedule.draft_cron` unset and uses `send.mode: on_approval`. LibreChat reaches the chat endpoint through a route on the dev AI gateway, registered in LibreChat as a custom endpoint. Until LibreChat and the gateway use Entra ID, the dev configuration's `auth` names the platform's stand-in token issuer, and LibreChat's one shared token carries the reviewer role, so every LibreChat user acts as one reviewer in dev.
+The dev submissions mailbox accepts external senders, and the dev configuration adds the Techary work domain to `allowed_sender_domains`, so staff emails can be sent from Techary work accounts. `reviewers`, `all_staff` and `allowed_recipient_domains` are limited to the test reviewers list, the test distribution list and the dev tenant domain. The dev configuration leaves `schedule.draft_cron` unset and uses `send.mode: on_approval`. LibreChat reaches the chat endpoint through a route on the dev AI gateway, registered in LibreChat as a custom endpoint. Until LibreChat and the gateway use Entra ID, the dev configuration's `auth` names the platform's stand-in token issuer, and LibreChat's one shared token carries the reviewer role, so every LibreChat user acts as one reviewer in dev.
 
 Automated tests run without a tenant or gateway:
 
@@ -639,7 +635,7 @@ Automated tests run without a tenant or gateway:
 | Delivery | Send timing in both send modes, approval re-check, `send_started` handling, single send to `all_staff`, message moves and their recovery | A temporary store and fake mailboxes with a controlled clock |
 | Graph client | Requests, paging, threading replies, throttling, errors | Mocked HTTP responses, including injected errors |
 
-A synthetic corpus of test submissions is kept for manual runs against the dev tenant and gateway. It contains genuine updates for every section, duplicate reports of the same news, out-of-office replies, test emails, one-word messages, newsletters, unclear submissions, updates that fit no category, external senders, labelled messages, sensitive and inappropriate content, messages with attachments, long reply chains, empty messages and a prompt-injection attempt.
+A synthetic corpus of staff emails is kept for manual runs against the dev tenant and gateway. It contains genuine updates for every section, duplicate reports of the same news, out-of-office replies, test emails, one-word messages, newsletters, unclear updates, updates that fit no category, external senders, labelled messages, sensitive and inappropriate content, messages with attachments, long reply chains, empty messages and a prompt-injection attempt.
 
 ## Glossary
 
@@ -649,24 +645,26 @@ A synthetic corpus of test submissions is kept for manual runs against the dev t
 | All-staff list | Distribution list that receives the approved newsletter. |
 | Content | The headline, intro, sections and included items that a working draft or version holds, and that is rendered and sent. |
 | Conversation mailbox | `pulseagent@techary.ai`, used for all reviewer communication and the newsletter send. |
-| Delivery | Scheduled code that sends an approved newsletter and moves its submissions. |
-| Extract record | The facts, people, category and sensitivity flags the extractor finds in one submission. |
+| Delivery | Scheduled code that sends an approved newsletter and moves its screened emails. |
+| Extract record | The facts, people, category and sensitivity flags the extractor finds in one screened email. |
 | HITL | Human in the loop: a person who reviews output before it takes effect. |
 | Immutable ID | Graph message ID that stays the same when a message moves folders. |
+| Item | One piece of news, merged by the consolidator from the extract records that report it. |
 | LibreChat | Chat client through which reviewers can talk to the orchestrator. |
 | Microsoft Graph | Microsoft's API (application programming interface) for Microsoft 365 data, including mail. |
-| Newsletter | One conversation with the reviewers, its submissions and its versions, from when it is opened until it is sent or abandoned. |
+| Newsletter | One conversation with the reviewers, its screened emails and its versions, from when it is opened until it is sent or abandoned. |
 | Object ID | The `oid` an Entra ID token carries: a user's identifier, the same across applications. Pulse identifies every reviewer by it. |
 | Open newsletter | A newsletter not yet sent or abandoned. At most one exists at a time. |
 | Orchestrator | The agent that runs the newsletter conversation and acts only through tools. |
-| Pending submission | A message in the submissions inbox. Messages leave the inbox only when a newsletter is sent. |
+| Pending email | A message in the submissions inbox. Messages leave the inbox only when a newsletter is sent. |
 | Prompt injection | Text in an input that attempts to override a model's instructions. |
 | RBAC for Applications | Exchange Online feature that limits an application's mail permissions to specific mailboxes. |
 | Reviewers list | The distribution list whose members review newsletters. Drafts and notices are sent to it, and the conversation mailbox accepts mail only from its members. |
+| Screened email | A pending email after the pre-filter, as Pulse stores it: its pre-filter outcome, and its body only when it passed. |
 | Sensitivity label | Microsoft Purview classification applied to a message, carried in its `msip_labels` header and identified by its label ID. |
 | Specialist agent | An agent that performs one language task, has no tools, and is called by the orchestrator through a tool. |
 | Start instruction | The fixed message, posted by the scheduler and by `pulse draft`, that asks the orchestrator to draft a newsletter. |
-| Store | SQLite database holding newsletters, submissions, drafts, versions, feedback and conversation history. |
+| Store | SQLite database holding newsletters, screened emails, drafts, versions, feedback and conversation history. |
 | Submissions mailbox | `pulse@techary.ai`, where staff send updates. |
 | Version | A draft presented to the reviewers, numbered from 1 within its newsletter. |
 | Working draft | The draft the orchestrator is working on, not yet presented to the reviewers. |

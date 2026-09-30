@@ -3,13 +3,13 @@ from typing import Any
 import pytest
 
 from pulse.entities.content import CheckFailure, Content, check_content
-from pulse.entities.submissions import Submission, screen
+from pulse.entities.mail import ScreenedEmail, screen
 from tests.emails import make_email
 
 SECTION_TITLES = {"customer_win": "Customer wins", "shout_out": "Shout-outs"}
 
 
-def _source(sender_name: str, subject: str, body: str) -> Submission:
+def _source(sender_name: str, subject: str, body: str) -> ScreenedEmail:
     email = make_email(sender_name=sender_name, subject=subject, body=body)
     return screen(email, ["techary.ai"], [], [])
 
@@ -63,7 +63,7 @@ def _check(
     content: Content,
     feedback: list[str] | None = None,
     max_words: int = 400,
-    sources: dict[str, list[Submission]] | None = None,
+    sources: dict[str, list[ScreenedEmail]] | None = None,
 ) -> list[CheckFailure]:
     return check_content(
         content,

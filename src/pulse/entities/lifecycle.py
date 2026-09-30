@@ -74,7 +74,7 @@ def open_newsletter(newsletter_id: str, now: dt.datetime) -> Newsletter:
 
 
 def update(newsletter: Newsletter, now: dt.datetime) -> Newsletter:
-    """Record that `start_newsletter` added the submissions that arrived since."""
+    """Record that `start_newsletter` added the emails that arrived since."""
     _require_changeable(newsletter)
     return newsletter.model_copy(update={"updated_at": now})
 

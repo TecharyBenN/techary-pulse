@@ -7,10 +7,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from pulse.adapters.graph import GRAPH_URL, CertificateCredential, GraphMailbox
+from pulse.adapters.graph import GRAPH_URL
 from pulse.config import Config, load_config
 from pulse.entities.mail import OutboundEmail
-from tests.emails import corpus_messages
+from tests.emails import corpus_messages, sendable_corpus_messages
+from tests.live import graph_mailbox
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
 
@@ -26,23 +27,11 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
         yield client
 
 
-def _mailbox(config: Config, client: httpx.AsyncClient, address: str) -> GraphMailbox:
-    graph = config.graph
-    credential = CertificateCredential(graph.tenant_id, graph.client_id, graph.certificate_path)
-    return GraphMailbox(client, credential.token, address, graph.max_retries)
-
-
 async def test_seed_the_corpus(config: Config, client: httpx.AsyncClient) -> None:
-    """Send the corpus to the submissions mailbox from the conversation mailbox.
-
-    Messages whose case needs headers or an external sender cannot be sent from the tenant, so
-    they are left to the unit tests.
-    """
+    """Send the sendable corpus to the submissions mailbox from the conversation mailbox."""
     messages = corpus_messages()
-    sender = _mailbox(config, client, config.mailboxes.conversation)
-    sendable = [
-        m for m in messages if "headers" not in m and m["sender_address"].endswith("@techary.ai")
-    ]
+    sender = graph_mailbox(config, client, config.mailboxes.conversation)
+    sendable = sendable_corpus_messages()
 
     for message in sendable:
         await sender.send(
@@ -58,7 +47,7 @@ async def test_seed_the_corpus(config: Config, client: httpx.AsyncClient) -> Non
 
 
 async def test_list_the_submissions_inbox(config: Config, client: httpx.AsyncClient) -> None:
-    emails = await _mailbox(config, client, config.mailboxes.submissions).list_inbox()
+    emails = await graph_mailbox(config, client, config.mailboxes.submissions).list_inbox()
 
     print(f"{len(emails)} messages in the submissions inbox")
     assert all(email.message_id for email in emails)

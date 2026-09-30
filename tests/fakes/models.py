@@ -83,14 +83,15 @@ def responses(*answers: ModelResponse | Exception) -> ModelFunction:
 
 
 def extractor_model(outputs: Mapping[str, str]) -> FunctionModel:
-    """Answer each submission with the JSON set for its message ID, found in the prompt."""
+    """Answer each email with the JSON set for its body, found in the first prompt, so a retry
+    gets the same answer."""
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        [request] = messages
+        request = messages[0]
         assert isinstance(request, ModelRequest)
         [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
         assert isinstance(prompt, str)
-        submission = json.loads(prompt.split("\n")[1])
-        return text_response(outputs[submission["message_id"]])
+        email = json.loads(prompt.split("\n")[1])
+        return text_response(outputs[email["body"]])
 
     return FunctionModel(model)

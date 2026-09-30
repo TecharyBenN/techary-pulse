@@ -83,7 +83,7 @@ Scope:
 - `config.py`: every key in the design's configuration, the example configurations in `config/`, recipient validation against `allowed_recipient_domains`, and a model entry for every agent;
 - `logging.py`: the JSON log format;
 - Pulse's exception types;
-- entities, from the design, holding only what the phase 1 rules read and produce: submissions and the pre-filter, the extractor's output and the exclusion rules, content and the draft checks, the newsletter states and transitions, the send time and the approval check; other entities arrive with the phase whose tool first uses them;
+- entities, from the design, holding only what the phase 1 rules read and produce: screened emails and the pre-filter, the extractor's output and the exclusion rules, content and the draft checks, the newsletter states and transitions, the send time and the approval check; other entities arrive with the phase whose tool first uses them;
 - the mailbox interface, with the operations in the design's Graph operations table, and `FakeMailbox` with the interface tests every mailbox must pass;
 - the clock interface and a controlled clock for tests;
 - a stub `main.py`.
@@ -126,9 +126,9 @@ Exit criteria: the test user chats with the orchestrator in LibreChat, and a req
 Scope:
 
 - the Graph mailbox: certificate sign-in through MSAL, the thumbprint logged at start-up, and every operation in the mailbox interface: listing the inbox with paging, `ImmutableId` and plain-text bodies, moving to a folder found or created by name, `sendMail`, and reply in thread through `createReplyAll`; retries on HTTP 429 and 503; it passes the mailbox interface tests;
-- the `submissions` and `extract_records` tables;
+- the `screened_emails` and `extract_records` tables;
 - `start_newsletter`: opening a newsletter with every inbox message, adding new messages to an open one, applying the pre-filter, and its refusals;
-- `list_submissions` and `get_newsletter`;
+- `list_screened_emails` and `get_newsletter`;
 - the agent runner: validating each specialist response against its output type and output checks, and retrying once;
 - the extractor, and `extract`: running it in parallel, applying the exclusion rules and giving each excluded record an ID;
 - the orchestrator instructions for starting a newsletter and treating extract records as data.
@@ -137,7 +137,7 @@ Exit criteria:
 
 - tests cover each tool's effect and refusals, with the extractor's model replaced by a stand-in;
 - tests cover the Graph mailbox against mocked HTTP, including paging, throttling, folders, replies and errors;
-- live check: the corpus is sent to the dev submissions mailbox, and a LibreChat request to start a newsletter extracts it through the dev gateway, with rejected, excluded and included submissions as the corpus expects.
+- live check: the corpus is sent to the dev submissions mailbox, and a LibreChat request to start a newsletter extracts it through the dev gateway, with rejected, excluded and included emails as the corpus expects.
 
 ### Phase 5: consolidate
 
@@ -170,7 +170,7 @@ Exit criteria: tests cover the tools and the review section; live check: a draft
 Scope:
 
 - `approve`, with every check from the design, and the send time;
-- delivery, running every `schedule.poll_interval_minutes` inside `pulse serve`: the approval re-check, `send_started`, rendering without the review section, sending to `all_staff` with `replyTo` set to the submissions mailbox, marking the newsletter `sent`, the `Sent:` notice, moving submissions and the history note;
+- delivery, running every `schedule.poll_interval_minutes` inside `pulse serve`: the approval re-check, `send_started`, rendering without the review section, sending to `all_staff` with `replyTo` set to the submissions mailbox, marking the newsletter `sent`, the `Sent:` notice, moving screened emails and the history note;
 - operator alerts, sent to `operator_alerts`;
 - the orchestrator instructions for approval.
 

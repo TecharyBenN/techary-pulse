@@ -50,8 +50,8 @@ async def test_opens_a_newsletter_with_every_inbox_message(
         OPENED,
     )
     assert (result.opened, result.added, result.rejected) == (True, 2, 1)
-    submissions = await store.list_submissions(result.newsletter_id)
-    assert [(s.message_id, s.rejection) for s in submissions] == [
+    emails = await store.list_screened_emails(result.newsletter_id)
+    assert [(s.message_id, s.rejection) for s in emails] == [
         ("m01", None),
         ("m13", "sender_domain"),
     ]
@@ -75,8 +75,8 @@ async def test_adds_only_messages_that_arrived_since(
     newsletter = await store.get_open_newsletter()
     assert newsletter is not None
     assert (newsletter.opened_at, newsletter.updated_at) == (OPENED, clock.time)
-    submissions = await store.list_submissions(first.newsletter_id)
-    assert [s.message_id for s in submissions] == ["m01", "m02", "m13"]
+    emails = await store.list_screened_emails(first.newsletter_id)
+    assert [s.message_id for s in emails] == ["m01", "m02", "m13"]
 
 
 async def test_opens_with_an_empty_inbox(store: SqliteStore, clock: ControlledClock) -> None:

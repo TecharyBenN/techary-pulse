@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from pulse.entities.base import Entity, StrictEntity
-from pulse.entities.submissions import Submission, source_text
+from pulse.entities.mail import ScreenedEmail, sender_names, source_text
 
 CheckName = Literal[
     "word_count", "dashes", "digits", "people", "sentences", "senders", "items", "categories"
@@ -49,7 +49,7 @@ class CheckFailure(Entity):
 @dataclass(frozen=True)
 class _Context:
     content: Content
-    sources: Mapping[str, Sequence[Submission]]
+    sources: Mapping[str, Sequence[ScreenedEmail]]
     feedback: Sequence[str]
     headline_title: str
     section_titles: Mapping[str, str]
@@ -60,10 +60,10 @@ class _Context:
             yield from section.entries
 
     def texts(self, item_id: str) -> list[str]:
-        return [source_text(submission) for submission in self.sources.get(item_id, ())]
+        return [source_text(email) for email in self.sources.get(item_id, ())]
 
     def senders(self, item_id: str) -> list[str]:
-        return list(dict.fromkeys(s.sender_name for s in self.sources.get(item_id, ())))
+        return sender_names(self.sources.get(item_id, ()))
 
     def visible_text(self) -> Iterator[tuple[str | None, str]]:
         yield "headline_title", self.headline_title
@@ -78,7 +78,7 @@ class _Context:
 
 def check_content(
     content: Content,
-    sources: Mapping[str, Sequence[Submission]],
+    sources: Mapping[str, Sequence[ScreenedEmail]],
     feedback: Sequence[str],
     headline_title: str,
     section_titles: Mapping[str, str],
@@ -86,7 +86,7 @@ def check_content(
 ) -> list[CheckFailure]:
     """Return every check failure.
 
-    `sources` maps each included item ID, or restored record ID, to its source submissions.
+    `sources` maps each included item ID, or restored record ID, to its source emails.
     """
     context = _Context(content, sources, feedback, headline_title, section_titles, max_words)
     return [failure for check in _CHECKS for failure in check(context)]

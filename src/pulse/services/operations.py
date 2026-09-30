@@ -6,9 +6,8 @@ from collections.abc import Callable
 from pulse.entities.base import Entity
 from pulse.entities.clock import Clock
 from pulse.entities.lifecycle import open_newsletter, update
-from pulse.entities.mail import InboundEmail, Mailbox
+from pulse.entities.mail import InboundEmail, Mailbox, ScreenedEmail
 from pulse.entities.store import Store
-from pulse.entities.submissions import Submission
 
 
 class StartResult(Entity):
@@ -23,7 +22,7 @@ class Operations:
         self,
         store: Store,
         submissions_mailbox: Mailbox,
-        screen: Callable[[InboundEmail], Submission],
+        screen: Callable[[InboundEmail], ScreenedEmail],
         clock: Clock,
     ) -> None:
         self._store = store
@@ -32,7 +31,7 @@ class Operations:
         self._clock = clock
 
     async def start_newsletter(self) -> StartResult:
-        """Open a newsletter with every pending submission, or add those new to the open one."""
+        """Open a newsletter with every pending email, or add those new to the open one."""
         now = self._clock.now()
         newsletter = await self._store.get_open_newsletter()
         opened = newsletter is None
@@ -41,8 +40,8 @@ class Operations:
             newsletter = open_newsletter(str(uuid.uuid4()), now)
         else:
             newsletter = update(newsletter, now)
-            submissions = await self._store.list_submissions(newsletter.newsletter_id)
-            known = {s.message_id for s in submissions}
+            emails = await self._store.list_screened_emails(newsletter.newsletter_id)
+            known = {e.message_id for e in emails}
         inbox = await self._mailbox.list_inbox()
         added = [self._screen(email) for email in inbox if email.message_id not in known]
         await self._store.save_start(newsletter, added)

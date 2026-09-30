@@ -9,14 +9,14 @@ from pathlib import Path
 
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import StoreError
-from pulse.entities.extracts import ExtractorOutput, ExtractRecord, make_record
+from pulse.entities.extracts import Consolidation, ExtractorOutput, ExtractRecord, make_record
 from pulse.entities.lifecycle import CLOSED_STATES, Newsletter
+from pulse.entities.mail import MessageId, ScreenedEmail
 from pulse.entities.store import HistoryRow
-from pulse.entities.submissions import Submission
 
 _NEWSLETTER_COLUMNS = tuple(Newsletter.model_fields)
 _FEEDBACK_COLUMNS = ("newsletter_id", *ReviewerMessage.model_fields)
-_SUBMISSION_COLUMNS = ("newsletter_id", *Submission.model_fields)
+_SCREENED_EMAIL_COLUMNS = ("newsletter_id", *ScreenedEmail.model_fields)
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS newsletters (
@@ -27,8 +27,8 @@ CREATE TABLE IF NOT EXISTS feedback (
     {", ".join(_FEEDBACK_COLUMNS)},
     PRIMARY KEY (message_id)
 );
-CREATE TABLE IF NOT EXISTS submissions (
-    {", ".join(_SUBMISSION_COLUMNS)},
+CREATE TABLE IF NOT EXISTS screened_emails (
+    {", ".join(_SCREENED_EMAIL_COLUMNS)},
     PRIMARY KEY (newsletter_id, message_id)
 );
 CREATE TABLE IF NOT EXISTS extract_records (
@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS extract_records (
     excluded_id TEXT,
     data TEXT NOT NULL,
     PRIMARY KEY (newsletter_id, message_id)
+);
+CREATE TABLE IF NOT EXISTS items (
+    newsletter_id TEXT NOT NULL,
+    data TEXT NOT NULL,
+    PRIMARY KEY (newsletter_id)
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,27 +68,29 @@ class SqliteStore:
         row = await self._execute(lambda c: c.execute(sql, CLOSED_STATES).fetchone())
         return None if row is None else Newsletter.model_validate(dict(row))
 
-    async def save_start(self, newsletter: Newsletter, submissions: Sequence[Submission]) -> None:
+    async def save_start(self, newsletter: Newsletter, emails: Sequence[ScreenedEmail]) -> None:
         newsletter_id = newsletter.newsletter_id
-        rows = [{"newsletter_id": newsletter_id} | s.model_dump(mode="json") for s in submissions]
+        rows = [{"newsletter_id": newsletter_id} | e.model_dump(mode="json") for e in emails]
 
         def save(connection: sqlite3.Connection) -> None:
             _insert(
                 connection, "INSERT OR REPLACE", "newsletters", newsletter.model_dump(mode="json")
             )
             for row in rows:
-                _insert(connection, "INSERT OR IGNORE", "submissions", row)
+                _insert(connection, "INSERT OR IGNORE", "screened_emails", row)
 
         await self._execute(save)
 
-    async def list_submissions(self, newsletter_id: str) -> list[Submission]:
-        sql = "SELECT * FROM submissions WHERE newsletter_id = ?"
+    async def list_screened_emails(self, newsletter_id: str) -> list[ScreenedEmail]:
+        sql = "SELECT * FROM screened_emails WHERE newsletter_id = ?"
         rows = await self._execute(lambda c: c.execute(sql, (newsletter_id,)).fetchall())
-        submissions = [Submission.model_validate(dict(row)) for row in rows]
+        emails = [ScreenedEmail.model_validate(dict(row)) for row in rows]
         # Sorted here, because stored times may carry different UTC offsets.
-        return sorted(submissions, key=lambda s: (s.received, s.message_id))
+        return sorted(emails, key=lambda e: (e.received, e.message_id))
 
-    async def save_extract(self, newsletter_id: str, output: ExtractorOutput) -> ExtractRecord:
+    async def save_extract(
+        self, newsletter_id: str, message_id: MessageId, output: ExtractorOutput
+    ) -> ExtractRecord:
         def save(connection: sqlite3.Connection) -> ExtractRecord:
             # Parallel extractions number their records, so the write lock is taken before reading.
             connection.execute("BEGIN IMMEDIATE")
@@ -92,10 +99,10 @@ class SqliteStore:
             )
             saved = connection.execute(sql, (newsletter_id,)).fetchall()
             previous = next(
-                (_record(row) for row in saved if row["message_id"] == output.message_id), None
+                (_record(row) for row in saved if row["message_id"] == message_id), None
             )
             used_ids = [row["excluded_id"] for row in saved if row["excluded_id"]]
-            record = make_record(output, previous, used_ids)
+            record = make_record(message_id, output, previous, used_ids)
             row = {
                 "newsletter_id": newsletter_id,
                 "message_id": record.message_id,
@@ -118,6 +125,15 @@ class SqliteStore:
         sql = "SELECT data FROM extract_records WHERE newsletter_id = ? ORDER BY rowid"
         rows = await self._execute(lambda c: c.execute(sql, (newsletter_id,)).fetchall())
         return [_record(row) for row in rows]
+
+    async def save_items(self, newsletter_id: str, consolidation: Consolidation) -> None:
+        row = {"newsletter_id": newsletter_id, "data": consolidation.model_dump_json()}
+        await self._insert("INSERT OR REPLACE", "items", row)
+
+    async def get_items(self, newsletter_id: str) -> Consolidation | None:
+        sql = "SELECT data FROM items WHERE newsletter_id = ?"
+        row = await self._execute(lambda c: c.execute(sql, (newsletter_id,)).fetchone())
+        return None if row is None else Consolidation.model_validate_json(row["data"])
 
     async def record_feedback(self, newsletter_id: str, message: ReviewerMessage) -> None:
         row = {"newsletter_id": newsletter_id} | message.model_dump(mode="json")

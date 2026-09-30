@@ -2,13 +2,13 @@
 
 Techary Pulse turns staff updates emailed to a Microsoft 365 submissions mailbox into a newsletter. An orchestrator agent drafts each newsletter, discusses it with reviewers over email or LibreChat, revises it from their feedback and, once a reviewer approves it, sends it to an all-staff distribution list. This README covers what Pulse needs to run and how to work on it. Behaviour is defined in the [design document](docs/techary-pulse-design.md), and delivery is planned in the [development plan](docs/development-plan.md).
 
-Pulse is being rebuilt to the current design. So far, `pulse serve` runs the chat endpoint, where reviewers talk to the orchestrator; the orchestrator has no tools yet. The development plan sets out the order in which the rest arrives.
+Pulse is being rebuilt to the current design. So far, `pulse serve` runs the chat endpoint, where reviewers talk to the orchestrator, which can start a newsletter from the submissions mailbox, extract its emails and consolidate them into items. The development plan sets out the order in which the rest arrives.
 
 ## How it works
 
 Staff email updates to the submissions mailbox at any time. On a schedule, when a reviewer asks, or when an operator runs `pulse draft`, the orchestrator takes every pending message, has code reject anything that is not from an allowed sender, and uses specialist agents to extract, consolidate and write the updates into a draft. It emails each draft to the reviewers with a review section listing check results, exclusions and sources.
 
-Reviewers reply by email, or talk to the orchestrator in LibreChat, with questions, feedback or approval. The orchestrator answers, revises the draft and emails each new version. An approved newsletter is sent to the all-staff list at the configured send time, or straight away if that time has passed, and its submissions then move to the `Processed` or `Rejected` folder. A reviewer can withdraw an approval until the send starts, or ask for a newsletter to be abandoned.
+Reviewers reply by email, or talk to the orchestrator in LibreChat, with questions, feedback or approval. The orchestrator answers, revises the draft and emails each new version. An approved newsletter is sent to the all-staff list at the configured send time, or straight away if that time has passed, and its emails then move to the `Processed` or `Rejected` folder. A reviewer can withdraw an approval until the send starts, or ask for a newsletter to be abandoned.
 
 ## Deployment requirements
 
@@ -101,6 +101,8 @@ Copy [config/config.dev.example.yaml](config/config.dev.example.yaml) to `config
 ```sh
 uv run --env-file .env pulse serve
 ```
+
+Until delivery and `abandon` arrive, a newsletter never closes, so each request for a newsletter adds to the same open one. To start again from a clean dev inbox, stop Pulse and delete `state/pulse.db`, so the store and the mailbox match.
 
 Pulse reads `./config.yaml` unless `--config` names another file. It listens on `chat.port`, which must be free on the machine. To check the endpoint, send a non-streamed request, then the same request with `"stream": true` and `curl -N`, which returns progress notes and the reply as server-sent events ending in `data: [DONE]`. `TOKEN` is a token from the issuer in `auth`, for the audience in `auth.audience`, carrying the reviewer role; without the role, Pulse returns HTTP 403:
 

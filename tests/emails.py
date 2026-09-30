@@ -1,4 +1,5 @@
-"""Synthetic inbox messages, and the submissions and extractor outputs derived from them."""
+"""Synthetic inbox messages, and the screened emails, extract records and items derived
+from them."""
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -6,12 +7,45 @@ from typing import Any
 
 import yaml
 
-from pulse.entities.extracts import ExtractorOutput
-from pulse.entities.mail import InboundEmail
-from pulse.entities.submissions import Submission, screen
+from pulse.entities.extracts import (
+    Consolidation,
+    ConsolidatorItem,
+    ConsolidatorOutput,
+    ExtractorOutput,
+    ExtractRecord,
+    Item,
+    make_record,
+)
+from pulse.entities.mail import InboundEmail, ScreenedEmail, screen
+from pulse.entities.store import Store
 
 ALLOWED_DOMAINS = ["techary.ai"]
 CORPUS = Path(__file__).parent / "corpus" / "corpus.yaml"
+HEADLINE = "A new retail customer"
+
+# Written out by hand from the corpus cases, not derived from the rules under test.
+CORPUS_OUTCOMES = {
+    "m01": "included",
+    "m02": "included",
+    "m03": "included",
+    "m04": "included",
+    "m05": "included",
+    "m06": "included",
+    "m07": "rejected: automatic_reply",
+    "m08": "excluded: no_category",
+    "m09": "excluded: no_category",
+    "m10": "excluded: no_category",
+    "m11": "excluded: no_category",
+    "m12": "excluded: no_category",
+    "m13": "rejected: sender_domain",
+    "m14": "rejected: sensitivity_label",
+    "m15": "excluded: sensitivity",
+    "m16": "excluded: sensitivity",
+    "m17": "excluded: no_category",
+    "m18": "excluded: no_category",
+}
+# The corpus's duplicate reports of one piece of news share an item.
+CORPUS_ITEM_SOURCES = [["m01", "m02"], ["m03", "m06"], ["m04"], ["m05"]]
 
 
 def make_email(message_id: str = "m01", **changes: object) -> InboundEmail:
@@ -28,19 +62,20 @@ def make_email(message_id: str = "m01", **changes: object) -> InboundEmail:
     return InboundEmail.model_validate(fields | changes)
 
 
-def screen_email(email: InboundEmail) -> Submission:
+def screen_email(email: InboundEmail) -> ScreenedEmail:
     """The pre-filter as main configures it for tests."""
     return screen(email, ALLOWED_DOMAINS, [], [])
 
 
-def make_submission(message_id: str = "m01", **changes: object) -> Submission:
+def make_screened_email(message_id: str = "m01", **changes: object) -> ScreenedEmail:
     return screen_email(make_email(message_id, **changes))
 
 
-def make_output(message_id: str = "m01", **changes: object) -> ExtractorOutput:
+def make_output(**changes: object) -> ExtractorOutput:
+    """An included output by default; `category=None` also gives it a reason, unless one is set."""
+    if changes.get("category", "") is None:
+        changes = {"exclusion_reason": "Fits no section."} | changes
     fields: dict[str, object] = {
-        "message_id": message_id,
-        "is_update": True,
         "exclusion_reason": None,
         "category": "customer_win",
         "summary": "Northwind Retail signed.",
@@ -51,9 +86,75 @@ def make_output(message_id: str = "m01", **changes: object) -> ExtractorOutput:
     return ExtractorOutput.model_validate(fields | changes)
 
 
+def make_extract_record(message_id: str = "m01", **changes: object) -> ExtractRecord:
+    """A first extraction of the email, numbered as the only record in its newsletter."""
+    return make_record(message_id, make_output(**changes), None, [])
+
+
+def make_consolidator_item(*source_message_ids: str, **changes: object) -> ConsolidatorItem:
+    fields: dict[str, object] = {
+        "category": "customer_win",
+        "facts": ["Signed Northwind Retail on 22 September"],
+        "source_message_ids": list(source_message_ids or ["m01"]),
+    }
+    return ConsolidatorItem.model_validate(fields | changes)
+
+
+def make_consolidator_output(*items: ConsolidatorItem) -> ConsolidatorOutput:
+    return ConsolidatorOutput(headline=HEADLINE, items=list(items))
+
+
+def make_item(item_id: str = "item-1", **changes: object) -> Item:
+    fields: dict[str, object] = make_consolidator_item().model_dump() | {
+        "item_id": item_id,
+        "people": ["Priya Shah", "Tom Evans"],
+    }
+    return Item.model_validate(fields | changes)
+
+
+def make_consolidation(*items: Item) -> Consolidation:
+    return Consolidation(headline=HEADLINE, items=list(items))
+
+
 def corpus_messages() -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = yaml.safe_load(CORPUS.read_text(encoding="utf-8"))["messages"]
+    messages: list[dict[str, Any]] = _corpus()["messages"]
     return messages
+
+
+def corpus_consolidation() -> ConsolidatorOutput:
+    return ConsolidatorOutput.model_validate(_corpus()["consolidation"])
+
+
+def sendable_corpus_messages() -> list[dict[str, Any]]:
+    """The corpus messages that can be sent from the tenant: the others need headers or an
+    external sender, so only the unit tests cover them."""
+    return [
+        m
+        for m in corpus_messages()
+        if "headers" not in m and m["sender_address"].endswith("@techary.ai")
+    ]
+
+
+async def stored_outcomes(store: Store, newsletter_id: str) -> dict[str, str]:
+    """Each screened email's outcome, by message ID, in the form CORPUS_OUTCOMES uses."""
+    records = {r.message_id: r for r in await store.list_extract_records(newsletter_id)}
+    outcomes = {}
+    for email in await store.list_screened_emails(newsletter_id):
+        record = records.get(email.message_id)
+        if email.rejection is not None:
+            outcomes[email.message_id] = f"rejected: {email.rejection}"
+        elif record is None:
+            outcomes[email.message_id] = "not extracted"
+        elif record.exclusion is None:
+            outcomes[email.message_id] = "included"
+        else:
+            outcomes[email.message_id] = f"excluded: {record.exclusion}"
+    return outcomes
+
+
+def _corpus() -> dict[str, Any]:
+    corpus: dict[str, Any] = yaml.safe_load(CORPUS.read_text(encoding="utf-8"))
+    return corpus
 
 
 def corpus_email(message: dict[str, Any], position: int) -> InboundEmail:
