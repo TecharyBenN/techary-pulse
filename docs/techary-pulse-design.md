@@ -24,7 +24,7 @@ The MVS excludes:
 
 ## Environment
 
-Pulse runs as a container on a closed server. The server has outbound access to Microsoft Graph (`graph.microsoft.com`), the Microsoft Entra ID token endpoint (`login.microsoftonline.com`) and an AI gateway, currently agentgateway. It has no access to Azure Storage or other Azure services. Pulse's chat endpoint accepts connections from the AI gateway only.
+Pulse runs as a container on a closed server. The server has outbound access to Microsoft Graph (`graph.microsoft.com`), the Microsoft Entra ID token endpoint (`login.microsoftonline.com`) and an AI gateway, currently agentgateway. It has no access to Azure Storage or other Azure services. Pulse's chat endpoint accepts only requests carrying a valid bearer token from the configured issuer: Entra ID in production.
 
 All connections, paths, schedules and addresses are set in configuration.
 
@@ -83,7 +83,7 @@ src/pulse/
 │                      exclusion rules, drafts and the draft checks, the newsletter lifecycle,
 │                      the specialist agents' output types, which entities extend, Pulse's
 │                      exception types, and the interfaces the other layers implement,
-│                      including the mailbox, the store and the clock
+│                      including the mailbox, the store, the token verifier and the clock
 ├── agents/            Every agent, one folder each
 │   ├── runner.py      Runs any specialist agent: validates its answer and retries once
 │   ├── orchestrator/  agent.py, prompt.md, tools.py, and run.py for one orchestrator run
@@ -95,7 +95,7 @@ src/pulse/
 │   ├── operations.py  Start, present, approve, withdraw and abandon: state change, save, email
 │   └── delivery.py    Sends an approved newsletter, moves its submissions, recovers a partial send
 ├── adapters/          Microsoft Graph mail, the AI gateway, the SQLite store, the system clock,
-│                      and HTML emails with their templates
+│                      bearer token verification, and HTML emails with their templates
 ├── entrypoints/       The email channel, the LibreChat endpoint, the scheduler and the command line
 ├── config.py          Reading and validating config.yaml
 ├── logging.py         The JSON log format
@@ -215,8 +215,8 @@ Tools return IDs, counts and short summaries; `get_draft` and `get_items` return
 
 Every tool checks its preconditions in code, records its effect in the store as it happens, and returns the reason when it refuses:
 
-- `approve` records approval only when the caller is in `reviewers`, the newsletter is `in_review`, the named version is the latest presented version, and the first non-empty line of the reviewer's message in the current run, trimmed, is exactly `approve v{version}`, ignoring case. The caller and the reviewer's message come from code, never from tool arguments.
-- `withdraw_approval` and `abandon` require the caller to be in `reviewers`, so they refuse in runs started by the start instruction.
+- `approve` records approval only when the run's caller is a verified reviewer, the newsletter is `in_review`, the named version is the latest presented version, and the first non-empty line of the reviewer's message in the current run, trimmed, is exactly `approve v{version}`, ignoring case. The caller and the reviewer's message come from code, never from tool arguments.
+- `withdraw_approval` and `abandon` require the run's caller to be a verified reviewer, so they refuse in runs started by the start instruction.
 - `start_newsletter`, `present_draft`, `withdraw_approval` and `abandon` refuse once `send_started` is recorded.
 - `present_draft` refuses when there is no working draft.
 - `extract` refuses submissions the pre-filter rejected, and `consolidate` refuses excluded records.
@@ -247,14 +247,14 @@ Both channels feed the open newsletter's single conversation.
 
 | Channel | Receiving | Identifying the sender | Replying |
 | --- | --- | --- | --- |
-| Email | The scheduler polls the `pulseagent@techary.ai` inbox every `schedule.poll_interval_minutes` | The address in `from`, which must be in `reviewers` | A reply-all within the email thread, addressed to `reviewers` only |
-| LibreChat | The chat endpoint receives a chat completions request from the AI gateway | The `X-User-Email` header, which must be in `reviewers` | The chat completions response |
+| Email | The scheduler polls the `pulseagent@techary.ai` inbox every `schedule.poll_interval_minutes` | The address in `from`, on a message Exchange authenticated as internal, resolved to the sender's Entra object ID | A reply-all within the email thread, addressed to `reviewers` only |
+| Chat endpoint | The chat endpoint receives a chat completions request, from LibreChat through the AI gateway or from any other client | The `oid` claim of the request's bearer token, which must carry the role in `auth.reviewer_role` | The chat completions response |
 
-Email addresses are compared exactly, ignoring case.
+Every channel identifies a reviewer by their Entra object ID, so the same person is the same reviewer in both channels. Each channel verifies its callers itself, and passes the orchestrator only a verified reviewer; the orchestrator, the tools and delivery do no identity checks of their own.
 
-In the email channel, a message from an address not in `reviewers`, or carrying an `Auto-Submitted` header other than `no` or an `X-Auto-Response-Suppress` header, gets no orchestrator run and is moved to `Rejected`. Each other message is moved to `Processed` once its run completes and its reply is sent. Pulse records each message it handles, so a message whose run completed but which was not moved is moved at the next poll without a second run.
+The conversation mailbox accepts mail only from members of the `reviewers` list, which Exchange enforces. In the email channel, a message without the `X-MS-Exchange-Organization-AuthAs: Internal` header that Exchange adds to mail it authenticated, whose sender cannot be resolved to an Entra object ID, or carrying an `Auto-Submitted` header other than `no` or an `X-Auto-Response-Suppress` header, gets no orchestrator run and is moved to `Rejected`. Pulse resolves the sender's address to their object ID through Microsoft Graph. Each other message is moved to `Processed` once its run completes and its reply is sent. Pulse records each message it handles, so a message whose run completed but which was not moved is moved at the next poll without a second run.
 
-The chat endpoint speaks the OpenAI chat completions format at `POST /v1/chat/completions`, and rejects with HTTP 401 any request whose bearer token is not the gateway credential named in `chat.gateway_key_env`. It answers streamed and non-streamed requests; a streamed response is a server-sent event stream whose content carries short progress notes, such as which tool is running, before the reply, which is sent whole. From a LibreChat request, Pulse takes only the newest user message, joining its text parts, and gives it a new message ID; the history LibreChat sends is ignored. A request with no `X-User-Email` header, or from an address not in `reviewers`, gets no orchestrator run, and the response is a normal reply stating that the user is not a reviewer. The orchestrator run is not tied to the connection, so a client that disconnects does not cancel it. A failed run gets HTTP 500 with an OpenAI error body, or, once a stream has started, an error event; the message is generic.
+The chat endpoint speaks the OpenAI chat completions format at `POST /v1/chat/completions`. It is an OAuth 2.0 resource server: every request carries a bearer token, and Pulse verifies its RS256 signature with the key named by its `kid` in the key set at `auth.jwks`, and checks that its issuer is `auth.issuer`, its audience includes `auth.audience`, and it has not expired, against Pulse's clock. A request without a token that verifies gets HTTP 401. The caller is identified by the token's `oid` claim, and is a reviewer when its `roles` claim includes `auth.reviewer_role`. It answers streamed and non-streamed requests; a streamed response is a server-sent event stream whose content carries short progress notes, such as which tool is running, before the reply, which is sent whole. From each request, Pulse takes only the newest user message, joining its text parts, and gives it a new message ID; the history a client such as LibreChat sends is ignored. A caller without the reviewer role gets no orchestrator run and HTTP 403, with an OpenAI error body stating that the caller is not a reviewer. The orchestrator run is not tied to the connection, so a client that disconnects does not cancel it. A failed run gets HTTP 500 with an OpenAI error body, or, once a stream has started, an error event; the message is generic.
 
 ## Specialist agents
 
@@ -406,7 +406,7 @@ Every `schedule.poll_interval_minutes`, delivery:
 
 To send, delivery:
 
-1. checks that the approved version is the latest presented version and that the approver is in `reviewers`; if either check fails, it does not send, and sends an operator alert;
+1. checks that the approved version is the latest presented version; if it is not, it does not send, and sends an operator alert;
 2. records `send_started`;
 3. renders the approved version without the review section, with the subject built from `subject_template`;
 4. sends it from `pulseagent@techary.ai` to `all_staff`, with `replyTo` set to the submissions mailbox, so staff replies arrive as submissions;
@@ -438,7 +438,7 @@ Pulse deletes closed newsletters older than `retention_days`.
 
 ## Microsoft Graph integration
 
-Pulse authenticates as an Entra ID application using the OAuth 2.0 client credentials flow with a certificate. The file at `graph.certificate_path` holds the certificate and its private key; Pulse calculates the certificate thumbprint from it at start-up, passes it to MSAL (Microsoft Authentication Library) and logs it, so an operator can match it against the app registration. The app has no Mail permissions in Entra ID. Its mail access is granted in Exchange Online through RBAC (role-based access control) for Applications, scoped to the two Pulse mailboxes:
+Pulse authenticates as an Entra ID application using the OAuth 2.0 client credentials flow with a certificate. The file at `graph.certificate_path` holds the certificate and its private key; Pulse calculates the certificate thumbprint from it at start-up, passes it to MSAL (Microsoft Authentication Library) and logs it, so an operator can match it against the app registration. The app's only Entra ID permission is `User.ReadBasic.All`, which the email channel uses to resolve a sender's address to their Entra object ID. It has no Mail permissions in Entra ID. Its mail access is granted in Exchange Online through RBAC (role-based access control) for Applications, scoped to the two Pulse mailboxes:
 
 | Exchange application role | Scope | Used for |
 | --- | --- | --- |
@@ -455,6 +455,7 @@ The scoping consists of an Exchange service principal for the app, a management 
 | Create folder | `POST /users/{mailbox}/mailFolders`, when the folder is not found |
 | Move | `POST /users/{mailbox}/messages/{id}/move`, body `{"destinationId": "<folder-id>"}` |
 | Send new message | `POST /users/pulseagent@techary.ai/sendMail` |
+| Find user | `GET /users/{address}?$select=id`, whose `id` is the user's Entra object ID |
 | Reply in thread | `POST /users/pulseagent@techary.ai/messages/{id}/createReplyAll`, then `PATCH` the reply's `toRecipients` to `reviewers` and `ccRecipients` to empty, then `POST /messages/{reply-id}/send` |
 
 Pulse reaches each mailbox through one mailbox interface, with one instance for the submissions mailbox and one for the conversation mailbox. The interface has four operations: list the inbox, move a message to a named folder, send a new message and reply in a thread. Moving finds the folder, and creates it when it is not found. A reply has a plain-text body; every new message is HTML.
@@ -466,10 +467,10 @@ Every request sends `Prefer: IdType="ImmutableId"`, so message IDs stay the same
 Within Pulse:
 
 - every recipient comes from `config.yaml`: `reviewers`, `operator_alerts` and `all_staff`, all validated against `allowed_recipient_domains` when configuration loads;
-- `all_staff` is one distribution list, and Pulse never sends to individual staff addresses;
+- `reviewers` and `all_staff` are each one distribution list, and Pulse never sends to individual staff addresses;
 - only delivery sends to `all_staff`, and only an approved latest version;
 - approval is recorded only by the `approve` tool, which checks the caller, the newsletter state and the version against the store, and requires the reviewer's own message to start with `approve v{version}`;
-- in either channel, only addresses in `reviewers` can start an orchestrator run; otherwise, only the scheduler and `pulse draft` start one, and only with the start instruction;
+- only verified reviewers can start an orchestrator run: in the chat endpoint, callers whose verified token carries the reviewer role, and in the email channel, senders Exchange authenticated as internal; otherwise, only the scheduler and `pulse draft` start one, and only with the start instruction;
 - conversation history is loaded only from the store, never from a client;
 - the extractor is the only agent that reads message subjects and bodies, and it has no tools; every other agent receives extract records, which it treats as untrusted data;
 - staff submissions and reviewer messages never enter agent instructions or system prompts;
@@ -478,15 +479,17 @@ Within Pulse:
 - the extractor flags sensitive and inappropriate content, and code excludes every flagged record unless a reviewer's feedback restores it;
 - drafts use only extracted facts and reviewer feedback, and the draft checks verify names and numbers against them;
 - rendering escapes all model output and email-derived text;
-- the chat endpoint accepts only requests carrying the gateway credential.
+- the chat endpoint accepts only requests whose bearer token verifies against the configured issuer, audience and key set, and trusts no identity a client states in any other way.
 
 Deployment requirements, documented in the README and outside the codebase:
 
 - both Pulse mailboxes are configured with `RequireSenderAuthenticationEnabled`, so Exchange rejects mail from unauthenticated or external senders;
 - Exchange scoping, described in [Microsoft Graph integration](#microsoft-graph-integration), limits the app to the two Pulse mailboxes;
 - the all-staff list accepts mail only from `pulseagent@techary.ai` and named administrators;
-- the AI gateway route to the chat endpoint authenticates LibreChat, sends the gateway credential to Pulse as a bearer token and forwards `X-User-Email` unchanged;
-- LibreChat users sign in through Entra ID in production;
+- the conversation mailbox accepts mail only from members of the `reviewers` list;
+- in Entra ID, the Pulse app registration defines the reviewer app role, assigned to the reviewers;
+- the AI gateway route to the chat endpoint forwards the caller's bearer token unchanged;
+- LibreChat users sign in through Entra ID in production, and LibreChat passes each user's own token;
 - prompt filtering is applied at the AI gateway if the gateway provides it.
 
 ## Failure handling and observability
@@ -513,7 +516,7 @@ Logs are JSON objects on standard output, one per line, with `time`, `level` and
 
 Each command reads the configuration file named by `--config`, which defaults to `./config.yaml`.
 
-The repository produces a Python package providing the `pulse` command, and a container image built from that package with `pulse serve` as its entrypoint. The container reads `config.yaml` from a mounted path, takes the gateway credentials from environment variables, reads the certificate from a mounted path, writes the store to a mounted volume, listens for the chat endpoint on `chat.port` and logs to standard output.
+The repository produces a Python package providing the `pulse` command, and a container image built from that package with `pulse serve` as its entrypoint. The container reads `config.yaml` from a mounted path, takes the gateway credential from an environment variable, reads the certificate from a mounted path, writes the store to a mounted volume, listens for the chat endpoint on `chat.port` and logs to standard output.
 
 ## Configuration
 
@@ -530,8 +533,7 @@ mailboxes:
   processed_folder: Processed
   rejected_folder: Rejected
 
-reviewers:
-  - <reviewer>@techary.ai
+reviewers: <reviewers-list>@techary.ai
 
 all_staff: <all-staff-list>@techary.ai
 
@@ -563,8 +565,13 @@ orchestrator:
 
 chat:
   port: 8080
-  gateway_key_env: PULSE_CHAT_GATEWAY_KEY
   max_attempts: 3
+
+auth:
+  issuer: https://login.microsoftonline.com/<tenant-id>/v2.0
+  audience: <pulse-app-client-id>
+  jwks: https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys
+  reviewer_role: agent.pulse
 
 limits:
   max_words: 400
@@ -603,7 +610,7 @@ state:
 retention_days: 90
 ```
 
-`send.day` takes `MON` to `SUN` and `send.time` a 24-hour `HH:MM` time; both are required when `send.mode` is `scheduled`, and neither is accepted when it is `on_approval`. Configuration fails to load if it has a key not shown above, if a count, interval, limit or port is not a positive integer, or if two sections share a category. With `schedule.draft_cron` unset, newsletters start only when a reviewer asks or an operator runs `pulse draft`.
+`send.day` takes `MON` to `SUN` and `send.time` a 24-hour `HH:MM` time; both are required when `send.mode` is `scheduled`, and neither is accepted when it is `on_approval`. Configuration fails to load if it has a key not shown above, if a count, interval, limit or port is not a positive integer, or if two sections share a category. With `schedule.draft_cron` unset, newsletters start only when a reviewer asks or an operator runs `pulse draft`. `reviewers` is the address of one distribution list. `auth.jwks` is the issuer's key set, as a URL or a file path; Pulse fetches a URL and caches it, and reads a file on every verification, so a rotated key takes effect without a restart.
 
 ## Development and testing
 
@@ -615,10 +622,11 @@ Development runs against a Microsoft 365 dev tenant with Exchange Online, separa
 | Conversation shared mailbox | Sends drafts and the newsletter, and receives reviewer messages. Unlicensed. |
 | Licensed test user | Internal sender and sole reviewer. |
 | Test distribution list | Stands in for the all-staff list, with the test user as its only member. |
+| Test reviewers list | Stands in for the reviewers list, with the test user as its only member. |
 | App registration | Pulse's identity, authenticated by a certificate whose private key stays in the development workspace. |
 | Exchange scoping | Service principal, management scope and role assignments limiting the app to the two shared mailboxes. |
 
-The dev submissions mailbox accepts external senders, and the dev configuration adds the Techary work domain to `allowed_sender_domains`, so submissions can be sent from Techary work accounts. `reviewers`, `all_staff` and `allowed_recipient_domains` are limited to the test user, the test distribution list and the dev tenant domain. The dev configuration leaves `schedule.draft_cron` unset and uses `send.mode: on_approval`. LibreChat reaches the chat endpoint through the dev AI gateway as a custom endpoint.
+The dev submissions mailbox accepts external senders, and the dev configuration adds the Techary work domain to `allowed_sender_domains`, so submissions can be sent from Techary work accounts. `reviewers`, `all_staff` and `allowed_recipient_domains` are limited to the test reviewers list, the test distribution list and the dev tenant domain. The dev configuration leaves `schedule.draft_cron` unset and uses `send.mode: on_approval`. LibreChat reaches the chat endpoint through a route on the dev AI gateway, registered in LibreChat as a custom endpoint. Until LibreChat and the gateway use Entra ID, the dev configuration's `auth` names the platform's stand-in token issuer, and LibreChat's one shared token carries the reviewer role, so every LibreChat user acts as one reviewer in dev.
 
 Automated tests run without a tenant or gateway:
 
@@ -648,11 +656,13 @@ A synthetic corpus of test submissions is kept for manual runs against the dev t
 | LibreChat | Chat client through which reviewers can talk to the orchestrator. |
 | Microsoft Graph | Microsoft's API (application programming interface) for Microsoft 365 data, including mail. |
 | Newsletter | One conversation with the reviewers, its submissions and its versions, from when it is opened until it is sent or abandoned. |
+| Object ID | The `oid` an Entra ID token carries: a user's identifier, the same across applications. Pulse identifies every reviewer by it. |
 | Open newsletter | A newsletter not yet sent or abandoned. At most one exists at a time. |
 | Orchestrator | The agent that runs the newsletter conversation and acts only through tools. |
 | Pending submission | A message in the submissions inbox. Messages leave the inbox only when a newsletter is sent. |
 | Prompt injection | Text in an input that attempts to override a model's instructions. |
 | RBAC for Applications | Exchange Online feature that limits an application's mail permissions to specific mailboxes. |
+| Reviewers list | The distribution list whose members review newsletters. Drafts and notices are sent to it, and the conversation mailbox accepts mail only from its members. |
 | Sensitivity label | Microsoft Purview classification applied to a message, carried in its `msip_labels` header and identified by its label ID. |
 | Specialist agent | An agent that performs one language task, has no tools, and is called by the orchestrator through a tool. |
 | Start instruction | The fixed message, posted by the scheduler and by `pulse draft`, that asks the orchestrator to draft a newsletter. |

@@ -56,7 +56,7 @@ async def test_newsletter_round_trip(store: SqliteStore) -> None:
 
 
 async def test_closed_newsletter_is_not_open(store: SqliteStore) -> None:
-    await store.add_newsletter(abandon(make_newsletter(), REVIEWER, [REVIEWER], OPENED))
+    await store.add_newsletter(abandon(make_newsletter(), REVIEWER, OPENED))
 
     assert await store.get_open_newsletter() is None
 

@@ -1082,6 +1082,7 @@ dependencies = [
     { name = "msal" },
     { name = "pydantic" },
     { name = "pydantic-ai-slim", extra = ["openai"] },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "pyyaml" },
     { name = "uvicorn" },
 ]
@@ -1103,6 +1104,7 @@ requires-dist = [
     { name = "msal", specifier = ">=1.39.0" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "pydantic-ai-slim", extras = ["openai"], specifier = ">=2.50.0" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "uvicorn", specifier = ">=0.54.0" },
 ]

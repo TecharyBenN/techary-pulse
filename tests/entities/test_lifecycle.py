@@ -20,8 +20,8 @@ from pulse.entities.lifecycle import (
     withdraw,
 )
 
-REVIEWERS = ["reviewer@techary.ai"]
-REVIEWER = "Reviewer@Techary.ai"
+# The reviewer the channel verified, identified by Entra object ID.
+REVIEWER = "3f1c0a52-7d4e-4b8a-9c61-2e5f8d9a0b17"
 OPENED = datetime(2026, 9, 25, 16, 30, tzinfo=UTC)
 NOW = datetime(2026, 9, 26, 10, 0, tzinfo=UTC)
 SEND_TIME = datetime(2026, 9, 28, 8, 0, tzinfo=UTC)
@@ -37,11 +37,11 @@ def _in_review(versions: int = 1) -> Newsletter:
 
 
 def _approved() -> Newsletter:
-    return approve(_in_review(), 1, REVIEWER, "approve v1", REVIEWERS, NOW, MONDAY_NINE, LONDON)
+    return approve(_in_review(), 1, REVIEWER, "approve v1", NOW, MONDAY_NINE, LONDON)
 
 
 def _started() -> Newsletter:
-    return start_send(_approved(), REVIEWERS)
+    return start_send(_approved())
 
 
 def _sent() -> Newsletter:
@@ -49,7 +49,7 @@ def _sent() -> Newsletter:
 
 
 def _abandoned() -> Newsletter:
-    return abandon(_in_review(), REVIEWER, REVIEWERS, NOW)
+    return abandon(_in_review(), REVIEWER, NOW)
 
 
 def test_open_newsletter_is_in_review_with_no_versions() -> None:
@@ -95,7 +95,7 @@ def test_approve_records_approval_and_send_time() -> None:
 def test_approve_on_approval_sends_at_approval_time() -> None:
     rule = OnApproval(mode="on_approval")
 
-    approved = approve(_in_review(), 1, REVIEWER, "approve v1", REVIEWERS, NOW, rule, LONDON)
+    approved = approve(_in_review(), 1, REVIEWER, "approve v1", NOW, rule, LONDON)
 
     assert approved.send_time == NOW
 
@@ -103,9 +103,7 @@ def test_approve_on_approval_sends_at_approval_time() -> None:
 def test_approve_after_slot_sends_at_approval_time() -> None:
     late = SEND_TIME + timedelta(hours=2)
 
-    approved = approve(
-        _in_review(), 1, REVIEWER, "approve v1", REVIEWERS, late, MONDAY_NINE, LONDON
-    )
+    approved = approve(_in_review(), 1, REVIEWER, "approve v1", late, MONDAY_NINE, LONDON)
 
     assert approved.send_time == late
 
@@ -122,7 +120,7 @@ def test_present_withdraws_approval_first() -> None:
 
 
 def test_withdraw_returns_to_in_review_and_clears_approval() -> None:
-    withdrawn = withdraw(_approved(), REVIEWER, REVIEWERS)
+    withdrawn = withdraw(_approved(), REVIEWER)
 
     assert withdrawn.state == "in_review"
     assert withdrawn.approved_version is None
@@ -133,7 +131,7 @@ def test_withdraw_returns_to_in_review_and_clears_approval() -> None:
 
 @pytest.mark.parametrize("newsletter", [_in_review(), _approved()], ids=["in_review", "approved"])
 def test_abandon_closes_newsletter(newsletter: Newsletter) -> None:
-    abandoned = abandon(newsletter, REVIEWER, REVIEWERS, NOW)
+    abandoned = abandon(newsletter, REVIEWER, NOW)
 
     assert abandoned.state == "abandoned"
     assert abandoned.closed_at == NOW
@@ -177,25 +175,23 @@ def test_present_refuses(newsletter: Newsletter) -> None:
 )
 def test_withdraw_refuses(newsletter: Newsletter) -> None:
     with pytest.raises(Refusal):
-        withdraw(newsletter, REVIEWER, REVIEWERS)
+        withdraw(newsletter, REVIEWER)
 
 
 @pytest.mark.parametrize("newsletter", UNCHANGEABLE, ids=UNCHANGEABLE_IDS)
 def test_abandon_refuses(newsletter: Newsletter) -> None:
     with pytest.raises(Refusal):
-        abandon(newsletter, REVIEWER, REVIEWERS, NOW)
+        abandon(newsletter, REVIEWER, NOW)
 
 
-@pytest.mark.parametrize("caller", [None, "someone@techary.ai"])
-def test_withdraw_needs_a_reviewer(caller: str | None) -> None:
+def test_withdraw_needs_a_reviewer() -> None:
     with pytest.raises(Refusal):
-        withdraw(_approved(), caller, REVIEWERS)
+        withdraw(_approved(), None)
 
 
-@pytest.mark.parametrize("caller", [None, "someone@techary.ai"])
-def test_abandon_needs_a_reviewer(caller: str | None) -> None:
+def test_abandon_needs_a_reviewer() -> None:
     with pytest.raises(Refusal):
-        abandon(_in_review(), caller, REVIEWERS, NOW)
+        abandon(_in_review(), None, NOW)
 
 
 @pytest.mark.parametrize(
@@ -209,7 +205,7 @@ def test_abandon_needs_a_reviewer(caller: str | None) -> None:
     ],
 )
 def test_approval_message_accepted(message: str) -> None:
-    approved = approve(_in_review(2), 2, REVIEWER, message, REVIEWERS, NOW, MONDAY_NINE, LONDON)
+    approved = approve(_in_review(2), 2, REVIEWER, message, NOW, MONDAY_NINE, LONDON)
 
     assert approved.approved_version == 2
 
@@ -230,18 +226,17 @@ def test_approval_message_accepted(message: str) -> None:
 )
 def test_approval_message_refused(message: str) -> None:
     with pytest.raises(Refusal):
-        approve(_in_review(2), 2, REVIEWER, message, REVIEWERS, NOW, MONDAY_NINE, LONDON)
+        approve(_in_review(2), 2, REVIEWER, message, NOW, MONDAY_NINE, LONDON)
 
 
-@pytest.mark.parametrize("caller", [None, "someone@techary.ai"])
-def test_approve_needs_a_reviewer(caller: str | None) -> None:
+def test_approve_needs_a_reviewer() -> None:
     with pytest.raises(Refusal):
-        approve(_in_review(), 1, caller, "approve v1", REVIEWERS, NOW, MONDAY_NINE, LONDON)
+        approve(_in_review(), 1, None, "approve v1", NOW, MONDAY_NINE, LONDON)
 
 
 def test_approve_needs_a_reviewer_message() -> None:
     with pytest.raises(Refusal):
-        approve(_in_review(), 1, REVIEWER, None, REVIEWERS, NOW, MONDAY_NINE, LONDON)
+        approve(_in_review(), 1, REVIEWER, None, NOW, MONDAY_NINE, LONDON)
 
 
 @pytest.mark.parametrize("version", [1, 3])
@@ -249,7 +244,7 @@ def test_approve_needs_latest_version(version: int) -> None:
     message = f"approve v{version}"
 
     with pytest.raises(Refusal):
-        approve(_in_review(2), version, REVIEWER, message, REVIEWERS, NOW, MONDAY_NINE, LONDON)
+        approve(_in_review(2), version, REVIEWER, message, NOW, MONDAY_NINE, LONDON)
 
 
 def test_approve_needs_a_presented_version() -> None:
@@ -259,7 +254,6 @@ def test_approve_needs_a_presented_version() -> None:
             1,
             REVIEWER,
             "approve v1",
-            REVIEWERS,
             NOW,
             MONDAY_NINE,
             LONDON,
@@ -271,12 +265,12 @@ def test_approve_needs_a_presented_version() -> None:
 )
 def test_approve_needs_in_review(newsletter: Newsletter) -> None:
     with pytest.raises(Refusal):
-        approve(newsletter, 1, REVIEWER, "approve v1", REVIEWERS, NOW, MONDAY_NINE, LONDON)
+        approve(newsletter, 1, REVIEWER, "approve v1", NOW, MONDAY_NINE, LONDON)
 
 
 def test_refusal_gives_a_reason() -> None:
     with pytest.raises(Refusal, match="v1"):
-        approve(_in_review(2), 1, REVIEWER, "approve v1", REVIEWERS, NOW, MONDAY_NINE, LONDON)
+        approve(_in_review(2), 1, REVIEWER, "approve v1", NOW, MONDAY_NINE, LONDON)
 
 
 @pytest.mark.parametrize(
@@ -305,19 +299,14 @@ def test_is_due_only_for_approved_unsent(newsletter: Newsletter) -> None:
 )
 def test_start_send_needs_approved_unsent(newsletter: Newsletter) -> None:
     with pytest.raises(Refusal):
-        start_send(newsletter, REVIEWERS)
+        start_send(newsletter)
 
 
 def test_start_send_rechecks_latest_version() -> None:
     stale = _approved().model_copy(update={"latest_version": 2})
 
     with pytest.raises(Refusal):
-        start_send(stale, REVIEWERS)
-
-
-def test_start_send_rechecks_approver() -> None:
-    with pytest.raises(Refusal):
-        start_send(_approved(), ["someone@techary.ai"])
+        start_send(stale)
 
 
 @pytest.mark.parametrize("newsletter", [_approved(), *CLOSED], ids=["approved", *CLOSED_IDS])

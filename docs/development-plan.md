@@ -35,6 +35,7 @@ A phase with a live check is complete only when the check has passed against the
 | HTTP server | FastAPI, run by Uvicorn inside `pulse serve` | Validates requests and responses against Pydantic models and supports streamed responses. Uvicorn runs on the same event loop as the rest of Pulse. |
 | Store | Standard library `sqlite3`, through `asyncio.to_thread` | SQLite is what the design specifies, and it needs no extra dependency. |
 | Entra ID token | Microsoft Authentication Library (MSAL) for Python, through `asyncio.to_thread` | Maintained implementation of the certificate client assertion. |
+| Bearer token verification | PyJWT with its cryptography extra, through `asyncio.to_thread` | Maintained verification of signatures, issuer and audience, and fetching and caching of an issuer's key set; writing signature checks by hand is a security risk. |
 | Microsoft Graph calls | Direct REST calls through httpx's asynchronous client | Pulse uses a handful of operations, so a software development kit (SDK) would add more than it saves. |
 | Rendering | Jinja2 with autoescaping on | Escapes model output and email-derived text by default. |
 | Scheduling | A cron library that supports IANA time zones, chosen in phase 11 | Computes the next start in `Europe/London` correctly across daylight saving changes. |
@@ -98,7 +99,7 @@ Scope:
 - the run steps in the design's runs and history section: the per-newsletter lock, recording feedback, loading history, running with `agent.iter`, saving each step as it completes, and resuming from saved steps after a failure;
 - run limits from `orchestrator.max_tool_calls` and `orchestrator.max_run_minutes`;
 - the store interface and the SQLite store, with the `newsletters`, `feedback` and `messages` tables, one transaction per write, and file modes `0600` and `0700`;
-- the HTTP server and chat completions route: the gateway credential check, reviewer identity from `X-User-Email`, the reply to a non-reviewer, only the newest user message taken, streamed responses with progress notes, and non-streamed responses;
+- the HTTP server and chat completions route: bearer token verification against the configured issuer, the reviewer role, HTTP 403 for a non-reviewer, only the newest user message taken, streamed responses with progress notes, and non-streamed responses;
 - `pulse serve`, running the HTTP server until stopped, and the container's default command changed to `pulse serve`.
 
 Tests seed an open newsletter in the store to cover history, because `start_newsletter` arrives in phase 4.
@@ -113,11 +114,12 @@ Exit criteria:
 
 Scope, with no Pulse code:
 
-- the dev gateway route to the chat endpoint, sending the gateway credential as a bearer token and forwarding `X-User-Email`;
+- the dev gateway route to the chat endpoint, forwarding the caller's bearer token;
 - LibreChat's custom endpoint for Pulse;
+- a dev token for LibreChat from the platform's stand-in issuer, carrying the reviewer role, so every LibreChat user acts as one reviewer until Entra ID arrives;
 - the README's local setup and deployment requirements for both.
 
-Exit criteria: the test user chats with the orchestrator in LibreChat, and a user not in `reviewers` is told they are not a reviewer.
+Exit criteria: the test user chats with the orchestrator in LibreChat, and a request whose token lacks the reviewer role gets HTTP 403.
 
 ### Phase 4: start and extract
 
@@ -187,7 +189,7 @@ Exit criteria: tests cover each tool and the state changes; live check: an appro
 Scope:
 
 - the Graph mailbox's reply in thread: `createReplyAll`, replacing the recipients with `reviewers`, then sending;
-- polling the conversation mailbox every `schedule.poll_interval_minutes`: identifying reviewers, rejecting automatic replies, moving messages to `Processed` or `Rejected`, the `handled_messages` table, and the `chat.max_attempts` limit with its operator alert;
+- polling the conversation mailbox every `schedule.poll_interval_minutes`: checking Exchange's internal authentication header, resolving each sender to their Entra object ID through a Graph user lookup, rejecting automatic replies, moving messages to `Processed` or `Rejected`, the `handled_messages` table, and the `chat.max_attempts` limit with its operator alert;
 - the `NO_REPLY` reply and the channel-switch summary.
 
 Exit criteria: tests cover each channel rule with fake mailboxes; live check: the test user replies to a reviewer email with feedback, receives the revised version in the thread, and continues the same conversation in LibreChat.
@@ -206,6 +208,6 @@ Exit criteria: crash-recovery tests inject a failure at each step boundary and a
 
 ### Phase 13: production pilot
 
-Scope: the deployment requirements in the production tenant, the production configuration, the container deployed on the Pulse server, and LibreChat connected through the production gateway.
+Scope: the deployment requirements in the production tenant, including the Pulse app registration's reviewer role and the conversation mailbox's sender restriction, the production configuration with Entra ID as the issuer, the container deployed on the Pulse server, and LibreChat connected through the production gateway, passing each user's Entra ID token.
 
 Exit criteria: the first real newsletter is drafted, reviewed, approved and sent to all staff.

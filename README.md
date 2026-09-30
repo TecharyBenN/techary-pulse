@@ -19,10 +19,11 @@ Pulse connects to mailboxes, a distribution list, a gateway and a chat client th
 | Requirement | Detail |
 | --- | --- |
 | Submissions mailbox | A shared mailbox that receives staff updates, for example `pulse@techary.ai`. Pulse creates the `Processed` and `Rejected` folders if they are absent. |
-| Conversation mailbox | A shared mailbox that sends drafts, replies and the newsletter, and receives reviewer messages, for example `pulseagent@techary.ai`. Pulse creates the `Processed` and `Rejected` folders if they are absent. |
+| Conversation mailbox | A shared mailbox that sends drafts, replies and the newsletter, and receives reviewer messages, for example `pulseagent@techary.ai`. Pulse creates the `Processed` and `Rejected` folders if they are absent. It accepts mail only from members of the reviewers list. |
+| Reviewers list | A distribution list of the people who review newsletters. Drafts and notices are sent to it. |
 | Internal senders only | In production, both mailboxes have `RequireSenderAuthenticationEnabled` set, so Exchange rejects mail from unauthenticated or external senders. |
 | All-staff list | The distribution list that receives the approved newsletter. It accepts mail only from the conversation mailbox and named administrators. |
-| App registration | An Entra ID app registration authenticated by a certificate. The app needs no Mail permissions in Entra ID. |
+| App registration | An Entra ID app registration authenticated by a certificate. It defines the `agent.pulse` app role, assigned to the reviewers, and its client ID is the audience of tokens for Pulse's chat endpoint. Its only Entra ID permission is `User.ReadBasic.All` (application), which resolves an email sender to their object ID. It needs no Mail permissions in Entra ID. |
 | Mailbox permissions | Exchange Online RBAC (role-based access control) for Applications, scoped to the two Pulse mailboxes only: `Application Mail.ReadWrite` (read, move, create folders, create replies) and `Application Mail.Send` (send drafts, replies, alerts and the newsletter). |
 | Sensitivity labels | If messages carry Microsoft Purview sensitivity labels, the IDs of the labels Pulse may process go in `allowed_sensitivity_labels`. Pulse reads the label from each message's `msip_labels` header and rejects any other label; unlabelled messages are allowed. |
 | Certificate | A PEM file holding the certificate and its private key, mounted into the container. Pulse calculates the thumbprint from it and logs it at start-up, so it can be matched against the app registration. |
@@ -31,18 +32,40 @@ Pulse connects to mailboxes, a distribution list, a gateway and a chat client th
 
 An AI gateway, currently agentgateway, exposing an OpenAI-compatible chat completions endpoint for Pulse's model calls. Pulse holds only the gateway credential, never provider credentials. Prompt filtering, if the gateway offers it, is configured on the gateway.
 
-The gateway also routes LibreChat to Pulse's chat endpoint, registered as an OpenAI-compatible backend. The route authenticates LibreChat, sends a second gateway credential to Pulse as a bearer token through agentgateway's `backendAuth` policy, and forwards the `X-User-Email` header unchanged.
+The gateway also routes LibreChat to Pulse's chat endpoint, through a route in its `config.yaml`:
+
+| Part | Setting |
+| --- | --- |
+| Match | Path prefix `/agents/pulse/v1/`, rewritten to `/v1/` before forwarding |
+| Authentication | `jwtAuth`, with the same issuer, audience and key set as the gateway's model traffic |
+| Authorisation | The rule `jwt.roles.exists(r, r == "agent.pulse")`, so only reviewers reach Pulse |
+| Backend | Pulse's host and `chat.port`, with `backendAuth: passthrough`, so the caller's token reaches Pulse unchanged |
+
+Pulse verifies the token again against `auth`, because it must also refuse callers that do not come through the gateway.
 
 ### LibreChat
 
-LibreChat reaches Pulse through the gateway as a custom endpoint and passes the signed-in user's email address in `X-User-Email`. In production, LibreChat users sign in through Entra ID.
+LibreChat reaches Pulse through the gateway route, registered in `librechat.yaml` as a custom endpoint:
+
+```yaml
+- name: "Pulse"
+  apiKey: "${GATEWAY_TOKEN}"
+  baseURL: "http://<gateway host>:<gateway port>/agents/pulse/v1"
+  models:
+    default: ["pulse"]
+    fetch: false        # Pulse has no model list
+  titleConvo: false     # otherwise LibreChat's title requests reach Pulse as reviewer messages
+  modelDisplayLabel: "Pulse"
+```
+
+In production, LibreChat users sign in through Entra ID and LibreChat passes each user's own token, which carries `agent.pulse` when the user is assigned that app role. Until then, LibreChat sends one shared token, so in dev that token carries `agent.pulse` and every LibreChat user acts as one reviewer.
 
 ### Host
 
 A container runtime on a server with outbound access to `graph.microsoft.com`, `login.microsoftonline.com` and the gateway, accepting connections on `chat.port` from the gateway only. The container needs:
 
 - `/etc/pulse/config.yaml`, copied from [config/config.example.yaml](config/config.example.yaml);
-- `/etc/pulse/pulse.env`, containing `PULSE_LLM_API_KEY=<gateway credential>` and `PULSE_CHAT_GATEWAY_KEY=<chat endpoint credential>`;
+- `/etc/pulse/pulse.env`, containing `PULSE_LLM_API_KEY=<gateway credential>`;
 - `/etc/pulse/pulse.pem`, the certificate and its private key;
 - `/var/lib/pulse/state`, a writable directory for the store.
 
@@ -73,19 +96,18 @@ Run format, lint, type check and tests before every commit, and after every upgr
 
 ### Running Pulse locally
 
-Copy [config/config.dev.example.yaml](config/config.dev.example.yaml) to `config.yaml` and fill in the dev tenant and gateway values. Put `PULSE_LLM_API_KEY` and `PULSE_CHAT_GATEWAY_KEY` in `.env`, then start the chat endpoint:
+Copy [config/config.dev.example.yaml](config/config.dev.example.yaml) to `config.yaml` and fill in the dev tenant and gateway values, with `auth.jwks` pointing at the stand-in issuer's key set file. Put `PULSE_LLM_API_KEY` in `.env`, then start the chat endpoint:
 
 ```sh
 uv run --env-file .env pulse serve
 ```
 
-Pulse reads `./config.yaml` unless `--config` names another file. It listens on `chat.port`, which must be free on the machine. To check the endpoint, send a non-streamed request, then the same request with `"stream": true` and `curl -N`, which returns progress notes and the reply as server-sent events ending in `data: [DONE]`:
+Pulse reads `./config.yaml` unless `--config` names another file. It listens on `chat.port`, which must be free on the machine. To check the endpoint, send a non-streamed request, then the same request with `"stream": true` and `curl -N`, which returns progress notes and the reply as server-sent events ending in `data: [DONE]`. `TOKEN` is a token from the issuer in `auth`, for the audience in `auth.audience`, carrying the reviewer role; without the role, Pulse returns HTTP 403:
 
 ```sh
-set -a; . ./.env; set +a
+TOKEN=<token from the issuer in auth>
 curl -s localhost:<chat.port>/v1/chat/completions \
-  -H "Authorization: Bearer $PULSE_CHAT_GATEWAY_KEY" \
-  -H "X-User-Email: <reviewer address from config.yaml>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"model": "pulse", "messages": [{"role": "user", "content": "Hello"}]}'
 ```

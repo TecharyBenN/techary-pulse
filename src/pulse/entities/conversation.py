@@ -11,7 +11,7 @@ Channel = Literal["email", "librechat"]
 
 class ReviewerMessage(Entity):
     message_id: str
-    # The reviewer's address, as the channel identified it.
+    # The reviewer's Entra object ID, as the channel verified it.
     author: str
     channel: Channel
     text: str

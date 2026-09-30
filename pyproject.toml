@@ -12,6 +12,7 @@ dependencies = [
     "msal>=1.39.0",
     "pydantic>=2.13.5",
     "pydantic-ai-slim[openai]>=2.50.0",
+    "pyjwt[crypto]>=2.15.0",
     "pyyaml>=6.0.3",
     "uvicorn>=0.54.0",
 ]

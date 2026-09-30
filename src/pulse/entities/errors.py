@@ -15,3 +15,7 @@ class StoreError(PulseError):
 
 class RunFailed(PulseError):
     """An orchestrator run did not complete; the steps it completed are saved."""
+
+
+class InvalidToken(PulseError):
+    """A bearer token failed verification."""

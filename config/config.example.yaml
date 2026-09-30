@@ -13,8 +13,8 @@ mailboxes:
   processed_folder: Processed
   rejected_folder: Rejected
 
-reviewers:
-  - reviewer@techary.ai
+# A distribution list; the conversation mailbox accepts mail only from its members.
+reviewers: pulse-reviewers@techary.ai
 
 all_staff: all-staff@techary.ai
 
@@ -46,8 +46,15 @@ orchestrator:
 
 chat:
   port: 8080
-  gateway_key_env: PULSE_CHAT_GATEWAY_KEY
   max_attempts: 3
+
+# Bearer tokens for the chat endpoint. In production, Entra ID issues them:
+# the audience is the Pulse app registration's client ID.
+auth:
+  issuer: https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0
+  audience: 11111111-1111-1111-1111-111111111111
+  jwks: https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/discovery/v2.0/keys
+  reviewer_role: agent.pulse
 
 limits:
   max_words: 400

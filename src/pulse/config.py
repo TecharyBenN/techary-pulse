@@ -51,8 +51,15 @@ class OrchestratorConfig(StrictEntity):
 
 class ChatConfig(StrictEntity):
     port: PositiveInt
-    gateway_key_env: str
     max_attempts: PositiveInt
+
+
+class AuthConfig(StrictEntity):
+    issuer: str
+    audience: str
+    # A URL, or a file path, holding the issuer's JSON Web Key Set.
+    jwks: str
+    reviewer_role: str
 
 
 class LimitsConfig(StrictEntity):
@@ -87,7 +94,7 @@ class Config(StrictEntity):
 
     graph: GraphConfig
     mailboxes: MailboxesConfig
-    reviewers: list[str]
+    reviewers: str
     all_staff: str
     operator_alerts: list[str]
     allowed_sender_domains: list[str]
@@ -99,6 +106,7 @@ class Config(StrictEntity):
     send: SendRule
     orchestrator: OrchestratorConfig
     chat: ChatConfig
+    auth: AuthConfig
     limits: LimitsConfig
     subject_template: str
     headline_title: str
@@ -127,7 +135,7 @@ class Config(StrictEntity):
 
     @model_validator(mode="after")
     def _recipients_in_allowed_domains(self) -> Self:
-        recipients = [*self.reviewers, *self.operator_alerts, self.all_staff]
+        recipients = [self.reviewers, *self.operator_alerts, self.all_staff]
         outside = [r for r in recipients if not domain_in(r, self.allowed_recipient_domains)]
         if outside:
             raise ValueError(f"recipients outside allowed_recipient_domains: {outside}")

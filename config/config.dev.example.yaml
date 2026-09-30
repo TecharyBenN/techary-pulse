@@ -18,8 +18,8 @@ mailboxes:
   processed_folder: Processed
   rejected_folder: Rejected
 
-reviewers:
-  - testuser@devtenant.onmicrosoft.com
+# A distribution list whose only member is the test user.
+reviewers: pulse-reviewers-test@devtenant.onmicrosoft.com
 
 all_staff: all-staff-test@devtenant.onmicrosoft.com
 
@@ -48,8 +48,15 @@ orchestrator:
 
 chat:
   port: 8080
-  gateway_key_env: PULSE_CHAT_GATEWAY_KEY
   max_attempts: 3
+
+# Bearer tokens for the chat endpoint. In dev, the platform's stand-in issuer
+# signs them; its key set is a file on the host.
+auth:
+  issuer: https://identity-probe.invalid
+  audience: ai-platform
+  jwks: /path/to/identity-probe/jwks.json
+  reviewer_role: agent.pulse
 
 limits:
   max_words: 400

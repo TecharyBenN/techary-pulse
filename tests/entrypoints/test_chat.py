@@ -2,7 +2,7 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import MutableMapping
-from datetime import UTC, datetime
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,13 +27,13 @@ from tests.fakes.models import (
     responses,
     text_response,
 )
-from tests.messages import REVIEWER, make_message, make_newsletter
+from tests.messages import make_message, make_newsletter
+from tests.tokens import NOW, REVIEWER_OID, REVIEWER_ROLE, make_token, make_verifier
 
 pytestmark = pytest.mark.anyio
 
-KEY = "test-gateway-key"
-NOW = datetime(2026, 9, 26, 10, 0, tzinfo=UTC)
-HEADERS = {"Authorization": f"Bearer {KEY}", "X-User-Email": REVIEWER.upper()}
+TOKEN = make_token()
+HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
 
 @pytest.fixture
@@ -62,7 +62,8 @@ class Recorder:
 
 
 def _app(orchestrator: Orchestrator) -> FastAPI:
-    return create_app(orchestrator, [REVIEWER], KEY, ControlledClock(NOW))
+    clock = ControlledClock(NOW)
+    return create_app(orchestrator, make_verifier(clock), REVIEWER_ROLE, clock)
 
 
 def _body(text: str = "Hello", stream: bool = False) -> dict[str, Any]:
@@ -138,15 +139,35 @@ async def test_streamed_reply_follows_the_progress_notes(store: SqliteStore) -> 
 
 
 @pytest.mark.parametrize(
-    "authorization", [None, "Bearer wrong-key", f"Basic {KEY}", KEY, "Bearer "]
+    "authorization",
+    [
+        None,
+        "",
+        "Bearer ",
+        TOKEN,
+        f"Basic {TOKEN}",
+        "Bearer not-a-token",
+        f"Bearer {make_token(signed_by_other_key=True)}",
+        f"Bearer {make_token(exp=NOW - timedelta(seconds=1))}",
+        f"Bearer {make_token(aud='another-api')}",
+    ],
+    ids=[
+        "none",
+        "empty",
+        "no token",
+        "no scheme",
+        "wrong scheme",
+        "malformed",
+        "wrong key",
+        "expired",
+        "wrong audience",
+    ],
 )
-async def test_requests_without_the_gateway_credential_are_refused(
+async def test_requests_without_a_valid_token_are_refused(
     store: SqliteStore, authorization: str | None
 ) -> None:
     model = Recorder()
-    headers = {"X-User-Email": REVIEWER}
-    if authorization is not None:
-        headers["Authorization"] = authorization
+    headers = {} if authorization is None else {"Authorization": authorization}
 
     response = await _post(store, model, _body(), headers)
 
@@ -155,24 +176,21 @@ async def test_requests_without_the_gateway_credential_are_refused(
 
 
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("email", [None, "someone.else@techary.ai"])
-async def test_non_reviewer_is_told_and_gets_no_run(
-    store: SqliteStore, stream: bool, email: str | None
+@pytest.mark.parametrize("roles", [[], ["model.chat-anthropic"]])
+async def test_caller_without_the_reviewer_role_is_forbidden(
+    store: SqliteStore, stream: bool, roles: list[str]
 ) -> None:
     model = Recorder()
-    headers = {"Authorization": f"Bearer {KEY}"}
-    if email is not None:
-        headers["X-User-Email"] = email
+    # An identity header proves nothing, so it cannot make the caller a reviewer.
+    headers = {
+        "Authorization": f"Bearer {make_token(roles=roles)}",
+        "X-User-Email": "testuser@techary.ai",
+    }
 
     response = await _post(store, model, _body(stream=stream), headers)
 
-    assert response.status_code == 200
-    content = (
-        _streamed_content(response)
-        if stream
-        else response.json()["choices"][0]["message"]["content"]
-    )
-    assert content == NOT_A_REVIEWER
+    assert response.status_code == 403
+    assert response.json()["error"] == {"message": NOT_A_REVIEWER, "type": "permission_error"}
     assert model.calls == []
 
 
@@ -233,7 +251,7 @@ async def test_reviewer_message_is_recorded_as_librechat_feedback(
 
     with sqlite3.connect(db_path) as connection:
         row = connection.execute("SELECT author, channel, text, received FROM feedback").fetchone()
-    assert row == (REVIEWER.upper(), "librechat", "Shorter intro, please", "2026-09-26T10:00:00Z")
+    assert row == (REVIEWER_OID, "librechat", "Shorter intro, please", "2026-09-26T10:00:00Z")
 
 
 @pytest.mark.parametrize("stream", [False, True])

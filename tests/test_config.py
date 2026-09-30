@@ -47,11 +47,11 @@ def test_draft_cron_can_be_unset(tmp_path: Path) -> None:
 
 
 def _set_reviewers(data: dict[str, Any]) -> None:
-    data["reviewers"] = ["someone@example.com"]
+    data["reviewers"] = "someone@example.com"
 
 
 def _set_operator_alerts(data: dict[str, Any]) -> None:
-    data["operator_alerts"] = ["reviewer@techary.ai", "someone@example.com"]
+    data["operator_alerts"] = ["operator@techary.ai", "someone@example.com"]
 
 
 def _set_all_staff(data: dict[str, Any]) -> None:
@@ -59,11 +59,11 @@ def _set_all_staff(data: dict[str, Any]) -> None:
 
 
 def _set_subdomain(data: dict[str, Any]) -> None:
-    data["reviewers"] = ["someone@mail.techary.ai"]
+    data["reviewers"] = "someone@mail.techary.ai"
 
 
 def _set_no_domain(data: dict[str, Any]) -> None:
-    data["reviewers"] = ["techary.ai"]
+    data["reviewers"] = "techary.ai"
 
 
 @pytest.mark.parametrize(
@@ -82,10 +82,32 @@ def test_recipient_outside_allowed_domains_is_rejected(
 
 def test_recipient_domain_ignores_case(tmp_path: Path) -> None:
     data = _example()
-    data["reviewers"] = ["Reviewer@Techary.AI"]
+    data["reviewers"] = "Reviewer@Techary.AI"
     data["allowed_recipient_domains"] = ["TECHARY.ai"]
 
-    assert _load(tmp_path, data).reviewers == ["Reviewer@Techary.AI"]
+    assert _load(tmp_path, data).reviewers == "Reviewer@Techary.AI"
+
+
+def test_auth_is_parsed(tmp_path: Path) -> None:
+    auth = _load(tmp_path, _example()).auth
+
+    assert (
+        auth.issuer == "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
+    )
+    assert auth.audience == "11111111-1111-1111-1111-111111111111"
+    assert auth.jwks == (
+        "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/discovery/v2.0/keys"
+    )
+    assert auth.reviewer_role == "agent.pulse"
+
+
+@pytest.mark.parametrize("key", ["issuer", "audience", "jwks", "reviewer_role"])
+def test_auth_needs_every_key(tmp_path: Path, key: str) -> None:
+    data = _example()
+    del data["auth"][key]
+
+    with pytest.raises(ConfigError):
+        _load(tmp_path, data)
 
 
 def test_agent_without_model_is_rejected(tmp_path: Path) -> None:

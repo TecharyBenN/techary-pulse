@@ -2,7 +2,6 @@
 
 import datetime as dt
 import re
-from collections.abc import Sequence
 from typing import Annotated, Literal, get_args
 from zoneinfo import ZoneInfo
 
@@ -10,7 +9,6 @@ from pydantic import AwareDatetime, Field, PositiveInt, field_validator
 
 from pulse.entities.base import Entity, StrictEntity
 from pulse.entities.errors import Refusal
-from pulse.entities.mail import address_in
 
 State = Literal["in_review", "approved", "sent", "abandoned"]
 Weekday = Literal["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
@@ -95,13 +93,15 @@ def approve(
     version: int,
     caller: str | None,
     message: str | None,
-    reviewers: Sequence[str],
     now: dt.datetime,
     rule: OnApproval | Scheduled,
     timezone: ZoneInfo,
 ) -> Newsletter:
-    """The approval check; `caller` and `message` come from the run, never from the model."""
-    caller = _require_reviewer(caller, reviewers)
+    """The approval check; `caller` and `message` come from the run, never from the model.
+
+    `caller` is the reviewer the channel verified, or None in a run with no reviewer.
+    """
+    caller = _require_reviewer(caller)
     if newsletter.state != "in_review":
         raise Refusal(f"the newsletter is {newsletter.state}, not in review")
     if version != newsletter.latest_version:
@@ -119,18 +119,16 @@ def approve(
     )
 
 
-def withdraw(newsletter: Newsletter, caller: str | None, reviewers: Sequence[str]) -> Newsletter:
-    _require_reviewer(caller, reviewers)
+def withdraw(newsletter: Newsletter, caller: str | None) -> Newsletter:
+    _require_reviewer(caller)
     _require_changeable(newsletter)
     if newsletter.state != "approved":
         raise Refusal("the newsletter is not approved")
     return newsletter.model_copy(update={"state": "in_review"} | _NO_APPROVAL)
 
 
-def abandon(
-    newsletter: Newsletter, caller: str | None, reviewers: Sequence[str], now: dt.datetime
-) -> Newsletter:
-    _require_reviewer(caller, reviewers)
+def abandon(newsletter: Newsletter, caller: str | None, now: dt.datetime) -> Newsletter:
+    _require_reviewer(caller)
     _require_changeable(newsletter)
     return newsletter.model_copy(update={"state": "abandoned", "closed_at": now})
 
@@ -144,14 +142,12 @@ def is_due(newsletter: Newsletter, now: dt.datetime) -> bool:
     )
 
 
-def start_send(newsletter: Newsletter, reviewers: Sequence[str]) -> Newsletter:
+def start_send(newsletter: Newsletter) -> Newsletter:
     """Re-check the approval and record `send_started`."""
     if newsletter.state != "approved" or newsletter.send_started:
         raise Refusal("the newsletter is not approved and awaiting its send")
     if newsletter.approved_version != newsletter.latest_version:
         raise Refusal("the approved version is not the latest presented version")
-    if newsletter.approver is None or not address_in(newsletter.approver, reviewers):
-        raise Refusal("the approver is not a reviewer")
     return newsletter.model_copy(update={"send_started": True})
 
 
@@ -183,11 +179,9 @@ def _send_slot(rule: Scheduled, timezone: ZoneInfo, opened_at: dt.datetime) -> d
     return slot.astimezone(dt.UTC)
 
 
-def _require_reviewer(caller: str | None, reviewers: Sequence[str]) -> str:
+def _require_reviewer(caller: str | None) -> str:
     if caller is None:
         raise Refusal("no reviewer is present in this run")
-    if not address_in(caller, reviewers):
-        raise Refusal("the caller is not a reviewer")
     return caller
 
 

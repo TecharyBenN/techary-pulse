@@ -4,8 +4,9 @@ from datetime import UTC, datetime
 
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.lifecycle import Newsletter, open_newsletter
+from tests.tokens import REVIEWER_OID
 
-REVIEWER = "testuser@techary.ai"
+REVIEWER = REVIEWER_OID
 OPENED = datetime(2026, 9, 25, 16, 30, tzinfo=UTC)
 
 

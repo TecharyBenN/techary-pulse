@@ -1,9 +1,9 @@
-"""The LibreChat endpoint: OpenAI chat completions over HTTP, in front of the orchestrator."""
+"""The chat endpoint: OpenAI chat completions over HTTP, in front of the orchestrator."""
 
 import asyncio
-import hmac
+import logging
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 
 import uvicorn
@@ -12,14 +12,16 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 
 from pulse.agents.orchestrator.run import Orchestrator
+from pulse.entities.auth import Caller, TokenVerifier
 from pulse.entities.clock import Clock
 from pulse.entities.conversation import ReviewerMessage
-from pulse.entities.errors import PulseError
-from pulse.entities.mail import address_in
+from pulse.entities.errors import InvalidToken, PulseError
 
 PATH = "/v1/chat/completions"
-NOT_A_REVIEWER = "You are not a Pulse reviewer, so Pulse has not acted on your message."
+NOT_A_REVIEWER = "You are not a Pulse reviewer."
 _RUN_FAILED = "Pulse could not complete your request. Please try again."
+
+_log = logging.getLogger(__name__)
 
 
 class _ContentPart(BaseModel):
@@ -113,7 +115,7 @@ class _Completion:
 
 
 def create_app(
-    orchestrator: Orchestrator, reviewers: Sequence[str], gateway_key: str, clock: Clock
+    orchestrator: Orchestrator, verifier: TokenVerifier, reviewer_role: str, clock: Clock
 ) -> FastAPI:
     app = FastAPI()
     # Runs outlive their requests, so a client that disconnects never cancels a run.
@@ -123,10 +125,12 @@ def create_app(
     async def chat_completions(
         request: Request,
         authorization: Annotated[str | None, Header()] = None,
-        x_user_email: Annotated[str | None, Header()] = None,
     ) -> Response:
-        if not _authorised(authorization, gateway_key):
-            return _error(401, "invalid_request_error", "The gateway credential is not valid.")
+        caller = await _caller(authorization, verifier)
+        if caller is None:
+            return _error(401, "invalid_request_error", "A valid bearer token is required.")
+        if reviewer_role not in caller.roles:
+            return _error(403, "permission_error", NOT_A_REVIEWER)
         try:
             chat = _ChatRequest.model_validate_json(await request.body())
         except ValidationError:
@@ -135,18 +139,15 @@ def create_app(
         if not user_messages:
             return _error(400, "invalid_request_error", "The request has no user message.")
 
+        message = ReviewerMessage(
+            message_id=str(uuid.uuid4()),
+            author=caller.oid,
+            channel="librechat",
+            text=user_messages[-1].text(),
+            received=clock.now(),
+        )
         notes: asyncio.Queue[str | None] = asyncio.Queue()
-        if x_user_email is not None and address_in(x_user_email, reviewers):
-            message = ReviewerMessage(
-                message_id=str(uuid.uuid4()),
-                author=x_user_email,
-                channel="librechat",
-                text=user_messages[-1].text(),
-                received=clock.now(),
-            )
-            task = asyncio.create_task(orchestrator.handle(message, notes.put))
-        else:
-            task = asyncio.create_task(_fixed(NOT_A_REVIEWER))
+        task = asyncio.create_task(orchestrator.handle(message, notes.put))
         running.add(task)
 
         def finished(task: asyncio.Task[str | None]) -> None:
@@ -179,10 +180,6 @@ async def serve(app: FastAPI, port: int) -> None:
     await uvicorn.Server(config).serve()
 
 
-async def _fixed(reply: str) -> str | None:
-    return reply
-
-
 async def _stream(
     task: asyncio.Task[str | None], notes: asyncio.Queue[str | None], completion: _Completion
 ) -> AsyncIterator[str]:
@@ -201,11 +198,17 @@ async def _stream(
     yield "data: [DONE]\n\n"
 
 
-def _authorised(authorization: str | None, gateway_key: str) -> bool:
+async def _caller(authorization: str | None, verifier: TokenVerifier) -> Caller | None:
+    """The caller of a request with a valid bearer token, or None."""
     scheme, _, token = (authorization or "").partition(" ")
-    return scheme.casefold() == "bearer" and hmac.compare_digest(
-        token.encode(), gateway_key.encode()
-    )
+    if scheme.casefold() != "bearer" or not token:
+        return None
+    try:
+        return await verifier.verify(token)
+    except InvalidToken as error:
+        # The reason says why without repeating the token, so a misconfigured issuer shows here.
+        _log.info("token_rejected", extra={"reason": str(error)})
+        return None
 
 
 def _error(status: int, kind: str, message: str) -> JSONResponse:

@@ -11,6 +11,7 @@ import pydantic_ai
 from pulse.adapters.clock import SystemClock
 from pulse.adapters.gateway import gateway_model
 from pulse.adapters.store import SqliteStore
+from pulse.adapters.tokens import JwtVerifier
 from pulse.agents.orchestrator.agent import build_agent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.config import Config, ConfigError, load_config
@@ -38,11 +39,13 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 async def _serve(config: Config) -> None:
     llm_key = _environment(config.llm.api_key_env)
-    gateway_key = _environment(config.chat.gateway_key_env)
     store = SqliteStore(config.state.db_path)
     await store.initialise()
     orchestrator = build_orchestrator(config, store, llm_key)
-    app = create_app(orchestrator, config.reviewers, gateway_key, SystemClock())
+    clock = SystemClock()
+    auth = config.auth
+    verifier = JwtVerifier(auth.issuer, auth.audience, auth.jwks, clock)
+    app = create_app(orchestrator, verifier, auth.reviewer_role, clock)
     await serve(app, config.chat.port)
 
 
