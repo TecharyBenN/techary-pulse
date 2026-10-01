@@ -41,7 +41,7 @@ class MailboxesConfig(StrictEntity):
 
 class ScheduleConfig(StrictEntity):
     draft_cron: str | None = None
-    poll_interval_minutes: PositiveInt
+    poll_interval_seconds: PositiveInt
 
 
 class OrchestratorConfig(StrictEntity):

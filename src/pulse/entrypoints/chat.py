@@ -153,7 +153,9 @@ def create_app(
             received=clock.now(),
         )
         notes: asyncio.Queue[str | None] = asyncio.Queue()
-        task = asyncio.create_task(orchestrator.handle(message, notes.put))
+        # Only the count of the client's messages is read, so a new chat can open with a recap.
+        new_chat = len(user_messages) == 1
+        task = asyncio.create_task(orchestrator.handle(message, notes.put, new_chat=new_chat))
         running.add(task)
 
         def finished(task: asyncio.Task[RunReply]) -> None:

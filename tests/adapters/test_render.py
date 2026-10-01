@@ -127,6 +127,46 @@ def test_notice_text_is_escaped() -> None:
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
 
 
+REPLY = "I presented **version 2**. Changes:\n\n- Shortened the intro\n- Kept Dan's thank-you"
+
+
+def test_reply_with_the_reviewer_email_matches_its_golden_file() -> None:
+    review = build_review(VERSION, CONSOLIDATION, RECORDS, EMAILS)
+
+    html = make_renderer().reviewer_email(VERSION, review, reply=REPLY)
+
+    _assert_golden("reply_reviewer_email.html", html)
+
+
+def test_reply_on_its_own_matches_its_golden_file() -> None:
+    _assert_golden("reply.html", make_renderer().reply(REPLY))
+
+
+def test_reply_comes_before_the_newsletter() -> None:
+    html = make_renderer().newsletter(CONTENT, reply="Here is the draft.")
+
+    assert html.index("Here is the draft.") < html.index(CONTENT.headline)
+
+
+@pytest.mark.parametrize(
+    ("text", "html"),
+    [
+        ("**Bold**", "<strong>Bold</strong>"),
+        ("- one\n- two", "<li>one</li>"),
+        ("See https://example.org/book", '<a href="https://example.org/book">'),
+        ("[Booking form](https://example.org/book)", '<a href="https://example.org/book">'),
+        ("<b>Bold</b>", "&lt;b&gt;Bold&lt;/b&gt;"),
+        ("<script>alert(1)</script>", "&lt;script&gt;alert(1)&lt;/script&gt;"),
+        ("[x](javascript:alert(1))", "[x](javascript:alert(1))"),
+    ],
+)
+def test_reply_markdown_becomes_html_with_raw_html_escaped(text: str, html: str) -> None:
+    output = make_renderer().reply(text)
+
+    assert html in output
+    assert "<script>" not in output and "<b>" not in output
+
+
 def test_markdown_newsletter_matches_its_golden_file() -> None:
     _assert_golden("newsletter.md", make_renderer().markdown(CONTENT))
 

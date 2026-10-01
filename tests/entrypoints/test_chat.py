@@ -253,6 +253,34 @@ async def test_only_the_newest_user_message_is_taken(store: SqliteStore) -> None
     assert "Client system prompt" not in "".join(str(m) for m in messages)
 
 
+RECAP = "Start your reply with a short recap of where the newsletter stands."
+
+
+async def test_a_single_message_opens_a_new_chat(store: SqliteStore) -> None:
+    model = Recorder()
+    body = _body()
+    body["messages"].insert(0, {"role": "system", "content": "Client system prompt"})
+
+    await _post(store, model, body)
+
+    [messages] = model.calls
+    assert RECAP in _prompt_text(messages)
+
+
+async def test_a_chat_with_earlier_messages_is_not_new(store: SqliteStore) -> None:
+    model = Recorder()
+    body = _body()
+    body["messages"][:0] = [
+        {"role": "user", "content": "Old message"},
+        {"role": "assistant", "content": "Old reply"},
+    ]
+
+    await _post(store, model, body)
+
+    [messages] = model.calls
+    assert RECAP not in _prompt_text(messages)
+
+
 async def test_text_parts_of_the_newest_user_message_are_joined(store: SqliteStore) -> None:
     model = Recorder()
     body = _body()

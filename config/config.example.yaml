@@ -33,7 +33,7 @@ timezone: Europe/London
 
 schedule:
   draft_cron: "30 17 * * FRI"
-  poll_interval_minutes: 5
+  poll_interval_seconds: 30
 
 send:
   mode: scheduled

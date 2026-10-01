@@ -31,6 +31,7 @@ from pulse.entities.mail import Mailbox, screen
 from pulse.entities.store import Store
 from pulse.entrypoints.chat import create_app, serve
 from pulse.entrypoints.cli import parse_args
+from pulse.entrypoints.email import EmailChannel
 from pulse.entrypoints.scheduler import poll
 from pulse.logging import configure_logging
 from pulse.services.delivery import Delivery
@@ -68,57 +69,71 @@ async def _serve(config: Config) -> None:
         )
         # One run lock for orchestrator runs and delivery.
         lock = asyncio.Lock()
-        orchestrator = build_orchestrator(
-            config, store, submissions, conversation, llm_key, clock, lock
-        )
-        delivery = build_delivery(config, store, submissions, conversation, clock, lock)
+        outbox = build_outbox(config, conversation, store)
+        operations = build_operations(config, store, submissions, outbox, clock)
+        orchestrator = build_orchestrator(config, store, operations, llm_key, lock)
+        delivery = build_delivery(config, store, submissions, conversation, outbox, clock, lock)
+        channel = build_email_channel(config, store, conversation, orchestrator, operations, outbox)
         auth = config.auth
         verifier = JwtVerifier(auth.issuer, auth.audience, auth.jwks, clock)
         app = create_app(
             orchestrator, verifier, auth.reviewer_role, clock, _renderer(config).markdown
         )
         stop = asyncio.Event()
-        interval = timedelta(minutes=config.schedule.poll_interval_minutes)
-        polling = asyncio.create_task(poll(delivery.deliver, interval, stop))
+        interval = timedelta(seconds=config.schedule.poll_interval_seconds)
+        # Email first, so a withdrawal by email takes effect before a send due in the same poll.
+        jobs = {"email": channel.poll, "delivery": delivery.deliver}
+        polling = asyncio.create_task(poll(jobs, interval, stop))
         try:
             await serve(app, config.chat.port)
         finally:
-            # A delivery in progress finishes before Pulse exits.
+            # A poll job in progress finishes before Pulse exits.
             stop.set()
             await polling
 
 
-def build_orchestrator(
-    config: Config,
-    store: Store,
-    submissions: Mailbox,
-    conversation: Mailbox,
-    llm_key: str,
-    clock: Clock,
-    lock: asyncio.Lock,
-) -> Orchestrator:
-    def model(agent: str) -> Model:
-        return gateway_model(config.llm.base_url, llm_key, config.llm.models[agent])
+def build_outbox(config: Config, conversation: Mailbox, store: Store) -> Outbox:
+    return Outbox(
+        conversation,
+        store,
+        _renderer(config).notice,
+        reviewers=config.reviewers,
+        operator_alerts=config.operator_alerts,
+        subject_template=config.subject_template,
+        timezone=config.timezone,
+    )
 
+
+def build_operations(
+    config: Config, store: Store, submissions: Mailbox, outbox: Outbox, clock: Clock
+) -> Operations:
     screen_email = functools.partial(
         screen,
         allowed_sender_domains=config.allowed_sender_domains,
         allowed_senders=config.allowed_senders,
         allowed_sensitivity_labels=config.allowed_sensitivity_labels,
     )
-    categories = config.categories
-    operations = Operations(
+    return Operations(
         store,
         submissions,
-        _outbox(config, conversation, store),
+        outbox,
         screen_email,
         _renderer(config).reviewer_email,
         clock,
         send_rule=config.send,
         timezone=config.timezone,
-        categories=list(categories),
+        categories=list(config.categories),
         max_words=config.limits.max_words,
     )
+
+
+def build_orchestrator(
+    config: Config, store: Store, operations: Operations, llm_key: str, lock: asyncio.Lock
+) -> Orchestrator:
+    def model(agent: str) -> Model:
+        return gateway_model(config.llm.base_url, llm_key, config.llm.models[agent])
+
+    categories = config.categories
     tools = Tools(
         operations,
         store,
@@ -148,6 +163,7 @@ def build_delivery(
     store: Store,
     submissions: Mailbox,
     conversation: Mailbox,
+    outbox: Outbox,
     clock: Clock,
     lock: asyncio.Lock,
 ) -> Delivery:
@@ -156,7 +172,7 @@ def build_delivery(
         store,
         conversation,
         submissions,
-        _outbox(config, conversation, store),
+        outbox,
         _renderer(config).newsletter,
         history_note,
         clock,
@@ -170,20 +186,33 @@ def build_delivery(
     )
 
 
+def build_email_channel(
+    config: Config,
+    store: Store,
+    conversation: Mailbox,
+    orchestrator: Orchestrator,
+    operations: Operations,
+    outbox: Outbox,
+) -> EmailChannel:
+    renderer = _renderer(config)
+    mailboxes = config.mailboxes
+    return EmailChannel(
+        conversation,
+        orchestrator,
+        store,
+        outbox,
+        operations.review,
+        renderer.reviewer_email,
+        renderer.newsletter,
+        renderer.reply,
+        max_attempts=config.chat.max_attempts,
+        processed_folder=mailboxes.processed_folder,
+        rejected_folder=mailboxes.rejected_folder,
+    )
+
+
 def _renderer(config: Config) -> Renderer:
     return Renderer(config.timezone)
-
-
-def _outbox(config: Config, conversation: Mailbox, store: Store) -> Outbox:
-    return Outbox(
-        conversation,
-        store,
-        _renderer(config).notice,
-        reviewers=config.reviewers,
-        operator_alerts=config.operator_alerts,
-        subject_template=config.subject_template,
-        timezone=config.timezone,
-    )
 
 
 def _environment(name: str) -> str:

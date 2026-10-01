@@ -16,6 +16,7 @@ from pulse.entities.content import (
     Version,
     WriterOutput,
     check_content,
+    draft_changed,
     item_sources,
     require_draft,
     version_of,
@@ -28,6 +29,7 @@ from pulse.entities.lifecycle import (
     next_version,
     open_newsletter,
     present,
+    require_changeable,
     require_latest,
     require_open,
     update,
@@ -37,6 +39,8 @@ from pulse.entities.review import Review, build_review
 from pulse.entities.store import Store
 from pulse.services.mail import Outbox
 
+# The subject prefix of the email that starts a newsletter's thread with its first version.
+DRAFT_PREFIX = "Draft:"
 _SEND_CANCELLED = "Send cancelled"
 _ABANDONED = "Abandoned"
 
@@ -50,6 +54,8 @@ class StartResult(Entity):
 
 class PresentResult(Entity):
     version: int
+    # Whether the draft was unchanged, so the latest version was emailed again as it was.
+    resent: bool = False
     # Whether presenting withdrew an approval, and whether the reviewers were told so.
     approval_withdrawn: bool = False
     notice_sent: bool | None = None
@@ -121,18 +127,27 @@ class Operations:
         draft = await self._draft(newsletter_id)
         return await self._check(newsletter_id, draft.content)
 
-    async def present_draft(self) -> PresentResult:
+    async def present_draft(self, email_reviewers: bool = True) -> PresentResult:
         """Save the working draft as the next version, with its check failures and the judge's
-        latest verdicts, and email it to the reviewers, in the newsletter's email thread.
+        latest verdicts, and email it to the reviewers, in the newsletter's email thread. When
+        the draft is unchanged since the latest version, email that version again instead.
 
         An approval is withdrawn, and the reviewers told, before anything else, so the approved
         version can no longer be sent. The version's email is sent before the version is saved,
         so a failed send records nothing and a retried call presents the same version number
-        again.
+        again. With `email_reviewers` False, the email channel's reply carries the version
+        instead, so reviewers receive one email.
         """
         newsletter = require_open(await self._store.get_open_newsletter())
         newsletter_id = newsletter.newsletter_id
         draft = await self._draft(newsletter_id)
+        latest = (
+            await self._store.get_version(newsletter_id, newsletter.latest_version)
+            if newsletter.latest_version
+            else None
+        )
+        if latest is not None and not draft_changed(draft, latest):
+            return await self._resend(newsletter, latest, email_reviewers)
         withdrawn = None
         if newsletter.state == "approved":
             newsletter, withdrawn = await self._withdrawn(newsletter, cancel_approval(newsletter))
@@ -144,17 +159,11 @@ class Operations:
             await self._store.get_verdicts(newsletter_id),
         )
         presented = present(newsletter)
-        review = build_review(
-            version,
-            await self._store.get_items(newsletter_id),
-            await self._store.list_extract_records(newsletter_id),
-            await self._store.list_screened_emails(newsletter_id),
-        )
-        body = Body(content=self._render_review(version, review), content_type="html")
-        sent_id = await self._outbox.to_reviewers(newsletter, body, "Draft:")
-        await self._store.save_version(
-            presented.model_copy(update={"thread_message_id": sent_id}), version
-        )
+        if email_reviewers:
+            body = await self._reviewer_email(newsletter, version)
+            sent_id = await self._outbox.to_reviewers(newsletter, body, DRAFT_PREFIX)
+            presented = presented.model_copy(update={"thread_message_id": sent_id})
+        await self._store.save_version(presented, version)
         if withdrawn is None:
             return PresentResult(version=version.version)
         return PresentResult(
@@ -194,6 +203,30 @@ class Operations:
         text = "This newsletter was abandoned and will not be sent. Its emails stay pending."
         _, sent = await self._outbox.notice(abandoned, _ABANDONED, text)
         return NoticeResult(notice_sent=sent)
+
+    async def _resend(
+        self, newsletter: Newsletter, latest: Version, email_reviewers: bool
+    ) -> PresentResult:
+        """Email the latest version again as it was presented, changing nothing else."""
+        require_changeable(newsletter)
+        if email_reviewers:
+            await self._outbox.thread(
+                newsletter, await self._reviewer_email(newsletter, latest), DRAFT_PREFIX
+            )
+        return PresentResult(version=latest.version, resent=True)
+
+    async def _reviewer_email(self, newsletter: Newsletter, version: Version) -> Body:
+        review = await self.review(newsletter.newsletter_id, version)
+        return Body(content=self._render_review(version, review), content_type="html")
+
+    async def review(self, newsletter_id: str, version: Version) -> Review:
+        """The review section of a version's reviewer email."""
+        return build_review(
+            version,
+            await self._store.get_items(newsletter_id),
+            await self._store.list_extract_records(newsletter_id),
+            await self._store.list_screened_emails(newsletter_id),
+        )
 
     async def _withdrawn(
         self, approved: Newsletter, withdrawn: Newsletter

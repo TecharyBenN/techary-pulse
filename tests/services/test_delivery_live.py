@@ -4,7 +4,6 @@ corpus, as seeded; the sent newsletter goes to the dev all-staff stand-in, and i
 to the Processed and Rejected folders, so reseed the corpus afterwards."""
 
 import asyncio
-import os
 from pathlib import Path
 
 import httpx
@@ -14,9 +13,9 @@ from pulse.adapters.clock import SystemClock
 from pulse.adapters.graph import GRAPH_URL
 from pulse.adapters.store import SqliteStore
 from pulse.config import load_config
-from pulse.main import build_delivery, build_orchestrator
+from pulse.main import build_delivery, build_outbox
 from tests.emails import seedable_corpus_messages
-from tests.live import conversation_id, graph_mailbox
+from tests.live import conversation_id, graph_mailbox, live_orchestrator
 from tests.messages import make_message
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
@@ -35,16 +34,9 @@ async def test_an_approved_newsletter_is_withdrawn_then_sent(tmp_path: Path) -> 
         conversation = graph_mailbox(config, client, config.mailboxes.conversation)
         inbox = sorted(email.subject for email in await submissions.list_inbox())
         assert inbox == corpus, "reset the dev inbox and seed the corpus once"
-        orchestrator = build_orchestrator(
-            config,
-            store,
-            submissions,
-            conversation,
-            os.environ[config.llm.api_key_env],
-            clock,
-            lock,
-        )
-        delivery = build_delivery(config, store, submissions, conversation, clock, lock)
+        orchestrator = live_orchestrator(config, store, submissions, conversation, clock, lock)
+        outbox = build_outbox(config, conversation, store)
+        delivery = build_delivery(config, store, submissions, conversation, outbox, clock, lock)
 
         async def say(message_id: str, text: str) -> str | None:
             reply = (await orchestrator.handle(make_message(message_id, text=text))).text

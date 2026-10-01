@@ -100,7 +100,7 @@ def require_reviewer(caller: str | None) -> str:
 
 def update(newsletter: Newsletter, now: dt.datetime) -> Newsletter:
     """Record that `start_newsletter` added the emails that arrived since."""
-    _require_changeable(newsletter)
+    require_changeable(newsletter)
     return newsletter.model_copy(update={"updated_at": now})
 
 
@@ -110,7 +110,7 @@ def next_version(newsletter: Newsletter) -> int:
 
 def present(newsletter: Newsletter) -> Newsletter:
     """Number the next version, withdrawing any approval first."""
-    _require_changeable(newsletter)
+    require_changeable(newsletter)
     return newsletter.model_copy(
         update={"state": "in_review", "latest_version": next_version(newsletter)} | _NO_APPROVAL
     )
@@ -154,7 +154,7 @@ def withdraw(newsletter: Newsletter, caller: str | None) -> Newsletter:
 
 def cancel_approval(newsletter: Newsletter) -> Newsletter:
     """Return an approved newsletter to `in_review`, as a withdrawal or a new version does."""
-    _require_changeable(newsletter)
+    require_changeable(newsletter)
     if newsletter.state != "approved":
         raise Refusal("the newsletter is not approved")
     return newsletter.model_copy(update={"state": "in_review"} | _NO_APPROVAL)
@@ -162,7 +162,7 @@ def cancel_approval(newsletter: Newsletter) -> Newsletter:
 
 def abandon(newsletter: Newsletter, caller: str | None, now: dt.datetime) -> Newsletter:
     require_reviewer(caller)
-    _require_changeable(newsletter)
+    require_changeable(newsletter)
     return newsletter.model_copy(update={"state": "abandoned", "closed_at": now})
 
 
@@ -212,7 +212,8 @@ def _send_slot(rule: Scheduled, timezone: ZoneInfo, opened_at: dt.datetime) -> d
     return slot.astimezone(dt.UTC)
 
 
-def _require_changeable(newsletter: Newsletter) -> None:
+def require_changeable(newsletter: Newsletter) -> None:
+    """Refuse once the newsletter is closed or its send has started."""
     if newsletter.state in CLOSED_STATES:
         raise Refusal(f"the newsletter is {newsletter.state}")
     if newsletter.send_started:

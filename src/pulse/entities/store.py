@@ -1,12 +1,12 @@
 """The store interface: newsletters, screened emails, extract records, items, drafts, versions,
-feedback and history."""
+feedback, history and handled messages."""
 
 from collections.abc import Sequence
 from typing import Protocol
 
 from pulse.entities.base import Entity
 from pulse.entities.content import Verdict, Version, WriterOutput
-from pulse.entities.conversation import ReviewerMessage
+from pulse.entities.conversation import HandledMessage, ReviewerMessage
 from pulse.entities.extracts import Consolidation, ExtractorOutput, ExtractRecord
 from pulse.entities.lifecycle import Newsletter
 from pulse.entities.mail import MessageId, ScreenedEmail
@@ -106,3 +106,13 @@ class Store(Protocol):
         ...
 
     async def append_history(self, newsletter_id: str, message_id: str, data: bytes) -> None: ...
+
+    async def record_attempt(self, message_id: str) -> int:
+        """Count a run started for a conversation mailbox message; return its attempts so far."""
+        ...
+
+    async def mark_handled(self, message_id: str) -> None:
+        """Record that the message's run completed and its reply was sent."""
+        ...
+
+    async def get_handled_message(self, message_id: str) -> HandledMessage | None: ...

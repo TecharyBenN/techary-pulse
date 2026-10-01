@@ -12,6 +12,7 @@ from pulse.entities.mail import (
     Mailbox,
     OutboundEmail,
     address_in,
+    channel_rejection,
     destination,
     display_date,
     domain_in,
@@ -74,6 +75,26 @@ def test_header_value_absent() -> None:
 )
 def test_is_automatic_reply(headers: dict[str, str], expected: bool) -> None:
     assert is_automatic_reply(headers) is expected
+
+
+_INTERNAL = {"X-MS-Exchange-Organization-AuthAs": "Internal"}
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        (_INTERNAL, None),
+        ({"x-ms-exchange-organization-authas": " internal "}, None),
+        ({}, "not_internal"),
+        ({"X-MS-Exchange-Organization-AuthAs": "Anonymous"}, "not_internal"),
+        (_INTERNAL | {"Auto-Submitted": "auto-replied"}, "automatic_reply"),
+        (_INTERNAL | {"X-Auto-Response-Suppress": "All"}, "automatic_reply"),
+        # An external automatic reply fails the first rule.
+        ({"Auto-Submitted": "auto-replied"}, "not_internal"),
+    ],
+)
+def test_channel_rejection(headers: dict[str, str], expected: str | None) -> None:
+    assert channel_rejection(headers) == expected
 
 
 # Interface tests every mailbox implementation must pass.

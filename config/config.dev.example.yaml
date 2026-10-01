@@ -37,7 +37,7 @@ allowed_sensitivity_labels: []
 timezone: Europe/London
 
 schedule:
-  poll_interval_minutes: 5
+  poll_interval_seconds: 30
 
 send:
   mode: on_approval

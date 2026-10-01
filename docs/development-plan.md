@@ -38,6 +38,7 @@ A phase with a live check is complete only when the check has passed against the
 | Bearer token verification | PyJWT with its cryptography extra, through `asyncio.to_thread` | Maintained verification of signatures, issuer and audience, and fetching and caching of an issuer's key set; writing signature checks by hand is a security risk. |
 | Microsoft Graph calls | Direct REST calls through httpx's asynchronous client | Pulse uses a handful of operations, so a software development kit (SDK) would add more than it saves. |
 | Rendering | Jinja2 with autoescaping on | Escapes model output and email-derived text by default. |
+| Email replies | `markdown-it-py` with its linkify extra, raw HTML off | Converts the orchestrator's Markdown replies to HTML for email, following CommonMark, and escapes any raw HTML in them; Python-Markdown cannot escape raw HTML. |
 | Scheduling | A cron library that supports IANA time zones, chosen in phase 10 | Computes the next start in `Europe/London` correctly across daylight saving changes. |
 | Logging | Standard library `logging` with a JSON formatter | Structured logs without another dependency. |
 | Command line | `argparse` | Two commands do not need a framework. |
@@ -172,7 +173,7 @@ Scope:
 
 - `approve`, with every check from the design, and the send time;
 - `withdraw_approval` and `abandon` with their refusals, `present_draft` withdrawing an approval first, and the `Send cancelled` and `Abandoned` notices in the newsletter's email thread;
-- delivery, running every `schedule.poll_interval_minutes` inside `pulse serve`: the approval re-check, `send_started`, rendering without the review section, sending to `all_staff` with `replyTo` set to the submissions mailbox, marking the newsletter `sent`, the `Sent` notice in the newsletter's email thread, moving screened emails and the history note;
+- delivery, running every `schedule.poll_interval_seconds` inside `pulse serve`: the approval re-check, `send_started`, rendering without the review section, sending to `all_staff` with `replyTo` set to the submissions mailbox, marking the newsletter `sent`, the `Sent` notice in the newsletter's email thread, moving screened emails and the history note;
 - the run lock shared by orchestrator runs and delivery;
 - the conversation of the latest newsletter, which continues after the newsletter closes until the next one opens;
 - operator alerts, sent to `operator_alerts`;
@@ -184,12 +185,12 @@ Exit criteria: tests cover every refusal of `approve`, `withdraw_approval` and `
 
 Scope:
 
-- polling the conversation mailbox every `schedule.poll_interval_minutes`: checking Exchange's internal authentication header, resolving each sender to their Entra object ID through a Graph user lookup, rejecting automatic replies, moving messages to `Processed` or `Rejected`, the `handled_messages` table, and the `chat.max_attempts` limit with its operator alert;
-- replies in the thread, each becoming the thread's latest message, as does each reviewer message handled;
+- polling the conversation mailbox every `schedule.poll_interval_seconds`: checking Exchange's internal authentication header, rejecting automatic replies, moving messages to `Processed` or `Rejected`, the `handled_messages` table, and the `chat.max_attempts` limit with its operator alert;
+- replies to the latest message in the newsletter's thread, each becoming the thread's latest message;
 - one reply when the run presents a version, holding the orchestrator's reply followed by the reviewer email, with `present_draft` sending no separate email;
-- the `NO_REPLY` reply and the channel-switch summary;
-- how an email reply shows a reply the orchestrator wrote in Markdown;
-- deciding whether the first reply in a new LibreChat chat opens with a recap of the newsletter, which the design does not yet state.
+- the `NO_REPLY` reply;
+- the orchestrator's Markdown reply converted to HTML for the email reply;
+- a recap of the newsletter at the start of the reply when a LibreChat chat is new or the conversation's previous message came through the other channel.
 
 Exit criteria: tests cover each channel rule with fake mailboxes; live check: the test user replies to a reviewer email with feedback, receives the revised version in the thread, and continues the same conversation in LibreChat.
 

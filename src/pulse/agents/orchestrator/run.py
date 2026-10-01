@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
+from typing import NamedTuple
 
 from pydantic_ai import Agent, AgentRun, CallToolsNode, UsageLimits
 from pydantic_ai.exceptions import AgentRunError, UnexpectedModelBehavior
@@ -24,8 +25,8 @@ from pulse.agents.orchestrator.agent import NO_REPLY, user_prompt
 from pulse.agents.orchestrator.tools import ShowResult, Tools, progress_note
 from pulse.agents.runner import is_truncated_or_refused
 from pulse.entities.base import Entity
-from pulse.entities.content import Content
-from pulse.entities.conversation import ReviewerMessage
+from pulse.entities.content import Content, Version
+from pulse.entities.conversation import ReviewerMessage, channel_changed
 from pulse.entities.errors import PulseError, RunFailed
 from pulse.entities.store import DELIVERY_NOTE, Store
 
@@ -44,6 +45,18 @@ class RunReply(Entity):
 
     text: str | None
     newsletter: Content | None
+    # The version the run presented, so the email channel's reply carries its reviewer email.
+    version: Version | None
+
+
+DeliverReply = Callable[[RunReply], Awaitable[None]]
+
+
+class _Shown(NamedTuple):
+    """The newsletter a run last presented or showed: a version, or the working draft."""
+
+    version: int | None
+    presented: bool
 
 
 async def _no_progress(note: str) -> None:
@@ -70,7 +83,7 @@ class _History:
         # The message whose run saved the latest step.
         self.owner: str | None = None
         # The latest newsletter each message's run presented or showed, by message ID.
-        self.shown: dict[str, ShowResult] = {}
+        self.shown: dict[str, _Shown] = {}
 
     async def load(self, message: ReviewerMessage) -> None:
         """Record the message as feedback, then load the saved steps."""
@@ -95,6 +108,18 @@ class _History:
         if recorded is None:
             raise RunFailed(f"message {message_id} has saved steps but is not recorded")
         return recorded
+
+    def completed_reply(self, message_id: str) -> str | None:
+        """The final reply of the message's run, if that run completed."""
+        steps = [step for owner, step in self._steps if owner == message_id]
+        last = steps[-1] if steps else None
+        if (
+            isinstance(last, ModelResponse)
+            and not last.tool_calls
+            and not is_truncated_or_refused(last)
+        ):
+            return last.text or ""
+        return None
 
     def unfinished(self) -> bool:
         """Whether the latest run stopped before its final response; delivery's note is not a
@@ -133,8 +158,10 @@ class _History:
 
     def _note(self, message_id: str, message: ModelMessage) -> None:
         if shown := _results(message, _SHOWING):
+            tool, result = shown[-1]
             # During a run a result is the tool's own model; loaded from the store, it is a dict.
-            self.shown[message_id] = ShowResult.model_validate(shown[-1], from_attributes=True)
+            version = ShowResult.model_validate(result, from_attributes=True).version
+            self.shown[message_id] = _Shown(version, presented=tool == _PRESENT_DRAFT)
 
     async def _save(
         self, newsletter_id: str, message_id: str, steps: Sequence[ModelMessage]
@@ -165,9 +192,20 @@ class Orchestrator:
         self._lock = lock
 
     async def handle(
-        self, message: ReviewerMessage, on_progress: Progress = _no_progress
+        self,
+        message: ReviewerMessage,
+        on_progress: Progress = _no_progress,
+        *,
+        on_reply: DeliverReply | None = None,
+        new_chat: bool = False,
     ) -> RunReply:
-        """Raise RunFailed on failure."""
+        """Raise RunFailed on failure.
+
+        `on_reply` delivers the reply before the run lock is released, as the email channel
+        does; an error it raises is raised as it is, because the run itself completed.
+        `new_chat` says the message opens a new chat, so the reply starts with a recap, as it
+        does when the conversation's previous message came through the other channel.
+        """
         async with self._lock:
             started = time.monotonic()
             newsletter = await self._store.get_latest_newsletter()
@@ -180,7 +218,7 @@ class Orchestrator:
             history = _History(self._store, newsletter_id)
             try:
                 async with asyncio.timeout(self._max_run_time.total_seconds()):
-                    reply = await self._converse(message, history, on_progress)
+                    reply = await self._converse(message, history, on_progress, new_chat)
             except (AgentRunError, TimeoutError, PulseError) as error:
                 fields["conversation_id"] = history.newsletter_id
                 fields |= {"outcome": "failed", "error_type": type(error).__name__}
@@ -190,35 +228,50 @@ class Orchestrator:
             fields["conversation_id"] = history.newsletter_id
             fields["outcome"] = "no_reply" if no_reply else "reply"
             _log.info("orchestrator_run", extra=fields | {"duration_ms": _ms_since(started)})
-            return RunReply(
-                text=None if no_reply else reply,
-                newsletter=await self._shown(message, history),
+            shown, version = await self._shown(message, history)
+            run_reply = RunReply(
+                text=None if no_reply else reply, newsletter=shown, version=version
             )
+            if on_reply is not None:
+                await on_reply(run_reply)
+            return run_reply
 
-    async def _shown(self, message: ReviewerMessage, history: _History) -> Content | None:
+    async def _shown(
+        self, message: ReviewerMessage, history: _History
+    ) -> tuple[Content | None, Version | None]:
         """The newsletter this message's run last presented or showed, including in an earlier
-        attempt."""
+        attempt, and the version when the run presented it."""
         shown = history.shown.get(message.message_id)
         newsletter_id = history.newsletter_id
         if shown is None or newsletter_id is None:
-            return None
+            return None, None
         if shown.version is None:
             draft = await self._store.get_draft(newsletter_id)
-            return draft.content if draft else None
+            return (draft.content if draft else None), None
         version = await self._store.get_version(newsletter_id, shown.version)
-        return version.content if version else None
+        if version is None:
+            return None, None
+        return version.content, version if shown.presented else None
 
     async def _converse(
-        self, message: ReviewerMessage, history: _History, on_progress: Progress
+        self, message: ReviewerMessage, history: _History, on_progress: Progress, new_chat: bool
     ) -> str:
         await history.load(message)
+        if (reply := history.completed_reply(message.message_id)) is not None:
+            # A retry after the reply could not be delivered gets the same reply.
+            return reply
         if history.unfinished() and history.owner is not None:
             owner = history.owner
             if owner == message.message_id:
                 # A retried message is complete once its own run is.
                 return await self._run(None, message, history, on_progress)
             await self._run(None, await history.recorded(owner), history, on_progress)
-        return await self._run(user_prompt(message), message, history, on_progress)
+        feedback = (
+            await self._store.list_feedback(history.newsletter_id) if history.newsletter_id else []
+        )
+        # The reviewer's screen shows nothing of the conversation in either case.
+        prompt = user_prompt(message, recap=new_chat or channel_changed(feedback, message))
+        return await self._run(prompt, message, history, on_progress)
 
     async def _run(
         self,
@@ -297,12 +350,13 @@ def _superseded_results_replaced(messages: list[ModelMessage]) -> list[ModelMess
     return [_placeholders(m) if n < latest else m for n, m in enumerate(messages)]
 
 
-def _results(message: ModelMessage, tools: Sequence[str]) -> list[object]:
-    """The successful results of the named tools in the message, in order."""
+def _results(message: ModelMessage, tools: Sequence[str]) -> list[tuple[str, object]]:
+    """The successful results of the named tools in the message, with each tool's name, in
+    order."""
     if not isinstance(message, ModelRequest):
         return []
     return [
-        part.content
+        (part.tool_name, part.content)
         for part in message.parts
         # A refused tool returns its reason as a string, and did nothing.
         if isinstance(part, ToolReturnPart)

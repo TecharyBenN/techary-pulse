@@ -224,7 +224,7 @@ async def test_tools_refuse_before_any_newsletter_exists(store: SqliteStore) -> 
     assert await tools.get_items() == "Refused: no newsletter exists yet"
     assert await tools.write("Write the first draft.") == "Refused: no newsletter is open"
     assert await tools.get_draft() == "Refused: no newsletter exists yet"
-    assert await tools.present_draft() == "Refused: no newsletter is open"
+    assert await tools.present_draft(_run_for(make_message())) == "Refused: no newsletter is open"
 
 
 async def test_extract_stores_each_record_with_its_exclusion(store: SqliteStore) -> None:
@@ -482,7 +482,7 @@ async def test_write_revises_the_working_draft_with_all_feedback(store: SqliteSt
     await store.record_feedback(newsletter_id, make_message("r01", text="Shorter intro, please."))
     await tools.write("Write the first draft.")
 
-    await tools.present_draft()
+    await tools.present_draft(_run_for(make_message()))
 
     revised = await tools.write("Shorten the intro.")
 
@@ -513,7 +513,7 @@ async def test_get_draft_returns_the_working_draft_or_a_version(store: SqliteSto
     await _consolidated(tools)
     assert await tools.get_draft() == "Refused: there is no working draft"
     await tools.write("Write the first draft.")
-    await tools.present_draft()
+    await tools.present_draft(_run_for(make_message()))
 
     assert await tools.get_draft() == DRAFT.model_dump(mode="json")
     version = await tools.get_draft(1)
@@ -529,7 +529,7 @@ async def test_show_draft_names_what_to_show_and_refuses_what_does_not_exist(
     await _consolidated(tools)
     assert await tools.show_draft() == "Refused: there is no working draft"
     await tools.write("Write the first draft.")
-    await tools.present_draft()
+    await tools.present_draft(_run_for(make_message()))
 
     assert await tools.show_draft() == ShowResult(version=None)
     assert await tools.show_draft(1) == ShowResult(version=1)
@@ -540,15 +540,31 @@ async def test_present_draft_emails_the_next_version(store: SqliteStore) -> None
     conversation = FakeMailbox()
     tools = _tools(store, conversation=conversation)
     await _consolidated(tools)
-    assert await tools.present_draft() == "Refused: there is no working draft"
+    assert (
+        await tools.present_draft(_run_for(make_message())) == "Refused: there is no working draft"
+    )
     await tools.write("Write the first draft.")
 
-    result = await tools.present_draft()
+    result = await tools.present_draft(_run_for(make_message()))
 
     assert not isinstance(result, str)
     assert result.version == 1
     [email] = conversation.sent
     assert email.to == [REVIEWERS]
+
+
+async def test_present_draft_in_the_email_channel_sends_no_email(store: SqliteStore) -> None:
+    conversation = FakeMailbox()
+    tools = _tools(store, conversation=conversation)
+    await _consolidated(tools)
+    await tools.write("Write the first draft.")
+
+    result = await tools.present_draft(_run_for(make_message("c01", channel="email")))
+
+    assert not isinstance(result, str)
+    assert result.version == 1
+    # The email channel's reply carries the version instead.
+    assert (conversation.sent, conversation.replies) == ([], [])
 
 
 async def test_get_newsletter_shows_whether_the_draft_changed(store: SqliteStore) -> None:
@@ -563,7 +579,7 @@ async def test_get_newsletter_shows_whether_the_draft_changed(store: SqliteStore
     assert await draft_changed() is False
     await tools.write("Write the first draft.")
     assert await draft_changed() is True
-    await tools.present_draft()
+    await tools.present_draft(_run_for(make_message()))
     assert await draft_changed() is False
     shorter = DRAFT.content.model_copy(update={"intro": "A shorter intro."})
     await store.save_draft(newsletter_id, DRAFT.model_copy(update={"content": shorter}))
@@ -663,7 +679,7 @@ async def _presented(tools: Tools) -> str:
     """Start a newsletter and present version 1, returning the newsletter ID."""
     newsletter_id = await _consolidated(tools)
     await tools.write("Write the first draft.")
-    await tools.present_draft()
+    await tools.present_draft(_run_for(make_message()))
     return newsletter_id
 
 
@@ -741,6 +757,6 @@ async def test_action_tools_refuse_once_the_newsletter_is_closed(store: SqliteSt
     assert await tools.consolidate(["m01"]) == refused
     assert await tools.write("Shorten the intro.") == refused
     assert await tools.judge() == refused
-    assert await tools.present_draft() == refused
+    assert await tools.present_draft(_run_for(make_message())) == refused
     assert await tools.approve(_run_for(make_message(text="approve v1")), 1) == refused
     assert await tools.withdraw_approval(_run_for(make_message())) == refused

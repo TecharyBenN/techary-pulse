@@ -370,3 +370,27 @@ async def test_feedback_is_listed_in_the_order_recorded(store: SqliteStore) -> N
     feedback = await store.list_feedback("n-1")
 
     assert [(m.message_id, m.text) for m in feedback] == [("r02", "Second"), ("r01", "First")]
+
+
+async def test_unseen_message_is_not_handled(store: SqliteStore) -> None:
+    assert await store.get_handled_message("c01") is None
+
+
+async def test_attempts_are_counted_per_message(store: SqliteStore) -> None:
+    assert await store.record_attempt("c01") == 1
+    assert await store.record_attempt("c01") == 2
+    assert await store.record_attempt("c02") == 1
+
+    handled = await store.get_handled_message("c01")
+    assert handled is not None
+    assert (handled.attempts, handled.handled) == (2, False)
+
+
+async def test_marking_handled_keeps_the_attempts(store: SqliteStore) -> None:
+    await store.record_attempt("c01")
+
+    await store.mark_handled("c01")
+
+    handled = await store.get_handled_message("c01")
+    assert handled is not None
+    assert (handled.attempts, handled.handled) == (1, True)

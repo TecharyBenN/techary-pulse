@@ -27,9 +27,10 @@ def build_agent(
     )
 
 
-def user_prompt(message: ReviewerMessage) -> str:
-    """The reviewer's text stays inside a delimited block, never in the instructions."""
-    return (
-        f"Message from reviewer {message.author} through {message.channel}:\n"
-        f"<reviewer_message>\n{message.text}\n</reviewer_message>"
-    )
+def user_prompt(message: ReviewerMessage, recap: bool = False) -> str:
+    """The reviewer's text stays inside a delimited block, never in the instructions. The line
+    before it is written by code, so the orchestrator can rely on it."""
+    lines = [f"Message from reviewer {message.author} through {message.channel}:"]
+    if recap:
+        lines.append("Start your reply with a short recap of where the newsletter stands.")
+    return "\n".join([*lines, "<reviewer_message>", message.text, "</reviewer_message>"])

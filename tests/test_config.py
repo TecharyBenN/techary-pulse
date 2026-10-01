@@ -200,7 +200,7 @@ def test_unknown_nested_key_is_rejected(tmp_path: Path) -> None:
     "path",
     [
         ("graph", "max_retries"),
-        ("schedule", "poll_interval_minutes"),
+        ("schedule", "poll_interval_seconds"),
         ("orchestrator", "max_tool_calls"),
         ("orchestrator", "max_run_minutes"),
         ("chat", "port"),

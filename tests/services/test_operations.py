@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from pulse.adapters.store import SqliteStore
-from pulse.entities.content import CheckFailure, Version
+from pulse.entities.content import CheckFailure, Version, WriterOutput
 from pulse.entities.errors import MailboxError, Refusal, StoreError
 from pulse.entities.lifecycle import Newsletter, Scheduled, abandon, start_send
 from pulse.services.operations import ApproveResult, NoticeResult, Operations, PresentResult
@@ -133,6 +133,13 @@ class _FailingStore(SqliteStore):
         await super().save_version(newsletter, version)
 
 
+def _revised(*changes: str) -> WriterOutput:
+    """A revised working draft: new content, with the changes the writer reports."""
+    draft = make_draft(changes=list(changes))
+    intro = draft.content.model_copy(update={"intro": "A shorter intro."})
+    return draft.model_copy(update={"content": intro})
+
+
 async def _drafted(store: SqliteStore) -> None:
     """An open newsletter with one included email, its item and a working draft."""
     newsletter = make_newsletter()
@@ -180,34 +187,125 @@ async def test_present_saves_the_draft_as_version_1_and_emails_the_reviewers(
     assert newsletter.thread_message_id == "sent-1"
 
 
+async def test_present_without_emailing_saves_the_version_and_leaves_the_thread(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox
+) -> None:
+    await _drafted(store)
+
+    result = await operations.present_draft(email_reviewers=False)
+
+    assert result == PresentResult(version=1)
+    assert [v.version for v in await _versions(store)] == [1]
+    assert (conversation.sent, conversation.replies) == ([], [])
+    newsletter = await _newsletter(store)
+    assert (newsletter.latest_version, newsletter.thread_message_id) == (1, None)
+
+
+async def test_review_is_built_from_the_newsletter_records(
+    operations: Operations, store: SqliteStore
+) -> None:
+    await _drafted(store)
+    await operations.present_draft(email_reviewers=False)
+    [version] = await _versions(store)
+
+    review = await operations.review("n-1", version)
+
+    assert [link.text for link in review.source_map] == [ENTRY]
+
+
 async def test_later_versions_reply_to_the_latest_message_in_the_thread(
     operations: Operations, store: SqliteStore, conversation: FakeMailbox
 ) -> None:
     await _drafted(store)
     await operations.present_draft()
-    await store.save_draft("n-1", make_draft(changes=["Shortened the intro"]))
+    await store.save_draft("n-1", _revised("Shortened the intro"))
 
     result = await operations.present_draft()
-    await operations.present_draft()
 
     assert result.version == 2
-    assert [v.changes for v in await _versions(store)] == [
-        [],
-        ["Shortened the intro"],
-        ["Shortened the intro"],
-    ]
+    assert [v.changes for v in await _versions(store)] == [[], ["Shortened the intro"]]
     assert len(conversation.sent) == 1
-    # Each version replies to the one before it, so the thread reads in order.
-    assert [(r.message_id, r.to, r.reply_id) for r in conversation.replies] == [
-        ("sent-1", (REVIEWERS,), "reply-1"),
-        ("reply-1", (REVIEWERS,), "reply-2"),
-    ]
-    [second, _] = conversation.replies
+    # Each version replies to the latest message, so the thread reads in order.
+    [second] = conversation.replies
+    assert (second.message_id, second.to) == ("sent-1", (REVIEWERS,))
     assert "Version 2" in second.body.content
     assert "Shortened the intro" in second.body.content
-    newsletter = await store.get_open_newsletter()
-    assert newsletter is not None
-    assert newsletter.thread_message_id == "reply-2"
+    assert (await _newsletter(store)).thread_message_id == second.reply_id
+
+
+async def test_an_unchanged_draft_resends_the_latest_version(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox
+) -> None:
+    await _drafted(store)
+    await operations.present_draft()
+    await store.save_draft("n-1", _revised("Shortened the intro"))
+    await operations.present_draft()
+
+    result = await operations.present_draft()
+
+    assert result == PresentResult(version=2, resent=True)
+    assert [v.version for v in await _versions(store)] == [1, 2]
+    first, again = conversation.replies
+    assert again.message_id == first.reply_id
+    assert again.body == first.body
+    newsletter = await _newsletter(store)
+    assert (newsletter.latest_version, newsletter.thread_message_id) == (2, again.reply_id)
+
+
+async def test_a_draft_differing_only_in_its_reported_changes_is_unchanged(
+    operations: Operations, store: SqliteStore
+) -> None:
+    await _drafted(store)
+    await operations.present_draft()
+    await store.save_draft("n-1", make_draft(changes=["Checked the facts"]))
+
+    assert await operations.present_draft() == PresentResult(version=1, resent=True)
+
+
+async def test_resending_keeps_an_approval(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox, clock: ControlledClock
+) -> None:
+    await _approved(operations, store, clock)
+
+    result = await operations.present_draft()
+
+    assert result == PresentResult(version=1, resent=True)
+    newsletter = await _newsletter(store)
+    assert (newsletter.state, newsletter.approved_version) == ("approved", 1)
+    [again] = conversation.replies
+    assert "Send cancelled" not in again.body.content
+    assert "Version 1" in again.body.content
+
+
+async def test_resending_in_the_email_channel_sends_nothing(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox
+) -> None:
+    await _drafted(store)
+    await operations.present_draft()
+
+    result = await operations.present_draft(email_reviewers=False)
+
+    assert result == PresentResult(version=1, resent=True)
+    assert conversation.replies == []
+    assert (await _newsletter(store)).thread_message_id == "sent-1"
+
+
+async def test_resending_refuses_once_the_send_has_started(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox
+) -> None:
+    await _drafted(store)
+    await operations.present_draft()
+    await store.save_newsletter(start_send(await _approved_newsletter(store)))
+
+    with pytest.raises(Refusal, match="send has started"):
+        await operations.present_draft()
+
+    assert conversation.replies == []
+
+
+async def _approved_newsletter(store: SqliteStore) -> Newsletter:
+    newsletter = await _newsletter(store)
+    return newsletter.model_copy(update={"state": "approved", "approved_version": 1})
 
 
 DASHED = make_draft().model_copy(
@@ -263,7 +361,7 @@ async def test_a_draft_rewritten_since_it_was_judged_is_presented_not_judged(
 ) -> None:
     await _drafted(store)
     await store.save_verdicts("n-1", [make_verdict("intro"), make_verdict()])
-    await store.save_draft("n-1", make_draft(changes=["Shortened the intro"]))
+    await store.save_draft("n-1", _revised("Shortened the intro"))
 
     await operations.present_draft()
 
@@ -526,7 +624,7 @@ async def test_present_over_an_approval_withdraws_it_first(
     operations: Operations, store: SqliteStore, conversation: FakeMailbox, clock: ControlledClock
 ) -> None:
     await _approved(operations, store, clock)
-    await store.save_draft("n-1", make_draft(changes=["Shortened the intro"]))
+    await store.save_draft("n-1", _revised("Shortened the intro"))
 
     result = await operations.present_draft()
 

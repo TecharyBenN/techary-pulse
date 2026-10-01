@@ -48,6 +48,18 @@ class Outbox:
         )
         return await self._mailbox.send(email)
 
+    async def thread(self, newsletter: Newsletter, body: Body, prefix: str) -> Newsletter:
+        """Email the reviewers in the newsletter's thread, as `to_reviewers` does, and save the
+        email as the thread's latest message. Return the newsletter as saved."""
+        sent_id = await self.to_reviewers(newsletter, body, prefix)
+        threaded = newsletter.model_copy(update={"thread_message_id": sent_id})
+        await self._store.save_newsletter(threaded)
+        return threaded
+
+    async def reply_to_message(self, message_id: MessageId, body: Body) -> MessageId:
+        """Reply to a reviewer's message outside any newsletter thread, to the reviewers only."""
+        return await self._mailbox.reply(message_id, [self._reviewers], body)
+
     async def notice(
         self, newsletter: Newsletter, title: str, text: str
     ) -> tuple[Newsletter, bool]:
@@ -56,7 +68,7 @@ class Outbox:
         cannot be sent is logged, because the change it reports is already saved."""
         body = Body(content=self._render_notice(title, text), content_type="html")
         try:
-            notice_id = await self.to_reviewers(newsletter, body, f"{title}:")
+            return await self.thread(newsletter, body, f"{title}:"), True
         except MailboxError as error:
             _log.error(
                 "notice_failed",
@@ -66,9 +78,6 @@ class Outbox:
                 },
             )
             return newsletter, False
-        threaded = newsletter.model_copy(update={"thread_message_id": notice_id})
-        await self._store.save_newsletter(threaded)
-        return threaded, True
 
     async def alert(self, summary: str, text: str) -> None:
         """Email the operators; an alert that cannot be sent is logged."""

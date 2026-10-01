@@ -20,10 +20,10 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from pulse.adapters.store import SqliteStore
 from pulse.agents.orchestrator.agent import user_prompt
-from pulse.agents.orchestrator.run import Orchestrator, history_note
+from pulse.agents.orchestrator.run import Orchestrator, RunReply, history_note
 from pulse.entities.content import Version, version_of
 from pulse.entities.conversation import ReviewerMessage
-from pulse.entities.errors import RunFailed
+from pulse.entities.errors import MailboxError, RunFailed
 from pulse.entities.lifecycle import abandon, open_newsletter, present
 from pulse.entities.store import DELIVERY_NOTE, HistoryRow
 from tests.emails import make_draft
@@ -662,3 +662,121 @@ async def test_the_delivery_note_after_an_unfinished_run_is_not_resumed(
 
     assert reply.text == "Done."
     assert tools.calls == 0
+
+
+async def test_reply_carries_the_presented_version_for_the_reviewer_email(
+    store: SqliteStore,
+) -> None:
+    version = await _version_1(store)
+    model = responses(present_call(), text_response("Version 1 is ready."))
+
+    reply = await make_orchestrator(store, model, Tools()).handle(make_message())
+
+    assert reply.version == version
+
+
+async def test_a_shown_version_is_not_a_presented_one(store: SqliteStore) -> None:
+    await _version_1(store)
+    await store.save_draft("n-1", make_draft())
+    model = responses(show_call(), text_response("Here is the draft."))
+
+    reply = await make_orchestrator(store, model, Tools()).handle(make_message())
+
+    assert reply.newsletter is not None
+    assert reply.version is None
+
+
+async def test_a_message_whose_run_completed_gets_its_saved_reply_without_a_second_run(
+    store: SqliteStore, db_path: Path
+) -> None:
+    version = await _version_1(store)
+    message = make_message("c01", channel="email")
+    model = responses(present_call(), text_response("Version 1 is ready."))
+    await make_orchestrator(store, model, Tools()).handle(message)
+    saved = await _history(store)
+
+    # A second run would ask the model, which this stand-in refuses.
+    reply = await make_orchestrator(store, responses(), Tools()).handle(message)
+
+    assert (reply.text, reply.version) == ("Version 1 is ready.", version)
+    assert await _history(store) == saved
+    assert _feedback_ids(db_path) == ["c01"]
+
+
+async def test_on_reply_receives_the_reply_while_the_lock_is_held(store: SqliteStore) -> None:
+    lock = asyncio.Lock()
+    delivered: list[tuple[str | None, bool]] = []
+
+    async def on_reply(reply: RunReply) -> None:
+        delivered.append((reply.text, lock.locked()))
+
+    orchestrator = make_orchestrator(store, reply_with("Noted."), lock=lock)
+    await orchestrator.handle(make_message(), on_reply=on_reply)
+
+    assert delivered == [("Noted.", True)]
+    assert not lock.locked()
+
+
+async def test_a_failed_on_reply_raises_its_own_error(store: SqliteStore) -> None:
+    async def on_reply(reply: RunReply) -> None:
+        raise MailboxError("Graph returned HTTP 503")
+
+    with pytest.raises(MailboxError):
+        await make_orchestrator(store, reply_with("Noted.")).handle(
+            make_message(), on_reply=on_reply
+        )
+
+
+def _recorded_prompts(seen: list[list[ModelMessage]]) -> list[object]:
+    """The prompt each run sent, in order."""
+    return [_prompts(messages)[-1] for messages in seen]
+
+
+async def test_a_change_of_channel_asks_for_a_recap(store: SqliteStore) -> None:
+    seen: list[list[ModelMessage]] = []
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        return text_response("Noted.")
+
+    orchestrator = make_orchestrator(store, model)
+    await orchestrator.handle(make_message("r01"))
+    await orchestrator.handle(make_message("c02", channel="email"))
+    await orchestrator.handle(make_message("c03", channel="email"))
+
+    assert _recorded_prompts(seen) == [
+        user_prompt(make_message("r01")),
+        user_prompt(make_message("c02", channel="email"), recap=True),
+        user_prompt(make_message("c03", channel="email")),
+    ]
+
+
+async def test_a_new_chat_asks_for_a_recap(store: SqliteStore) -> None:
+    seen: list[list[ModelMessage]] = []
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        return text_response("Here is where things stand.")
+
+    await make_orchestrator(store, model).handle(make_message(), new_chat=True)
+
+    assert _recorded_prompts(seen) == [user_prompt(make_message(), recap=True)]
+
+
+async def test_a_completed_run_returns_its_reply_before_resuming_another(
+    store: SqliteStore,
+) -> None:
+    first = make_message("c01", channel="email")
+    await make_orchestrator(store, reply_with("First reply.")).handle(first)
+    # A later run stopped with its tool call unrun.
+    unfinished = (
+        ModelRequest(parts=[UserPromptPart(user_prompt(make_message("r02")))]),
+        ping_call(),
+    )
+    for step in unfinished:
+        await store.append_history("n-1", "r02", ModelMessagesTypeAdapter.dump_json([step]))
+    await store.record_feedback("n-1", make_message("r02"))
+
+    reply = await make_orchestrator(store, responses(), Tools()).handle(first)
+
+    assert reply.text == "First reply."

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from pulse.adapters.store import SqliteStore
+from pulse.entities.errors import MailboxError
 from pulse.entities.mail import Body
 from pulse.services.mail import Outbox
 from tests.fakes.mailbox import FakeMailbox
@@ -59,6 +60,41 @@ async def test_later_emails_reply_to_the_latest_message_in_the_thread(
     assert (reply.message_id, reply.to, reply.body) == ("sent-1", (REVIEWERS,), BODY)
     assert reply_id == "reply-1"
     assert mailbox.sent == []
+
+
+async def test_a_threaded_email_becomes_the_thread_latest_message(
+    outbox: Outbox, mailbox: FakeMailbox, store: SqliteStore
+) -> None:
+    newsletter = make_newsletter().model_copy(update={"thread_message_id": "sent-1"})
+
+    saved = await outbox.thread(newsletter, BODY, "Draft:")
+
+    [reply] = mailbox.replies
+    assert (reply.message_id, reply.to, reply.body) == ("sent-1", (REVIEWERS,), BODY)
+    assert saved.thread_message_id == "reply-1"
+    assert await store.get_latest_newsletter() == saved
+
+
+async def test_a_threaded_email_that_fails_raises_and_changes_nothing(
+    outbox: Outbox, mailbox: FakeMailbox, store: SqliteStore
+) -> None:
+    mailbox.failures = 1
+
+    with pytest.raises(MailboxError):
+        await outbox.thread(make_newsletter(), BODY, "Draft:")
+
+    assert await store.get_latest_newsletter() == make_newsletter()
+
+
+async def test_a_reply_to_a_message_goes_to_the_reviewers_only(
+    outbox: Outbox, mailbox: FakeMailbox, store: SqliteStore
+) -> None:
+    assert await outbox.reply_to_message("c01", BODY) == "reply-1"
+
+    [reply] = mailbox.replies
+    assert (reply.message_id, reply.to, reply.body) == ("c01", (REVIEWERS,), BODY)
+    # Outside the newsletter's thread, so the thread is unchanged.
+    assert await store.get_latest_newsletter() == make_newsletter()
 
 
 async def test_a_notice_replies_in_the_thread_and_becomes_its_latest_message(

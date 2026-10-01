@@ -381,11 +381,15 @@ class Tools:
         }
 
     @_reported
-    async def present_draft(self) -> PresentResult:
+    async def present_draft(self, ctx: RunContext[ReviewerMessage]) -> PresentResult:
         """Save the working draft as the next version and email it to the reviewers,
-        withdrawing any approval first. Returns the version number, whether an approval was
-        withdrawn and, if so, whether the reviewers were told."""
-        return await self._operations.present_draft()
+        withdrawing any approval first. When the working draft is unchanged since the latest
+        version, email that version again instead, with the same number and no other change.
+        Returns the version number, whether it was resent, whether an approval was withdrawn
+        and, if so, whether the reviewers were told."""
+        # In the email channel, the reply carries the version, so reviewers get one email.
+        email_reviewers = ctx.deps.channel != "email"
+        return await self._operations.present_draft(email_reviewers=email_reviewers)
 
     @_reported
     async def approve(self, ctx: RunContext[ReviewerMessage], version: int) -> ApproveResult:

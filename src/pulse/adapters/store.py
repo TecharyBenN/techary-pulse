@@ -8,7 +8,7 @@ from contextlib import closing
 from pathlib import Path
 
 from pulse.entities.content import JudgeOutput, Verdict, Version, WriterOutput
-from pulse.entities.conversation import ReviewerMessage
+from pulse.entities.conversation import HandledMessage, ReviewerMessage
 from pulse.entities.errors import StoreError
 from pulse.entities.extracts import Consolidation, ExtractorOutput, ExtractRecord, make_record
 from pulse.entities.lifecycle import CLOSED_STATES, Newsletter
@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS versions (
     version INTEGER NOT NULL,
     data TEXT NOT NULL,
     PRIMARY KEY (newsletter_id, version)
+);
+CREATE TABLE IF NOT EXISTS handled_messages (
+    message_id TEXT NOT NULL,
+    attempts INTEGER NOT NULL,
+    handled INTEGER NOT NULL,
+    PRIMARY KEY (message_id)
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,6 +227,25 @@ class SqliteStore:
     async def append_history(self, newsletter_id: str, message_id: str, data: bytes) -> None:
         row = {"newsletter_id": newsletter_id, "message_id": message_id, "data": data}
         await self._insert("INSERT", "messages", row)
+
+    async def record_attempt(self, message_id: str) -> int:
+        sql = (
+            "INSERT INTO handled_messages (message_id, attempts, handled) VALUES (?, 1, 0)"
+            " ON CONFLICT (message_id) DO UPDATE SET attempts = attempts + 1"
+            " RETURNING attempts"
+        )
+        row = await self._execute(lambda c: c.execute(sql, (message_id,)).fetchone())
+        attempts: int = row["attempts"]
+        return attempts
+
+    async def mark_handled(self, message_id: str) -> None:
+        sql = "UPDATE handled_messages SET handled = 1 WHERE message_id = ?"
+        await self._execute(lambda connection: connection.execute(sql, (message_id,)))
+
+    async def get_handled_message(self, message_id: str) -> HandledMessage | None:
+        sql = "SELECT * FROM handled_messages WHERE message_id = ?"
+        row = await self._execute(lambda c: c.execute(sql, (message_id,)).fetchone())
+        return None if row is None else HandledMessage.model_validate(dict(row))
 
     async def _insert(self, verb: str, table: str, row: Mapping[str, object]) -> None:
         await self._execute(lambda connection: _insert(connection, verb, table, row))

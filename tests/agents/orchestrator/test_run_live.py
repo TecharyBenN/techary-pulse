@@ -1,7 +1,5 @@
 """Runs the orchestrator through the dev gateway, using ./config.yaml and the keys in .env."""
 
-import asyncio
-import os
 import re
 from pathlib import Path
 
@@ -9,11 +7,9 @@ import httpx
 import pytest
 from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, ToolReturnPart
 
-from pulse.adapters.clock import SystemClock
 from pulse.adapters.graph import GRAPH_URL
 from pulse.adapters.store import SqliteStore
 from pulse.config import load_config
-from pulse.main import build_orchestrator
 from tests.emails import (
     CORPUS_ITEM_SOURCES,
     CORPUS_OUTCOMES,
@@ -21,7 +17,7 @@ from tests.emails import (
     stored_outcomes,
 )
 from tests.fakes.mailbox import FakeMailbox
-from tests.live import conversation_id, graph_mailbox
+from tests.live import conversation_id, graph_mailbox, live_orchestrator
 from tests.messages import make_message, make_newsletter
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
@@ -32,15 +28,7 @@ async def test_a_reviewer_message_gets_a_reply(tmp_path: Path) -> None:
     store = SqliteStore(tmp_path / "pulse.db")
     await store.initialise()
     await store.save_start(make_newsletter(), [])
-    orchestrator = build_orchestrator(
-        config,
-        store,
-        FakeMailbox(),
-        FakeMailbox(),
-        os.environ[config.llm.api_key_env],
-        SystemClock(),
-        asyncio.Lock(),
-    )
+    orchestrator = live_orchestrator(config, store, FakeMailbox(), FakeMailbox())
 
     reply = (await orchestrator.handle(make_message(text="Hello, what can you do for me?"))).text
 
@@ -64,15 +52,7 @@ async def test_the_corpus_is_extracted_and_consolidated(tmp_path: Path) -> None:
         mailbox = graph_mailbox(config, client, config.mailboxes.submissions)
         inbox = sorted(email.subject for email in await mailbox.list_inbox())
         assert inbox == sorted(corpus), "reset the dev inbox and seed the corpus once"
-        orchestrator = build_orchestrator(
-            config,
-            store,
-            mailbox,
-            FakeMailbox(),
-            os.environ[config.llm.api_key_env],
-            SystemClock(),
-            asyncio.Lock(),
-        )
+        orchestrator = live_orchestrator(config, store, mailbox, FakeMailbox())
 
         drafted = (
             await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))
@@ -108,14 +88,11 @@ async def test_version_1_and_a_revised_version_2_reach_the_reviewers(tmp_path: P
     store = SqliteStore(tmp_path / "pulse.db")
     await store.initialise()
     async with httpx.AsyncClient(base_url=GRAPH_URL) as client:
-        orchestrator = build_orchestrator(
+        orchestrator = live_orchestrator(
             config,
             store,
             graph_mailbox(config, client, config.mailboxes.submissions),
             graph_mailbox(config, client, config.mailboxes.conversation),
-            os.environ[config.llm.api_key_env],
-            SystemClock(),
-            asyncio.Lock(),
         )
 
         first = await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))
@@ -157,14 +134,11 @@ async def test_a_failing_check_is_fixed_or_listed_in_the_version(tmp_path: Path)
     store = SqliteStore(tmp_path / "pulse.db")
     await store.initialise()
     async with httpx.AsyncClient(base_url=GRAPH_URL) as client:
-        orchestrator = build_orchestrator(
+        orchestrator = live_orchestrator(
             config,
             store,
             graph_mailbox(config, client, config.mailboxes.submissions),
             graph_mailbox(config, client, config.mailboxes.conversation),
-            os.environ[config.llm.api_key_env],
-            SystemClock(),
-            asyncio.Lock(),
         )
 
         await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))

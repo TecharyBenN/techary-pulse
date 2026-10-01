@@ -1,14 +1,22 @@
 """Connections to the dev tenant for `live` tests, using ./config.yaml and the certificate it
 names."""
 
+import asyncio
 import base64
+import os
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
+from pulse.adapters.clock import SystemClock
 from pulse.adapters.graph import CertificateCredential, GraphMailbox
+from pulse.agents.orchestrator.run import Orchestrator
 from pulse.config import Config
+from pulse.entities.clock import Clock
+from pulse.entities.mail import Mailbox
+from pulse.entities.store import Store
+from pulse.main import build_operations, build_orchestrator, build_outbox
 from tests.emails import STAFF_DOMAIN
 
 # PR_MESSAGE_FLAGS set to read, so a created message is received mail, not an unsent draft.
@@ -17,6 +25,21 @@ _RECEIVED = [{"id": "Integer 0x0E07", "value": "1"}]
 
 def graph_mailbox(config: Config, client: httpx.AsyncClient, address: str) -> GraphMailbox:
     return GraphMailbox(client, _credential(config).token, address, config.graph.max_retries)
+
+
+def live_orchestrator(
+    config: Config,
+    store: Store,
+    submissions: Mailbox,
+    conversation: Mailbox,
+    clock: Clock | None = None,
+    lock: asyncio.Lock | None = None,
+) -> Orchestrator:
+    """The orchestrator as main builds it, with the gateway key from the environment."""
+    outbox = build_outbox(config, conversation, store)
+    operations = build_operations(config, store, submissions, outbox, clock or SystemClock())
+    llm_key = os.environ[config.llm.api_key_env]
+    return build_orchestrator(config, store, operations, llm_key, lock or asyncio.Lock())
 
 
 async def conversation_id(

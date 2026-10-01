@@ -17,6 +17,8 @@ MessageId = str
 RejectionReason = Literal[
     "sender_domain", "sender_not_allowed", "sensitivity_label", "automatic_reply"
 ]
+# Why the email channel gives a message no orchestrator run.
+ChannelRejection = Literal["not_internal", "automatic_reply"]
 # The folder delivery moves a screened email to once its newsletter is sent.
 Destination = Literal["processed", "rejected"]
 
@@ -108,6 +110,17 @@ def is_automatic_reply(headers: Mapping[str, str]) -> bool:
     return (
         auto_submitted is not None and auto_submitted.strip().casefold() != "no"
     ) or header_value(headers, "X-Auto-Response-Suppress") is not None
+
+
+def channel_rejection(headers: Mapping[str, str]) -> ChannelRejection | None:
+    """The email channel's header checks, in order; the sender is resolved separately."""
+    # Exchange adds this header to mail it authenticated as from inside the organisation.
+    auth_as = header_value(headers, "X-MS-Exchange-Organization-AuthAs")
+    if auth_as is None or auth_as.strip().casefold() != "internal":
+        return "not_internal"
+    if is_automatic_reply(headers):
+        return "automatic_reply"
+    return None
 
 
 def screen(
