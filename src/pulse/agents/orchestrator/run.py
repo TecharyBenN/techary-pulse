@@ -1,6 +1,7 @@
 """The entry point for every channel: one reviewer message in, the reply or no reply out."""
 
 import asyncio
+import dataclasses
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -19,14 +20,29 @@ from pydantic_ai.messages import (
 )
 
 from pulse.agents.orchestrator.agent import NO_REPLY, user_prompt
+from pulse.agents.orchestrator.tools import ShowResult, Tools, progress_note
 from pulse.agents.runner import is_truncated_or_refused
+from pulse.entities.base import Entity
+from pulse.entities.content import Content
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import PulseError, RunFailed
 from pulse.entities.store import Store
 
 Progress = Callable[[str], Awaitable[None]]
 
+_PRESENT_DRAFT = Tools.present_draft.__name__
+# Each of these tools shows the reviewer a newsletter after the reply.
+_SHOWING = (_PRESENT_DRAFT, Tools.show_draft.__name__)
+
 _log = logging.getLogger(__name__)
+
+
+class RunReply(Entity):
+    """The reply, or None when the message needs none, and the newsletter the run presented or
+    showed, so the channel can show it in its own format."""
+
+    text: str | None
+    newsletter: Content | None
 
 
 async def _no_progress(note: str) -> None:
@@ -47,6 +63,8 @@ class _History:
         self.messages: list[ModelMessage] = []
         # The message whose run saved the latest step.
         self.owner: str | None = None
+        # The latest newsletter each message's run presented or showed, by message ID.
+        self.shown: dict[str, ShowResult] = {}
 
     async def load(self) -> None:
         """Record the message as feedback, then load the saved steps."""
@@ -54,9 +72,14 @@ class _History:
             return
         await self._store.record_feedback(self.newsletter_id, self._message)
         rows = await self._store.load_history(self.newsletter_id)
-        self.messages = [
-            m for row in rows for m in ModelMessagesTypeAdapter.validate_json(row.data)
+        loaded = [
+            (row.message_id, m)
+            for row in rows
+            for m in ModelMessagesTypeAdapter.validate_json(row.data)
         ]
+        for message_id, message in loaded:
+            self._note(message_id, message)
+        self.messages = _superseded_results_replaced([message for _, message in loaded])
         self.owner = rows[-1].message_id if rows else None
 
     def unfinished(self) -> bool:
@@ -69,6 +92,7 @@ class _History:
     async def add(self, message_id: str, message: ModelMessage) -> None:
         self.messages.append(message)
         self.owner = message_id
+        self._note(message_id, message)
         if self.newsletter_id is not None:
             await self._save(self.newsletter_id, message_id, [message])
             return
@@ -78,6 +102,11 @@ class _History:
             await self._store.record_feedback(self.newsletter_id, self._message)
             # Every step so far belongs to this message's run, because the history started empty.
             await self._save(self.newsletter_id, message_id, self.messages)
+
+    def _note(self, message_id: str, message: ModelMessage) -> None:
+        if shown := _results(message, _SHOWING):
+            # During a run a result is the tool's own model; loaded from the store, it is a dict.
+            self.shown[message_id] = ShowResult.model_validate(shown[-1], from_attributes=True)
 
     async def _save(
         self, newsletter_id: str, message_id: str, messages: Sequence[ModelMessage]
@@ -106,8 +135,8 @@ class Orchestrator:
 
     async def handle(
         self, message: ReviewerMessage, on_progress: Progress = _no_progress
-    ) -> str | None:
-        """Return the reply, or None when the message needs none; raise RunFailed on failure."""
+    ) -> RunReply:
+        """Raise RunFailed on failure."""
         async with self._lock:
             started = time.monotonic()
             newsletter = await self._store.get_open_newsletter()
@@ -130,7 +159,23 @@ class Orchestrator:
             fields["conversation_id"] = history.newsletter_id
             fields["outcome"] = "no_reply" if no_reply else "reply"
             _log.info("orchestrator_run", extra=fields | {"duration_ms": _ms_since(started)})
-            return None if no_reply else reply
+            return RunReply(
+                text=None if no_reply else reply,
+                newsletter=await self._shown(message, history),
+            )
+
+    async def _shown(self, message: ReviewerMessage, history: _History) -> Content | None:
+        """The newsletter this message's run last presented or showed, including in an earlier
+        attempt."""
+        shown = history.shown.get(message.message_id)
+        newsletter_id = history.newsletter_id
+        if shown is None or newsletter_id is None:
+            return None
+        if shown.version is None:
+            draft = await self._store.get_draft(newsletter_id)
+            return draft.content if draft else None
+        version = await self._store.get_version(newsletter_id, shown.version)
+        return version.content if version else None
 
     async def _converse(
         self, message: ReviewerMessage, history: _History, on_progress: Progress
@@ -184,7 +229,7 @@ async def _call_tools(
         async for event in events:
             if isinstance(event, FunctionToolCallEvent):
                 started[event.part.tool_call_id] = time.monotonic()
-                await on_progress(f"Running {event.part.tool_name}")
+                await on_progress(progress_note(event.part.tool_name))
             elif isinstance(event, FunctionToolResultEvent):
                 part = event.part
                 _log.info(
@@ -196,6 +241,42 @@ async def _call_tools(
                         "duration_ms": _ms_since(started.pop(part.tool_call_id)),
                     },
                 )
+
+
+def _superseded_results_replaced(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Replace each tool result from before the latest presented version with a placeholder.
+
+    The store keeps every result in full; only the history the model sees is shortened.
+    """
+    presents = (n for n, message in enumerate(messages) if _results(message, [_PRESENT_DRAFT]))
+    latest = max(presents, default=0)
+    return [_placeholders(m) if n < latest else m for n, m in enumerate(messages)]
+
+
+def _results(message: ModelMessage, tools: Sequence[str]) -> list[object]:
+    """The successful results of the named tools in the message, in order."""
+    if not isinstance(message, ModelRequest):
+        return []
+    return [
+        part.content
+        for part in message.parts
+        # A refused tool returns its reason as a string, and did nothing.
+        if isinstance(part, ToolReturnPart)
+        and part.tool_name in tools
+        and not isinstance(part.content, str)
+    ]
+
+
+def _placeholders(message: ModelMessage) -> ModelMessage:
+    if not isinstance(message, ModelRequest):
+        return message
+    parts = [
+        dataclasses.replace(part, content=f"Earlier {part.tool_name} result, superseded.")
+        if isinstance(part, ToolReturnPart)
+        else part
+        for part in message.parts
+    ]
+    return dataclasses.replace(message, parts=parts)
 
 
 def _ms_since(started: float) -> int:

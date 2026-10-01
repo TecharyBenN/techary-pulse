@@ -11,7 +11,7 @@ import httpx
 from pulse.adapters.graph import GRAPH_URL
 from pulse.entities.mail import InboundEmail
 
-MAILBOX = "pulse@techary.ai"
+MAILBOX = "pulse@example.org"
 PAGE_SIZE = 2
 
 
@@ -36,6 +36,7 @@ class FakeGraph:
         self.folders: dict[str, str] = {}
         self.moved: dict[str, list[str]] = {}
         self.sent: list[dict[str, Any]] = []
+        self.sent_ids: list[str] = []
         self.drafts: dict[str, dict[str, Any]] = {}
         self.requests: list[httpx.Request] = []
         # Status codes to answer with, in order, before handling requests normally.
@@ -69,9 +70,10 @@ class FakeGraph:
             folder_id = f"folder-{len(self.folders) + 1}"
             self.folders[body["displayName"]] = folder_id
             return httpx.Response(201, json={"id": folder_id})
-        if method == "POST" and path == "/sendMail":
-            self.sent.append(body["message"])
-            return httpx.Response(202)
+        if method == "POST" and path == "/messages":
+            draft_id = self._new_id("draft")
+            self.drafts[draft_id] = body
+            return httpx.Response(201, json={"id": draft_id})
         if match := re.fullmatch(r"/messages/([^/]+)/(move|createReplyAll|send)", path):
             return self._message_action(match.group(1), match.group(2), body)
         if method == "PATCH" and (match := re.fullmatch(r"/messages/([^/]+)", path)):
@@ -82,17 +84,23 @@ class FakeGraph:
     def _message_action(self, message_id: str, action: str, body: dict[str, Any]) -> httpx.Response:
         if action == "send":
             self.sent.append(self.drafts.pop(message_id))
+            self.sent_ids.append(message_id)
             return httpx.Response(202)
-        if not any(message["id"] == message_id for message in self.inbox):
+        known = [message["id"] for message in self.inbox] + self.sent_ids
+        if message_id not in known:
             return httpx.Response(404)
         if action == "createReplyAll":
-            reply_id = f"reply-{len(self.drafts) + 1}"
+            reply_id = self._new_id("reply")
             self.drafts[reply_id] = {"replyTo": message_id, "ccRecipients": [{"x": 1}]}
             return httpx.Response(201, json={"id": reply_id})
         folder = next(name for name, id_ in self.folders.items() if id_ == body["destinationId"])
         self.inbox = [message for message in self.inbox if message["id"] != message_id]
         self.moved.setdefault(folder, []).append(message_id)
         return httpx.Response(201, json={"id": message_id})
+
+    def _new_id(self, kind: str) -> str:
+        """Numbered across drafts and sent messages, so every message gets its own ID."""
+        return f"{kind}-{len(self.drafts) + len(self.sent) + 1}"
 
     def _page(self, request: httpx.Request) -> httpx.Response:
         skip = int(request.url.params.get("$skip", "0"))

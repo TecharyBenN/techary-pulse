@@ -1,17 +1,32 @@
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
-from pulse.entities.content import CheckFailure, Content, check_content
+from pulse.entities.content import (
+    CheckFailure,
+    Content,
+    Entry,
+    check_content,
+    draft_changed,
+    item_sources,
+    version_of,
+)
 from pulse.entities.mail import ScreenedEmail, screen
-from tests.emails import make_email
+from tests.emails import (
+    make_draft,
+    make_email,
+    make_extract_record,
+    make_item,
+    make_screened_email,
+)
 
 SECTION_TITLES = {"customer_win": "Customer wins", "shout_out": "Shout-outs"}
 
 
 def _source(sender_name: str, subject: str, body: str) -> ScreenedEmail:
     email = make_email(sender_name=sender_name, subject=subject, body=body)
-    return screen(email, ["techary.ai"], [], [])
+    return screen(email, ["example.org"], [], [])
 
 
 SOURCES = {
@@ -51,9 +66,13 @@ def _content(
         )
     return Content.model_validate(
         {
+            "headline_title": "Headline of the week",
             "headline": headline,
             "intro": intro,
-            "sections": [{"category": c, "entries": e} for c, e in sections.items()],
+            "sections": [
+                {"category": c, "title": SECTION_TITLES.get(c, c), "entries": e}
+                for c, e in sections.items()
+            ],
             "item_ids": ["item-1", "item-2"] if item_ids is None else item_ids,
         }
     )
@@ -69,8 +88,7 @@ def _check(
         content,
         SOURCES if sources is None else sources,
         feedback or [],
-        "Headline of the week",
-        SECTION_TITLES,
+        list(SECTION_TITLES),
         max_words,
     )
 
@@ -325,3 +343,31 @@ def test_every_failure_is_returned() -> None:
         ("dashes", "intro"),
         ("digits", "intro"),
     ]
+
+
+def test_item_sources_maps_items_and_restored_records_to_their_emails() -> None:
+    emails = [make_screened_email(m) for m in ("m01", "m02", "m03")]
+    excluded = make_extract_record("m03", category=None)
+    content = make_draft(
+        Entry(item_id="item-1", text="", people=[]),
+        Entry(item_id=str(excluded.excluded_id), text="", people=[]),
+        Entry(item_id="item-9", text="", people=[]),
+    ).content
+
+    sources = item_sources(
+        content, [make_item(source_message_ids=["m01", "m02"])], [excluded], emails
+    )
+
+    # An unknown ID is left out, so the items check reports it.
+    assert sources == {"item-1": emails[:2], "excluded-1": emails[2:]}
+
+
+def test_draft_changed_compares_the_content_with_the_latest_version() -> None:
+    draft = make_draft()
+    latest = version_of(draft, 1, datetime(2026, 9, 26, 9, 0, tzinfo=UTC))
+    revised = make_draft(Entry(item_id="item-1", text="Shorter.", people=[]))
+
+    assert draft_changed(None, None) is False
+    assert draft_changed(draft, None) is True
+    assert draft_changed(draft, latest) is False
+    assert draft_changed(revised, latest) is True

@@ -9,6 +9,7 @@ from pydantic import AwareDatetime, Field, PositiveInt, field_validator
 
 from pulse.entities.base import Entity, StrictEntity
 from pulse.entities.errors import Refusal
+from pulse.entities.mail import MessageId
 
 State = Literal["in_review", "approved", "sent", "abandoned"]
 Weekday = Literal["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
@@ -54,6 +55,8 @@ class Newsletter(Entity):
     send_started: bool
     sent_at: AwareDatetime | None
     closed_at: AwareDatetime | None
+    # The latest message in the newsletter's email thread, which the next version replies to.
+    thread_message_id: MessageId | None
 
 
 def open_newsletter(newsletter_id: str, now: dt.datetime) -> Newsletter:
@@ -70,7 +73,15 @@ def open_newsletter(newsletter_id: str, now: dt.datetime) -> Newsletter:
         send_started=False,
         sent_at=None,
         closed_at=None,
+        thread_message_id=None,
     )
+
+
+def require_open(newsletter: Newsletter | None) -> Newsletter:
+    """The open newsletter, as the store returns it; refuse when there is none."""
+    if newsletter is None:
+        raise Refusal("no newsletter is open")
+    return newsletter
 
 
 def update(newsletter: Newsletter, now: dt.datetime) -> Newsletter:
@@ -79,12 +90,15 @@ def update(newsletter: Newsletter, now: dt.datetime) -> Newsletter:
     return newsletter.model_copy(update={"updated_at": now})
 
 
+def next_version(newsletter: Newsletter) -> int:
+    return (newsletter.latest_version or 0) + 1
+
+
 def present(newsletter: Newsletter) -> Newsletter:
     """Number the next version, withdrawing any approval first."""
     _require_changeable(newsletter)
     return newsletter.model_copy(
-        update={"state": "in_review", "latest_version": (newsletter.latest_version or 0) + 1}
-        | _NO_APPROVAL
+        update={"state": "in_review", "latest_version": next_version(newsletter)} | _NO_APPROVAL
     )
 
 

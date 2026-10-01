@@ -1,14 +1,15 @@
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from pulse.entities.mail import InboundEmail, OutboundEmail
+from pulse.entities.mail import Body, InboundEmail, OutboundEmail
 
 
 @dataclass(frozen=True)
 class Reply:
     message_id: str
     to: tuple[str, ...]
-    text: str
+    body: Body
+    reply_id: str
 
 
 class FakeMailbox:
@@ -28,8 +29,11 @@ class FakeMailbox:
         self.inbox.remove(email)
         self.folders.setdefault(folder, []).append(email)
 
-    async def send(self, email: OutboundEmail) -> None:
+    async def send(self, email: OutboundEmail) -> str:
         self.sent.append(email)
+        return f"sent-{len(self.sent)}"
 
-    async def reply(self, message_id: str, to: Sequence[str], text: str) -> None:
-        self.replies.append(Reply(message_id, tuple(to), text))
+    async def reply(self, message_id: str, to: Sequence[str], body: Body) -> str:
+        reply_id = f"reply-{len(self.replies) + 1}"
+        self.replies.append(Reply(message_id, tuple(to), body, reply_id))
+        return reply_id

@@ -3,17 +3,24 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from pydantic_ai.messages import ModelResponse, ToolCallPart
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    UserPromptPart,
+)
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from pulse.adapters.store import SqliteStore
 from pulse.agents.consolidator.agent import build_consolidator
 from pulse.agents.extractor.agent import build_extractor
 from pulse.agents.orchestrator.agent import build_agent
 from pulse.agents.orchestrator.run import Orchestrator
-from pulse.agents.orchestrator.tools import Tools
+from pulse.agents.orchestrator.tools import PROGRESS_NOTES, ShowResult, Tools, progress_note
+from pulse.agents.writer.agent import build_writer
+from pulse.entities.content import Entry
 from pulse.entities.lifecycle import start_send
-from pulse.services.operations import Operations
 from tests.emails import (
     CORPUS_ITEM_SOURCES,
     CORPUS_OUTCOMES,
@@ -23,16 +30,16 @@ from tests.emails import (
     make_consolidation,
     make_consolidator_item,
     make_consolidator_output,
+    make_draft,
     make_email,
     make_item,
     make_output,
-    screen_email,
     stored_outcomes,
 )
-from tests.fakes.clock import ControlledClock
 from tests.fakes.mailbox import FakeMailbox
 from tests.fakes.models import extractor_model, reply_with, responses, text_response
-from tests.messages import OPENED, make_message
+from tests.messages import make_message
+from tests.operations import REVIEWERS, make_operations
 
 pytestmark = pytest.mark.anyio
 
@@ -51,6 +58,7 @@ OUTPUTS = {
 }
 CONSOLIDATOR_OUTPUT = make_consolidator_output(make_consolidator_item("m01"))
 CONSOLIDATION = make_consolidation(make_item(source_message_ids=["m01"]))
+DRAFT = make_draft()
 
 
 @pytest.fixture
@@ -64,14 +72,22 @@ def _tools(
     store: SqliteStore,
     extractor: FunctionModel | None = None,
     consolidator: FunctionModel | None = None,
+    writer: FunctionModel | None = None,
+    conversation: FakeMailbox | None = None,
 ) -> Tools:
-    operations = Operations(store, FakeMailbox(INBOX), screen_email, ControlledClock(OPENED))
     return Tools(
-        operations,
+        make_operations(store, FakeMailbox(INBOX), conversation),
         store,
         build_extractor(extractor or extractor_model(OUTPUTS), CATEGORIES),
         build_consolidator(
             consolidator or FunctionModel(reply_with(CONSOLIDATOR_OUTPUT.model_dump_json()))
+        ),
+        build_writer(
+            writer or FunctionModel(reply_with(DRAFT.model_dump_json())),
+            CATEGORIES,
+            {"customer_win": "Customer wins"},
+            "Headline of the week",
+            400,
         ),
         CATEGORIES,
     )
@@ -95,7 +111,16 @@ async def test_toolset_offers_each_tool(store: SqliteStore) -> None:
         "extract",
         "consolidate",
         "get_items",
+        "write",
+        "get_draft",
+        "show_draft",
+        "present_draft",
     }
+
+
+async def test_every_tool_has_a_progress_note(store: SqliteStore) -> None:
+    assert set(PROGRESS_NOTES) == set(_tools(store).toolset().tools)
+    assert progress_note("get_newsletter") == "Checking the current newsletter (get_newsletter)"
 
 
 async def test_start_newsletter_reports_what_it_added(store: SqliteStore) -> None:
@@ -138,6 +163,7 @@ async def test_get_newsletter_summarises_the_open_newsletter(store: SqliteStore)
         # m01 is included but not yet consolidated.
         "items_up_to_date": False,
         "excluded_records": 2,
+        "draft_changed": False,
     }
 
 
@@ -177,6 +203,9 @@ async def test_tools_refuse_without_an_open_newsletter(store: SqliteStore) -> No
     assert await tools.extract(["m01"]) == "Refused: no newsletter is open"
     assert await tools.consolidate(["m01"]) == "Refused: no newsletter is open"
     assert await tools.get_items() == "Refused: no newsletter is open"
+    assert await tools.write("Write the first draft.") == "Refused: no newsletter is open"
+    assert await tools.get_draft() == "Refused: no newsletter is open"
+    assert await tools.present_draft() == "Refused: no newsletter is open"
 
 
 async def test_extract_stores_each_record_with_its_exclusion(store: SqliteStore) -> None:
@@ -257,13 +286,19 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
         "team_news": "Someone has joined.",
         "shout_out": "A colleague is thanked.",
     }
-    operations = Operations(store, FakeMailbox(inbox), screen_email, ControlledClock(OPENED))
     consolidator = FunctionModel(reply_with(corpus_consolidation().model_dump_json()))
     tools = Tools(
-        operations,
+        make_operations(store, FakeMailbox(inbox)),
         store,
         build_extractor(extractor_model(outputs), categories),
         build_consolidator(consolidator),
+        build_writer(
+            FunctionModel(reply_with(DRAFT.model_dump_json())),
+            categories,
+            {"customer_win": "Customer wins"},
+            "Headline of the week",
+            400,
+        ),
         categories,
     )
     passed = [m for m, outcome in CORPUS_OUTCOMES.items() if not outcome.startswith("rejected")]
@@ -280,7 +315,8 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
         build_agent(FunctionModel(model), tools.toolset()), store, 40, timedelta(minutes=15)
     )
 
-    assert await orchestrator.handle(make_message(text="Please draft a newsletter.")) == "Done."
+    reply = await orchestrator.handle(make_message(text="Please draft a newsletter."))
+    assert reply.text == "Done."
 
     newsletter = await store.get_open_newsletter()
     assert newsletter is not None
@@ -368,6 +404,165 @@ async def test_get_items_adds_sources_and_never_returns_subjects_or_bodies(
     text = json.dumps(items)
     assert "Signed Northwind Retail today" not in text
     assert "Nothing to report." not in text
+
+
+async def _consolidated(tools: Tools) -> str:
+    newsletter_id = await _extracted(tools)
+    await tools.consolidate(["m01"])
+    return newsletter_id
+
+
+def _writer_prompts(prompts: list[str]) -> FunctionModel:
+    """The writer stand-in, recording each prompt it is given."""
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        request = messages[-1]
+        assert isinstance(request, ModelRequest)
+        prompts.extend(
+            p.content
+            for p in request.parts
+            if isinstance(p, UserPromptPart) and isinstance(p.content, str)
+        )
+        return text_response(DRAFT.model_dump_json())
+
+    return FunctionModel(model)
+
+
+def _block(prompt: str, tag: str) -> object:
+    return json.loads(prompt.split(f"<{tag}>\n", 1)[1].split(f"\n</{tag}>", 1)[0])
+
+
+async def test_write_stores_the_first_draft(store: SqliteStore) -> None:
+    prompts: list[str] = []
+    tools = _tools(store, writer=_writer_prompts(prompts))
+    newsletter_id = await _consolidated(tools)
+
+    result = await tools.write("Write the first draft.")
+
+    assert result == {
+        "changes": [],
+        "not_applied": [],
+        "item_ids": ["item-1"],
+        "draft_changed": True,
+    }
+    assert await store.get_draft(newsletter_id) == DRAFT
+    [prompt] = prompts
+    assert _block(prompt, "instruction") == "Write the first draft."
+    assert "<working_draft>" not in prompt
+
+
+async def test_write_revises_the_working_draft_with_all_feedback(store: SqliteStore) -> None:
+    prompts: list[str] = []
+    tools = _tools(store, writer=_writer_prompts(prompts))
+    newsletter_id = await _consolidated(tools)
+    await store.record_feedback(newsletter_id, make_message("r01", text="Shorter intro, please."))
+    await tools.write("Write the first draft.")
+
+    await tools.present_draft()
+
+    revised = await tools.write("Shorten the intro.")
+
+    # The stand-in returns the same draft again, so it has not changed since v1.
+    assert isinstance(revised, dict)
+    assert revised["draft_changed"] is False
+    assert _block(prompts[-1], "working_draft") == DRAFT.content.model_dump(mode="json")
+    assert _block(prompts[-1], "feedback") == [
+        {"received": "2026-09-26T10:00:00Z", "text": "Shorter intro, please."}
+    ]
+
+
+async def test_write_can_restore_an_excluded_record(store: SqliteStore) -> None:
+    newsletter_id = await _consolidated(_tools(store))
+    [excluded_id, _] = sorted(
+        r.excluded_id for r in await store.list_extract_records(newsletter_id) if r.excluded_id
+    )
+    restored = make_draft(
+        Entry(item_id="item-1", text="Priya Shah signed Northwind Retail.", people=["Priya Shah"]),
+        Entry(item_id=excluded_id, text="Priya Shah has nothing to report.", people=["Priya Shah"]),
+    )
+    tools = _tools(store, writer=FunctionModel(reply_with(restored.model_dump_json())))
+
+    result = await tools.write(f"Restore {excluded_id}.")
+
+    assert isinstance(result, dict)
+    assert result["item_ids"] == ["item-1", excluded_id]
+    assert await store.get_draft(newsletter_id) == restored
+
+
+async def test_write_reports_an_invalid_response_and_stores_nothing(store: SqliteStore) -> None:
+    invalid = make_draft(Entry(item_id="item-9", text="Unknown.", people=[])).model_dump_json()
+    tools = _tools(store, writer=FunctionModel(reply_with(invalid)))
+    newsletter_id = await _consolidated(tools)
+
+    result = await tools.write("Write the first draft.")
+
+    assert result == (
+        "Failed: writer gave no valid response: "
+        "item-9 in item_ids is not a known item or excluded record"
+    )
+    assert await store.get_draft(newsletter_id) is None
+
+
+async def test_get_draft_returns_the_working_draft_or_a_version(store: SqliteStore) -> None:
+    tools = _tools(store)
+    await _consolidated(tools)
+    assert await tools.get_draft() == "Refused: there is no working draft"
+    await tools.write("Write the first draft.")
+    await tools.present_draft()
+
+    assert await tools.get_draft() == DRAFT.model_dump(mode="json")
+    version = await tools.get_draft(1)
+    assert isinstance(version, dict)
+    assert (version["version"], version["content"]) == (1, DRAFT.content.model_dump(mode="json"))
+    assert await tools.get_draft(2) == "Refused: v2 has not been presented"
+
+
+async def test_show_draft_names_what_to_show_and_refuses_what_does_not_exist(
+    store: SqliteStore,
+) -> None:
+    tools = _tools(store)
+    await _consolidated(tools)
+    assert await tools.show_draft() == "Refused: there is no working draft"
+    await tools.write("Write the first draft.")
+    await tools.present_draft()
+
+    assert await tools.show_draft() == ShowResult(version=None)
+    assert await tools.show_draft(1) == ShowResult(version=1)
+    assert await tools.show_draft(2) == "Refused: v2 has not been presented"
+
+
+async def test_present_draft_emails_the_next_version(store: SqliteStore) -> None:
+    conversation = FakeMailbox()
+    tools = _tools(store, conversation=conversation)
+    await _consolidated(tools)
+    assert await tools.present_draft() == "Refused: there is no working draft"
+    await tools.write("Write the first draft.")
+
+    result = await tools.present_draft()
+
+    assert not isinstance(result, str)
+    assert result.version == 1
+    [email] = conversation.sent
+    assert email.to == [REVIEWERS]
+
+
+async def test_get_newsletter_shows_whether_the_draft_changed(store: SqliteStore) -> None:
+    tools = _tools(store)
+    newsletter_id = await _consolidated(tools)
+
+    async def draft_changed() -> object:
+        summary = await tools.get_newsletter()
+        assert isinstance(summary, dict)
+        return summary["draft_changed"]
+
+    assert await draft_changed() is False
+    await tools.write("Write the first draft.")
+    assert await draft_changed() is True
+    await tools.present_draft()
+    assert await draft_changed() is False
+    shorter = DRAFT.content.model_copy(update={"intro": "A shorter intro."})
+    await store.save_draft(newsletter_id, DRAFT.model_copy(update={"content": shorter}))
+    assert await draft_changed() is True
 
 
 def _call(tool: str, args: dict[str, object] | None = None) -> ModelResponse:

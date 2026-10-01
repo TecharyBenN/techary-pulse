@@ -14,6 +14,7 @@ from pulse.entities.lifecycle import (
     mark_sent,
     open_newsletter,
     present,
+    require_open,
     send_time,
     start_send,
     update,
@@ -365,3 +366,11 @@ def test_scheduled_slot_in_summer_time_is_returned_in_utc() -> None:
 
     assert result == datetime(2026, 9, 28, 8, 0, tzinfo=UTC)
     assert result.tzinfo == UTC
+
+
+def test_require_open_refuses_without_an_open_newsletter() -> None:
+    newsletter = open_newsletter("n-1", OPENED)
+
+    assert require_open(newsletter) == newsletter
+    with pytest.raises(Refusal, match="no newsletter is open"):
+        require_open(None)

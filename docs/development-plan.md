@@ -125,7 +125,7 @@ Exit criteria: the test user chats with the orchestrator in LibreChat, and a req
 
 Scope:
 
-- the Graph mailbox: certificate sign-in through MSAL, the thumbprint logged at start-up, and every operation in the mailbox interface: listing the inbox with paging, `ImmutableId` and plain-text bodies, moving to a folder found or created by name, `sendMail`, and reply in thread through `createReplyAll`; retries on HTTP 429 and 503; it passes the mailbox interface tests;
+- the Graph mailbox: certificate sign-in through MSAL, the thumbprint logged at start-up, and every operation in the mailbox interface: listing the inbox with paging, `ImmutableId` and plain-text bodies, moving to a folder found or created by name, sending, and reply in thread through `createReplyAll`; retries on HTTP 429 and 503; it passes the mailbox interface tests;
 - the `screened_emails` and `extract_records` tables;
 - `start_newsletter`: opening a newsletter with every inbox message, adding new messages to an open one, applying the pre-filter, and its refusals;
 - `list_screened_emails` and `get_newsletter`;
@@ -152,12 +152,14 @@ Scope:
 - the `drafts` and `versions` tables;
 - the writer with its output checks, and `write`, for first drafts and revisions, including removing items and restoring excluded records;
 - `get_draft`;
-- rendering: the templates, the newsletter, the reviewer email with the review section items available so far, and golden files;
-- `present_draft`: saving the next version and emailing it to `reviewers` from the conversation mailbox;
+- rendering: the templates, the newsletter in HTML and in Markdown, the reviewer email with the review section items available so far, and golden files;
+- `present_draft`: saving the next version and emailing it to `reviewers` from the conversation mailbox, version 1 as a new message that starts the newsletter's email thread and later versions as replies to the latest message in it;
+- the Graph mailbox's send and reply returning the sent message's ID, and replies with HTML bodies;
+- the chat endpoint appending the newsletter in Markdown to the reply when the run presented a version or called `show_draft`, and `show_draft`;
 - replacing superseded tool results with placeholders when history is loaded;
 - the orchestrator instructions for presenting, revising from feedback and restoring records.
 
-Exit criteria: tests cover the writer's output checks, each tool, the history placeholders and rendering, with golden files for the newsletter and reviewer email; live check: in LibreChat, the test user starts a newsletter, receives version 1 by email, gives feedback and receives version 2.
+Exit criteria: tests cover the writer's output checks, each tool, the history placeholders and rendering, with golden files for the newsletter and reviewer email; live check: in LibreChat, the test user starts a newsletter and sees version 1 in Markdown, receives it by email, gives feedback, and sees version 2 in LibreChat and as a reply in the same email thread.
 
 ### Phase 7: quality
 
@@ -170,7 +172,7 @@ Exit criteria: tests cover the tools and the review section; live check: a draft
 Scope:
 
 - `approve`, with every check from the design, and the send time;
-- delivery, running every `schedule.poll_interval_minutes` inside `pulse serve`: the approval re-check, `send_started`, rendering without the review section, sending to `all_staff` with `replyTo` set to the submissions mailbox, marking the newsletter `sent`, the `Sent:` notice, moving screened emails and the history note;
+- delivery, running every `schedule.poll_interval_minutes` inside `pulse serve`: the approval re-check, `send_started`, rendering without the review section, sending to `all_staff` with `replyTo` set to the submissions mailbox, marking the newsletter `sent`, the `Sent` notice in the newsletter's email thread, moving screened emails and the history note;
 - operator alerts, sent to `operator_alerts`;
 - the orchestrator instructions for approval.
 
@@ -178,7 +180,7 @@ Exit criteria: tests cover every approval refusal, send timing in both send mode
 
 ### Phase 9: withdraw and abandon
 
-Scope: `withdraw_approval` and `abandon` with their refusals, `present_draft` withdrawing an approval first, the `Send cancelled:` and `Abandoned:` notices, and the orchestrator instructions for both.
+Scope: `withdraw_approval` and `abandon` with their refusals, `present_draft` withdrawing an approval first, the `Send cancelled` and `Abandoned` notices in the newsletter's email thread, and the orchestrator instructions for both.
 
 Exit criteria: tests cover each tool and the state changes; live check: an approval withdrawn in LibreChat cancels the send.
 
@@ -187,7 +189,11 @@ Exit criteria: tests cover each tool and the state changes; live check: an appro
 Scope:
 
 - polling the conversation mailbox every `schedule.poll_interval_minutes`: checking Exchange's internal authentication header, resolving each sender to their Entra object ID through a Graph user lookup, rejecting automatic replies, moving messages to `Processed` or `Rejected`, the `handled_messages` table, and the `chat.max_attempts` limit with its operator alert;
-- the `NO_REPLY` reply and the channel-switch summary.
+- replies in the thread, each becoming the thread's latest message, as does each reviewer message handled;
+- one reply when the run presents a version, holding the orchestrator's reply followed by the reviewer email, with `present_draft` sending no separate email;
+- the `NO_REPLY` reply and the channel-switch summary;
+- how an email reply shows a reply the orchestrator wrote in Markdown;
+- deciding whether the first reply in a new LibreChat chat opens with a recap of the newsletter, which the design does not yet state.
 
 Exit criteria: tests cover each channel rule with fake mailboxes; live check: the test user replies to a reviewer email with feedback, receives the revised version in the thread, and continues the same conversation in LibreChat.
 
@@ -199,7 +205,7 @@ Exit criteria: tests cover the schedule and the skip with a controlled clock; li
 
 ### Phase 12: recovery and retention
 
-Scope: every row of the design's failure table not yet covered, including delivery with `send_started` but not `sent`, incomplete moves, and `SIGTERM`; and deleting closed newsletters older than `retention_days`.
+Scope: every row of the design's failure table not yet covered, including delivery with `send_started` but not `sent`, incomplete moves, a `present_draft` retried after its email was sent but its version not saved, and `SIGTERM`; and deleting closed newsletters older than `retention_days`.
 
 Exit criteria: crash-recovery tests inject a failure at each step boundary and assert the outcome in the failure table.
 

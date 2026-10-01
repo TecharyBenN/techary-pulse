@@ -1,16 +1,15 @@
 """The extractor: finds the facts, people, category and sensitivity in one screened email."""
 
-import json
 from collections.abc import Mapping
-from importlib.resources import files
 
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models import Model
 
+from pulse.agents.prompts import categories_instruction, data_block, read_instructions
 from pulse.entities.extracts import ExtractorOutput
 from pulse.entities.mail import ScreenedEmail
 
-INSTRUCTIONS = files(__package__).joinpath("prompt.md").read_text(encoding="utf-8")
+INSTRUCTIONS = read_instructions(__package__)
 
 # Code attaches the message ID to the record, so the model is not given it.
 _PROMPT_FIELDS = {"sender_name", "sender_address", "subject", "received", "body"}
@@ -18,20 +17,17 @@ _PROMPT_FIELDS = {"sender_name", "sender_address", "subject", "received", "body"
 
 def build_extractor(model: Model, categories: Mapping[str, str]) -> Agent[None, ExtractorOutput]:
     """`categories` maps each configured category to its definition."""
-    definitions = "\n".join(f"- {category}: {text}" for category, text in categories.items())
     return Agent(
         model,
         output_type=NativeOutput(ExtractorOutput),
-        # The category definitions come from configuration, so they may sit in the instructions.
-        instructions=[INSTRUCTIONS, f"The configured categories are:\n{definitions}"],
+        instructions=[INSTRUCTIONS, categories_instruction(categories)],
         name="extractor",
     )
 
 
 def extractor_prompt(email: ScreenedEmail) -> str:
     """The email stays inside a delimited block, never in the instructions."""
-    data = email.model_dump(mode="json", include=_PROMPT_FIELDS)
-    return f"<email>\n{json.dumps(data, ensure_ascii=False)}\n</email>"
+    return data_block("email", email.model_dump(mode="json", include=_PROMPT_FIELDS))
 
 
 def output_checks(output: ExtractorOutput, categories: Mapping[str, str]) -> list[str]:

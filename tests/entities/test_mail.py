@@ -1,21 +1,25 @@
 from collections.abc import Callable
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from pulse.adapters.graph import GraphMailbox
 from pulse.entities.mail import (
+    Body,
     Email,
     InboundEmail,
     Mailbox,
     OutboundEmail,
     address_in,
+    display_date,
     domain_in,
     header_value,
     is_automatic_reply,
     screen,
     sender_names,
     source_text,
+    subject,
 )
 from tests.emails import make_email, make_screened_email
 from tests.fakes.graph import MAILBOX, FakeGraph
@@ -26,25 +30,25 @@ OTHER_LABEL = "9c8d7e6f-0000-4e8a-9b6f-1d2c3e4f5a6b"
 
 
 def test_address_in_ignores_case() -> None:
-    assert address_in("Priya.Shah@Techary.AI", ["priya.shah@techary.ai"])
+    assert address_in("Priya.Shah@Example.ORG", ["priya.shah@example.org"])
 
 
 def test_address_in_is_exact() -> None:
-    assert not address_in("priya.shah@techary.ai.example.com", ["priya.shah@techary.ai"])
+    assert not address_in("priya.shah@example.org.example.com", ["priya.shah@example.org"])
 
 
 @pytest.mark.parametrize(
     ("address", "expected"),
     [
-        ("priya.shah@techary.ai", True),
-        ("priya.shah@TECHARY.AI", True),
-        ("priya.shah@mail.techary.ai", False),
-        ("priya.shah@notechary.ai", False),
-        ("techary.ai", False),
+        ("priya.shah@example.org", True),
+        ("priya.shah@EXAMPLE.ORG", True),
+        ("priya.shah@mail.example.org", False),
+        ("priya.shah@noexample.org", False),
+        ("example.org", False),
     ],
 )
 def test_domain_in(address: str, expected: bool) -> None:
-    assert domain_in(address, ["Techary.ai"]) is expected
+    assert domain_in(address, ["Example.org"]) is expected
 
 
 def test_header_value_ignores_name_case() -> None:
@@ -124,27 +128,44 @@ async def test_move_removes_only_that_message(make_mailbox: MailboxFactory) -> N
     assert [email.message_id for email in await mailbox.list_inbox()] == ["m02"]
 
 
+_HTML = Body(content="<p>Hello</p>", content_type="html")
+
+
 @pytest.mark.anyio
-async def test_send_is_accepted(make_mailbox: MailboxFactory) -> None:
+async def test_send_returns_the_message_id(make_mailbox: MailboxFactory) -> None:
     email = OutboundEmail(
-        to=["all-staff@techary.ai"],
+        to=["all-staff@example.org"],
         subject="Pulse: 25 September 2026",
-        html="<p>Hello</p>",
-        reply_to="pulse@techary.ai",
+        body=_HTML,
+        reply_to="pulse@example.org",
     )
 
-    await make_mailbox([]).send(email)
+    assert await make_mailbox([]).send(email)
 
 
 @pytest.mark.anyio
-async def test_reply_is_accepted(make_mailbox: MailboxFactory) -> None:
+async def test_reply_returns_its_own_id(make_mailbox: MailboxFactory) -> None:
     mailbox = make_mailbox([_email("m01", 22)])
+    text = Body(content="Version 2 is on its way.", content_type="text")
 
-    await mailbox.reply("m01", ["reviewer@techary.ai"], "Version 2 is on its way.")
+    reply_id = await mailbox.reply("m01", ["reviewer@example.org"], text)
+
+    assert reply_id and reply_id != "m01"
+
+
+@pytest.mark.anyio
+async def test_a_sent_message_can_be_replied_to(make_mailbox: MailboxFactory) -> None:
+    mailbox = make_mailbox([])
+    email = OutboundEmail(to=["reviewer@example.org"], subject="Draft", body=_HTML, reply_to=None)
+    sent_id = await mailbox.send(email)
+
+    reply_id = await mailbox.reply(sent_id, ["reviewer@example.org"], _HTML)
+
+    assert reply_id not in (sent_id, "")
 
 
 def _sender_email(
-    sender_address: str = "priya.shah@techary.ai", headers: dict[str, str] | None = None
+    sender_address: str = "priya.shah@example.org", headers: dict[str, str] | None = None
 ) -> InboundEmail:
     return make_email(sender_address=sender_address, headers=headers or {}, has_attachments=True)
 
@@ -152,13 +173,13 @@ def _sender_email(
 def _screen(
     email: InboundEmail, senders: list[str] | None = None, labels: list[str] | None = None
 ) -> str | None:
-    return screen(email, ["techary.ai"], senders or [], labels or []).rejection
+    return screen(email, ["example.org"], senders or [], labels or []).rejection
 
 
 def test_screened_email_is_the_email_with_its_outcome() -> None:
     email = _sender_email()
 
-    screened = screen(email, ["techary.ai"], [], [])
+    screened = screen(email, ["example.org"], [], [])
 
     assert isinstance(screened, Email)
     assert screened.model_dump(include=set(Email.model_fields)) == email.model_dump(
@@ -167,12 +188,12 @@ def test_screened_email_is_the_email_with_its_outcome() -> None:
 
 
 def test_passing_screened_email_keeps_its_fields_and_body() -> None:
-    screened = screen(_sender_email(), ["techary.ai"], [], [])
+    screened = screen(_sender_email(), ["example.org"], [], [])
 
     assert screened.rejection is None
     assert screened.message_id == "m01"
     assert screened.sender_name == "Priya Shah"
-    assert screened.sender_address == "priya.shah@techary.ai"
+    assert screened.sender_address == "priya.shah@example.org"
     assert screened.subject == "Signed Northwind Retail today"
     assert screened.received == datetime(2026, 9, 22, 15, 30, tzinfo=UTC)
     assert screened.has_attachments
@@ -180,7 +201,7 @@ def test_passing_screened_email_keeps_its_fields_and_body() -> None:
 
 
 def test_rejected_screened_email_drops_its_body() -> None:
-    screened = screen(_sender_email("alex.morgan@example.com"), ["techary.ai"], [], [])
+    screened = screen(_sender_email("alex.morgan@example.com"), ["example.org"], [], [])
 
     assert screened.rejection == "sender_domain"
     assert screened.body is None
@@ -190,11 +211,11 @@ def test_rejected_screened_email_drops_its_body() -> None:
 @pytest.mark.parametrize(
     ("address", "expected"),
     [
-        ("priya.shah@techary.ai", None),
-        ("Priya.Shah@TECHARY.ai", None),
+        ("priya.shah@example.org", None),
+        ("Priya.Shah@EXAMPLE.org", None),
         ("alex.morgan@example.com", "sender_domain"),
-        ("alex.morgan@mail.techary.ai", "sender_domain"),
-        ("alex.morgan@techary.ai.example.com", "sender_domain"),
+        ("alex.morgan@mail.example.org", "sender_domain"),
+        ("alex.morgan@example.org.example.com", "sender_domain"),
         ("no-domain", "sender_domain"),
     ],
 )
@@ -203,19 +224,19 @@ def test_sender_domain(address: str, expected: str | None) -> None:
 
 
 def test_empty_allowed_senders_allows_any_sender_in_domain() -> None:
-    assert _screen(_sender_email("anyone@techary.ai"), senders=[]) is None
+    assert _screen(_sender_email("anyone@example.org"), senders=[]) is None
 
 
 @pytest.mark.parametrize(
     ("address", "expected"),
     [
-        ("priya.shah@techary.ai", None),
-        ("PRIYA.SHAH@techary.ai", None),
-        ("tom.evans@techary.ai", "sender_not_allowed"),
+        ("priya.shah@example.org", None),
+        ("PRIYA.SHAH@example.org", None),
+        ("tom.evans@example.org", "sender_not_allowed"),
     ],
 )
 def test_allowed_senders(address: str, expected: str | None) -> None:
-    assert _screen(_sender_email(address), senders=["priya.shah@techary.ai"]) == expected
+    assert _screen(_sender_email(address), senders=["priya.shah@example.org"]) == expected
 
 
 def test_domain_is_checked_before_allowed_senders() -> None:
@@ -280,14 +301,14 @@ def test_automatic_replies(headers: dict[str, str], expected: str | None) -> Non
 
 
 def test_source_text_is_subject_and_body() -> None:
-    text = source_text(screen(_sender_email(), ["techary.ai"], [], []))
+    text = source_text(screen(_sender_email(), ["example.org"], [], []))
 
     assert "Signed Northwind Retail today" in text
     assert "22 September" in text
 
 
 def test_source_text_of_rejected_screened_email_is_subject_only() -> None:
-    text = source_text(screen(_sender_email("alex.morgan@example.com"), ["techary.ai"], [], []))
+    text = source_text(screen(_sender_email("alex.morgan@example.com"), ["example.org"], [], []))
 
     assert text == "Signed Northwind Retail today"
 
@@ -300,3 +321,20 @@ def test_sender_names_are_each_sender_once_in_order() -> None:
     ]
 
     assert sender_names(emails) == ["Tom Evans", "Priya Shah"]
+
+
+LONDON = ZoneInfo("Europe/London")
+
+
+def test_display_date_is_the_date_in_the_time_zone() -> None:
+    # 23:30 UTC is already the next day in London during British Summer Time.
+    assert display_date(datetime(2026, 9, 25, 23, 30, tzinfo=UTC), LONDON) == "26 September 2026"
+
+
+def test_subject_fills_in_the_opening_date_after_the_prefix() -> None:
+    opened = datetime(2026, 9, 5, 16, 30, tzinfo=UTC)
+
+    assert subject("Pulse: {date}", opened, LONDON) == "Pulse: 5 September 2026"
+    assert subject("Pulse: {date}", opened, LONDON, "Draft v2:") == (
+        "Draft v2: Pulse: 5 September 2026"
+    )

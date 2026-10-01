@@ -7,11 +7,18 @@ from pathlib import Path
 import pytest
 
 from pulse.adapters.store import SqliteStore
+from pulse.entities.content import Version, version_of
 from pulse.entities.errors import StoreError
 from pulse.entities.extracts import Sensitivity
 from pulse.entities.lifecycle import abandon, present, update
 from pulse.entities.store import HistoryRow
-from tests.emails import make_consolidation, make_item, make_output, make_screened_email
+from tests.emails import (
+    make_consolidation,
+    make_draft,
+    make_item,
+    make_output,
+    make_screened_email,
+)
 from tests.messages import OPENED, REVIEWER, make_message, make_newsletter
 
 pytestmark = pytest.mark.anyio
@@ -218,3 +225,56 @@ async def test_parallel_extracts_get_distinct_excluded_ids(store: SqliteStore) -
     assert sorted(r.excluded_id or "" for r in records) == sorted(
         f"excluded-{n}" for n in range(1, 11)
     )
+
+
+def _version(number: int) -> Version:
+    return version_of(make_draft(), number, OPENED)
+
+
+async def test_no_draft_before_writing(store: SqliteStore) -> None:
+    assert await store.get_draft("n-1") is None
+
+
+async def test_saved_draft_replaces_the_earlier_draft(store: SqliteStore) -> None:
+    await store.save_draft("n-1", make_draft())
+    revised = make_draft(changes=["Shortened the intro"])
+
+    await store.save_draft("n-1", revised)
+
+    assert await store.get_draft("n-1") == revised
+    assert await store.get_draft("n-2") is None
+
+
+async def test_version_is_saved_with_the_newsletter_that_numbers_it(store: SqliteStore) -> None:
+    newsletter = make_newsletter()
+    await store.save_start(newsletter, [])
+
+    await store.save_version(present(newsletter), _version(1))
+
+    saved = await store.get_open_newsletter()
+    assert saved is not None
+    assert saved.latest_version == 1
+    assert await store.get_version("n-1", 1) == _version(1)
+    assert await store.get_version("n-1", 2) is None
+
+
+async def test_a_version_number_is_never_reused(store: SqliteStore) -> None:
+    newsletter = present(make_newsletter())
+    await store.save_version(newsletter, _version(1))
+    moved_on = newsletter.model_copy(update={"updated_at": OPENED + timedelta(hours=1)})
+
+    with pytest.raises(StoreError):
+        await store.save_version(moved_on, _version(1))
+
+    # The failed save changed nothing, the newsletter included.
+    assert await store.get_open_newsletter() == newsletter
+
+
+async def test_feedback_is_listed_in_the_order_recorded(store: SqliteStore) -> None:
+    await store.record_feedback("n-1", make_message("r02", text="Second"))
+    await store.record_feedback("n-1", make_message("r01", text="First"))
+    await store.record_feedback("n-2", make_message("r03"))
+
+    feedback = await store.list_feedback("n-1")
+
+    assert [(m.message_id, m.text) for m in feedback] == [("r02", "Second"), ("r01", "First")]

@@ -18,13 +18,15 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from pulse.agents.orchestrator.agent import INSTRUCTIONS
 from pulse.agents.orchestrator.run import Orchestrator
+from pulse.agents.orchestrator.tools import ShowResult
 from pulse.entities.store import Store
+from pulse.services.operations import PresentResult
 
 ModelFunction = Callable[[list[ModelMessage], AgentInfo], Awaitable[ModelResponse]]
 
 
 class Tools:
-    """A test-only tool, so run tests do not depend on the orchestrator's real tools."""
+    """Test-only tools, so run tests do not depend on the orchestrator's real tools."""
 
     def __init__(self) -> None:
         self.calls = 0
@@ -32,6 +34,14 @@ class Tools:
     def ping(self) -> str:
         self.calls += 1
         return "pong"
+
+    def present_draft(self) -> PresentResult:
+        """Stands in for the real tool, presenting version 1, which the test stores."""
+        return PresentResult(version=1)
+
+    def show_draft(self) -> ShowResult:
+        """Stands in for the real tool, showing the working draft, which the test stores."""
+        return ShowResult(version=None)
 
 
 def make_orchestrator(
@@ -45,7 +55,7 @@ def make_orchestrator(
         FunctionModel(model),
         output_type=str,
         instructions=INSTRUCTIONS,
-        tools=[tools.ping] if tools else [],
+        tools=[tools.ping, tools.present_draft, tools.show_draft] if tools else [],
     )
     return Orchestrator(agent, store, max_tool_calls, max_run_time)
 
@@ -56,6 +66,14 @@ def text_response(text: str) -> ModelResponse:
 
 def ping_call() -> ModelResponse:
     return ModelResponse(parts=[ToolCallPart("ping", {})])
+
+
+def present_call() -> ModelResponse:
+    return ModelResponse(parts=[ToolCallPart("present_draft", {})])
+
+
+def show_call() -> ModelResponse:
+    return ModelResponse(parts=[ToolCallPart("show_draft", {})])
 
 
 def gateway_error() -> ModelHTTPError:

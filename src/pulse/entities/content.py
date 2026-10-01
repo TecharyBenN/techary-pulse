@@ -1,12 +1,16 @@
-"""Newsletter content and the draft checks."""
+"""Newsletter content, the working draft and its versions, and the draft checks."""
 
 import re
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
+from pydantic import AwareDatetime, PositiveInt
+
 from pulse.entities.base import Entity, StrictEntity
+from pulse.entities.extracts import ExtractRecord, Item
 from pulse.entities.mail import ScreenedEmail, sender_names, source_text
 
 CheckName = Literal[
@@ -27,16 +31,70 @@ class Entry(StrictEntity):
 
 class Section(StrictEntity):
     category: str
+    title: str
     entries: list[Entry]
 
 
 class Content(StrictEntity):
-    """What a working draft or version holds, and what is rendered and sent."""
+    """What a working draft or version holds, and what is rendered and sent, as the writer
+    structured it."""
 
+    headline_title: str
     headline: str
     intro: str
     sections: list[Section]
     item_ids: list[str]
+
+
+class NotApplied(StrictEntity):
+    feedback: str
+    reason: str
+
+
+class WriterOutput(StrictEntity):
+    """What the writer returns, stored as the working draft."""
+
+    content: Content
+    changes: list[str]
+    not_applied: list[NotApplied]
+
+
+class Version(WriterOutput):
+    """A working draft as presented to the reviewers."""
+
+    version: PositiveInt
+    created_at: AwareDatetime
+
+
+def version_of(draft: WriterOutput, number: int, created_at: datetime) -> Version:
+    """The working draft as the version it is presented as."""
+    return Version(**draft.model_dump(), version=number, created_at=created_at)
+
+
+def item_sources(
+    content: Content,
+    items: Sequence[Item],
+    records: Sequence[ExtractRecord],
+    emails: Sequence[ScreenedEmail],
+) -> dict[str, list[ScreenedEmail]]:
+    """Map each included item ID, or restored record ID, to its source emails.
+
+    IDs that name no item or excluded record are left out, so the checks can report them.
+    """
+    by_message = {email.message_id: email for email in emails}
+    by_id = {item.item_id: item.source_message_ids for item in items} | {
+        record.excluded_id: [record.message_id] for record in records if record.excluded_id
+    }
+    return {
+        item_id: [by_message[message_id] for message_id in by_id[item_id]]
+        for item_id in dict.fromkeys(content.item_ids)
+        if item_id in by_id
+    }
+
+
+def draft_changed(draft: WriterOutput | None, latest: Version | None) -> bool:
+    """Whether the working draft's content differs from the latest version's."""
+    return draft is not None and (latest is None or draft.content != latest.content)
 
 
 class CheckFailure(Entity):
@@ -51,8 +109,7 @@ class _Context:
     content: Content
     sources: Mapping[str, Sequence[ScreenedEmail]]
     feedback: Sequence[str]
-    headline_title: str
-    section_titles: Mapping[str, str]
+    categories: Collection[str]
     max_words: int
 
     def entries(self) -> Iterator[Entry]:
@@ -66,12 +123,12 @@ class _Context:
         return sender_names(self.sources.get(item_id, ()))
 
     def visible_text(self) -> Iterator[tuple[str | None, str]]:
-        yield "headline_title", self.headline_title
+        yield "headline_title", self.content.headline_title
         yield "headline", self.content.headline
         yield "intro", self.content.intro
         for section in self.content.sections:
             if section.entries:
-                yield section.category, self.section_titles.get(section.category, "")
+                yield section.category, section.title
             for entry in section.entries:
                 yield entry.item_id, entry.text
 
@@ -80,15 +137,14 @@ def check_content(
     content: Content,
     sources: Mapping[str, Sequence[ScreenedEmail]],
     feedback: Sequence[str],
-    headline_title: str,
-    section_titles: Mapping[str, str],
+    categories: Collection[str],
     max_words: int,
 ) -> list[CheckFailure]:
     """Return every check failure.
 
     `sources` maps each included item ID, or restored record ID, to its source emails.
     """
-    context = _Context(content, sources, feedback, headline_title, section_titles, max_words)
+    context = _Context(content, sources, feedback, categories, max_words)
     return [failure for check in _CHECKS for failure in check(context)]
 
 
@@ -179,7 +235,7 @@ def _items(context: _Context) -> Iterator[CheckFailure]:
 
 def _categories(context: _Context) -> Iterator[CheckFailure]:
     for section in context.content.sections:
-        if section.category not in context.section_titles:
+        if section.category not in context.categories:
             yield CheckFailure(
                 check="categories", target=section.category, detail="not a configured category"
             )

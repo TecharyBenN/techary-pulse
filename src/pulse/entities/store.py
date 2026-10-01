@@ -1,10 +1,11 @@
-"""The store interface: newsletters, screened emails, extract records, items, feedback and
-history."""
+"""The store interface: newsletters, screened emails, extract records, items, drafts, versions,
+feedback and history."""
 
 from collections.abc import Sequence
 from typing import Protocol
 
 from pulse.entities.base import Entity
+from pulse.entities.content import Version, WriterOutput
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.extracts import Consolidation, ExtractorOutput, ExtractRecord
 from pulse.entities.lifecycle import Newsletter
@@ -52,8 +53,24 @@ class Store(Protocol):
         """The newsletter's current items and headline, or None before it is consolidated."""
         ...
 
+    async def save_draft(self, newsletter_id: str, draft: WriterOutput) -> None:
+        """Save the newsletter's working draft, replacing any earlier one."""
+        ...
+
+    async def get_draft(self, newsletter_id: str) -> WriterOutput | None: ...
+
+    async def save_version(self, newsletter: Newsletter, version: Version) -> None:
+        """Save a presented version with the newsletter that numbers it, in one transaction."""
+        ...
+
+    async def get_version(self, newsletter_id: str, version: int) -> Version | None: ...
+
     async def record_feedback(self, newsletter_id: str, message: ReviewerMessage) -> None:
         """Record a reviewer message; a message ID already recorded is left as it is."""
+        ...
+
+    async def list_feedback(self, newsletter_id: str) -> list[ReviewerMessage]:
+        """The newsletter's reviewer messages, in the order they were recorded."""
         ...
 
     async def load_history(self, newsletter_id: str) -> list[HistoryRow]:

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Annotated, Literal
 
 import uvicorn
@@ -11,9 +11,10 @@ from fastapi import FastAPI, Header, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 
-from pulse.agents.orchestrator.run import Orchestrator
+from pulse.agents.orchestrator.run import Orchestrator, RunReply
 from pulse.entities.auth import Caller, TokenVerifier
 from pulse.entities.clock import Clock
+from pulse.entities.content import Content
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import InvalidToken, PulseError
 
@@ -115,11 +116,16 @@ class _Completion:
 
 
 def create_app(
-    orchestrator: Orchestrator, verifier: TokenVerifier, reviewer_role: str, clock: Clock
+    orchestrator: Orchestrator,
+    verifier: TokenVerifier,
+    reviewer_role: str,
+    clock: Clock,
+    render_markdown: Callable[[Content], str],
 ) -> FastAPI:
+    """`render_markdown` renders the newsletter a run presented or showed, after the reply."""
     app = FastAPI()
     # Runs outlive their requests, so a client that disconnects never cancels a run.
-    running: set[asyncio.Task[str | None]] = set()
+    running: set[asyncio.Task[RunReply]] = set()
 
     @app.post(PATH)
     async def chat_completions(
@@ -150,7 +156,7 @@ def create_app(
         task = asyncio.create_task(orchestrator.handle(message, notes.put))
         running.add(task)
 
-        def finished(task: asyncio.Task[str | None]) -> None:
+        def finished(task: asyncio.Task[RunReply]) -> None:
             running.discard(task)
             notes.put_nowait(None)
             # The run logs its own failure; retrieving it here stops asyncio logging it again.
@@ -162,13 +168,14 @@ def create_app(
         completion = _Completion(chat.model, clock)
         if chat.stream:
             return StreamingResponse(
-                _stream(task, notes, completion), media_type="text/event-stream"
+                _stream(task, notes, completion, render_markdown), media_type="text/event-stream"
             )
         try:
             reply = await asyncio.shield(task)
         except PulseError:
             return _error(500, "server_error", _RUN_FAILED)
-        return JSONResponse(completion.whole(reply or "").model_dump(mode="json"))
+        content = _content(reply, render_markdown)
+        return JSONResponse(completion.whole(content).model_dump(mode="json"))
 
     return app
 
@@ -181,7 +188,10 @@ async def serve(app: FastAPI, port: int) -> None:
 
 
 async def _stream(
-    task: asyncio.Task[str | None], notes: asyncio.Queue[str | None], completion: _Completion
+    task: asyncio.Task[RunReply],
+    notes: asyncio.Queue[str | None],
+    completion: _Completion,
+    render_markdown: Callable[[Content], str],
 ) -> AsyncIterator[str]:
     yield completion.chunk(_Delta(role="assistant"))
     while (note := await notes.get()) is not None:
@@ -192,10 +202,16 @@ async def _stream(
         error = _ErrorBody(error=_ErrorDetail(message=_RUN_FAILED, type="server_error"))
         yield _event(error)
     else:
-        if reply:
-            yield completion.chunk(_Delta(content=reply))
+        if content := _content(reply, render_markdown):
+            yield completion.chunk(_Delta(content=content))
         yield completion.chunk(_Delta(), finish_reason="stop")
     yield "data: [DONE]\n\n"
+
+
+def _content(reply: RunReply, render_markdown: Callable[[Content], str]) -> str:
+    """The reply, then the newsletter in Markdown when the run presented or showed one."""
+    newsletter = render_markdown(reply.newsletter) if reply.newsletter else None
+    return "\n\n".join(part for part in (reply.text, newsletter) if part)
 
 
 async def _caller(authorization: str | None, verifier: TokenVerifier) -> Caller | None:

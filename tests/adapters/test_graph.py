@@ -12,7 +12,7 @@ from cryptography.x509.oid import NameOID
 
 from pulse.adapters.graph import CertificateCredential, GraphMailbox
 from pulse.entities.errors import MailboxError
-from pulse.entities.mail import OutboundEmail
+from pulse.entities.mail import Body, OutboundEmail
 from tests.emails import make_email
 from tests.fakes.graph import MAILBOX, FakeGraph
 
@@ -71,6 +71,17 @@ async def test_listing_follows_every_page() -> None:
 async def test_listing_reads_headers_and_tolerates_missing_parts() -> None:
     graph = FakeGraph([make_email("m01")])
     graph.inbox[0] |= {"subject": None, "internetMessageHeaders": None, "uniqueBody": None}
+
+    [email] = await _mailbox(graph).list_inbox()
+
+    assert (email.subject, email.headers, email.body) == ("", {}, "")
+
+
+async def test_listing_tolerates_parts_graph_leaves_out() -> None:
+    # Graph omits these fields, rather than sending null, for a message that has none.
+    graph = FakeGraph([make_email("m01")])
+    for field in ("subject", "internetMessageHeaders", "uniqueBody"):
+        del graph.inbox[0][field]
 
     [email] = await _mailbox(graph).list_inbox()
 
@@ -157,19 +168,24 @@ async def test_folder_names_are_quoted_in_the_filter() -> None:
     assert graph.requests[0].url.params["$filter"] == "displayName eq 'Pulse''s mail'"
 
 
-async def test_send_is_html_with_its_recipients_and_reply_to() -> None:
+async def test_send_creates_the_message_then_sends_it_and_returns_its_id() -> None:
     graph = FakeGraph()
     email = OutboundEmail(
-        to=["all-staff@techary.ai"], subject="Pulse", html="<p>Hi</p>", reply_to=MAILBOX
+        to=["all-staff@example.org"], subject="Pulse", body=_html("<p>Hi</p>"), reply_to=MAILBOX
     )
 
-    await _mailbox(graph).send(email)
+    sent_id = await _mailbox(graph).send(email)
 
+    assert [(r.method, r.url.path.rsplit("/", 1)[-1]) for r in graph.requests] == [
+        ("POST", "messages"),
+        ("POST", "send"),
+    ]
+    assert sent_id == "draft-1"
     assert graph.sent == [
         {
             "subject": "Pulse",
             "body": {"contentType": "HTML", "content": "<p>Hi</p>"},
-            "toRecipients": [{"emailAddress": {"address": "all-staff@techary.ai"}}],
+            "toRecipients": [{"emailAddress": {"address": "all-staff@example.org"}}],
             "replyTo": [{"emailAddress": {"address": MAILBOX}}],
         }
     ]
@@ -177,7 +193,9 @@ async def test_send_is_html_with_its_recipients_and_reply_to() -> None:
 
 async def test_send_without_reply_to() -> None:
     graph = FakeGraph()
-    email = OutboundEmail(to=["ops@techary.ai"], subject="Alert", html="<p>!</p>", reply_to=None)
+    email = OutboundEmail(
+        to=["ops@example.org"], subject="Alert", body=_html("<p>!</p>"), reply_to=None
+    )
 
     await _mailbox(graph).send(email)
 
@@ -186,21 +204,40 @@ async def test_send_without_reply_to() -> None:
 
 async def test_reply_goes_in_thread_to_the_named_recipients_only() -> None:
     graph = FakeGraph([make_email("m01")])
+    text = Body(content="Version 2 is ready.", content_type="text")
 
-    await _mailbox(graph).reply("m01", ["reviewers@techary.ai"], "Version 2 is ready.")
+    reply_id = await _mailbox(graph).reply("m01", ["reviewers@example.org"], text)
 
     assert [(r.method, r.url.path.rsplit("/", 1)[-1]) for r in graph.requests] == [
         ("POST", "createReplyAll"),
         ("PATCH", "reply-1"),
         ("POST", "send"),
     ]
+    assert reply_id == "reply-1"
     [reply] = graph.sent
+    # The subject is not changed, so Exchange keeps the reply in the thread.
     assert reply == {
         "replyTo": "m01",
-        "toRecipients": [{"emailAddress": {"address": "reviewers@techary.ai"}}],
+        "toRecipients": [{"emailAddress": {"address": "reviewers@example.org"}}],
         "ccRecipients": [],
         "body": {"contentType": "Text", "content": "Version 2 is ready."},
     }
+
+
+async def test_reply_to_a_sent_message_can_be_html() -> None:
+    graph = FakeGraph()
+    mailbox = _mailbox(graph)
+    sent_id = await mailbox.send(
+        OutboundEmail(to=[MAILBOX], subject="Draft", body=_html("<p>v1</p>"), reply_to=None)
+    )
+
+    await mailbox.reply(sent_id, [MAILBOX], _html("<p>v2</p>"))
+
+    assert graph.sent[1]["body"] == {"contentType": "HTML", "content": "<p>v2</p>"}
+
+
+def _html(content: str) -> Body:
+    return Body(content=content, content_type="html")
 
 
 def _certificate(path: Path) -> str:

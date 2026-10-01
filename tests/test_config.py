@@ -51,7 +51,7 @@ def _set_reviewers(data: dict[str, Any]) -> None:
 
 
 def _set_operator_alerts(data: dict[str, Any]) -> None:
-    data["operator_alerts"] = ["operator@techary.ai", "someone@example.com"]
+    data["operator_alerts"] = ["operator@example.org", "someone@example.com"]
 
 
 def _set_all_staff(data: dict[str, Any]) -> None:
@@ -59,11 +59,11 @@ def _set_all_staff(data: dict[str, Any]) -> None:
 
 
 def _set_subdomain(data: dict[str, Any]) -> None:
-    data["reviewers"] = "someone@mail.techary.ai"
+    data["reviewers"] = "someone@mail.example.org"
 
 
 def _set_no_domain(data: dict[str, Any]) -> None:
-    data["reviewers"] = "techary.ai"
+    data["reviewers"] = "example.org"
 
 
 @pytest.mark.parametrize(
@@ -82,10 +82,10 @@ def test_recipient_outside_allowed_domains_is_rejected(
 
 def test_recipient_domain_ignores_case(tmp_path: Path) -> None:
     data = _example()
-    data["reviewers"] = "Reviewer@Techary.AI"
-    data["allowed_recipient_domains"] = ["TECHARY.ai"]
+    data["reviewers"] = "Reviewer@Example.ORG"
+    data["allowed_recipient_domains"] = ["EXAMPLE.org"]
 
-    assert _load(tmp_path, data).reviewers == "Reviewer@Techary.AI"
+    assert _load(tmp_path, data).reviewers == "Reviewer@Example.ORG"
 
 
 def test_auth_is_parsed(tmp_path: Path) -> None:

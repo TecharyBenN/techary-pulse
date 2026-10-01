@@ -8,24 +8,24 @@ graph:
   max_retries: 5
 
 mailboxes:
-  submissions: pulse@techary.ai
-  conversation: pulseagent@techary.ai
+  submissions: pulse@example.org
+  conversation: pulseagent@example.org
   processed_folder: Processed
   rejected_folder: Rejected
 
 # A distribution list; the conversation mailbox accepts mail only from its members.
-reviewers: pulse-reviewers@techary.ai
+reviewers: pulse-reviewers@example.org
 
-all_staff: all-staff@techary.ai
+all_staff: all-staff@example.org
 
 operator_alerts:
-  - operator@techary.ai
+  - operator@example.org
 
 allowed_sender_domains:
-  - techary.ai
+  - example.org
 allowed_senders: []
 allowed_recipient_domains:
-  - techary.ai
+  - example.org
 allowed_sensitivity_labels:
   - 00000000-0000-0000-0000-000000000000
 

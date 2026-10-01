@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
 
+from pulse.entities.content import Version, WriterOutput
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import StoreError
 from pulse.entities.extracts import Consolidation, ExtractorOutput, ExtractRecord, make_record
@@ -43,6 +44,17 @@ CREATE TABLE IF NOT EXISTS items (
     data TEXT NOT NULL,
     PRIMARY KEY (newsletter_id)
 );
+CREATE TABLE IF NOT EXISTS drafts (
+    newsletter_id TEXT NOT NULL,
+    data TEXT NOT NULL,
+    PRIMARY KEY (newsletter_id)
+);
+CREATE TABLE IF NOT EXISTS versions (
+    newsletter_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    PRIMARY KEY (newsletter_id, version)
+);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     newsletter_id TEXT NOT NULL,
@@ -73,9 +85,7 @@ class SqliteStore:
         rows = [{"newsletter_id": newsletter_id} | e.model_dump(mode="json") for e in emails]
 
         def save(connection: sqlite3.Connection) -> None:
-            _insert(
-                connection, "INSERT OR REPLACE", "newsletters", newsletter.model_dump(mode="json")
-            )
+            _save_newsletter(connection, newsletter)
             for row in rows:
                 _insert(connection, "INSERT OR IGNORE", "screened_emails", row)
 
@@ -135,9 +145,42 @@ class SqliteStore:
         row = await self._execute(lambda c: c.execute(sql, (newsletter_id,)).fetchone())
         return None if row is None else Consolidation.model_validate_json(row["data"])
 
+    async def save_draft(self, newsletter_id: str, draft: WriterOutput) -> None:
+        row = {"newsletter_id": newsletter_id, "data": draft.model_dump_json()}
+        await self._insert("INSERT OR REPLACE", "drafts", row)
+
+    async def get_draft(self, newsletter_id: str) -> WriterOutput | None:
+        sql = "SELECT data FROM drafts WHERE newsletter_id = ?"
+        row = await self._execute(lambda c: c.execute(sql, (newsletter_id,)).fetchone())
+        return None if row is None else WriterOutput.model_validate_json(row["data"])
+
+    async def save_version(self, newsletter: Newsletter, version: Version) -> None:
+        row = {
+            "newsletter_id": newsletter.newsletter_id,
+            "version": version.version,
+            "data": version.model_dump_json(),
+        }
+
+        def save(connection: sqlite3.Connection) -> None:
+            _save_newsletter(connection, newsletter)
+            # A plain insert, so a version number is never reused.
+            _insert(connection, "INSERT", "versions", row)
+
+        await self._execute(save)
+
+    async def get_version(self, newsletter_id: str, version: int) -> Version | None:
+        sql = "SELECT data FROM versions WHERE newsletter_id = ? AND version = ?"
+        row = await self._execute(lambda c: c.execute(sql, (newsletter_id, version)).fetchone())
+        return None if row is None else Version.model_validate_json(row["data"])
+
     async def record_feedback(self, newsletter_id: str, message: ReviewerMessage) -> None:
         row = {"newsletter_id": newsletter_id} | message.model_dump(mode="json")
         await self._insert("INSERT OR IGNORE", "feedback", row)
+
+    async def list_feedback(self, newsletter_id: str) -> list[ReviewerMessage]:
+        sql = "SELECT * FROM feedback WHERE newsletter_id = ? ORDER BY rowid"
+        rows = await self._execute(lambda c: c.execute(sql, (newsletter_id,)).fetchall())
+        return [ReviewerMessage.model_validate(dict(row)) for row in rows]
 
     async def load_history(self, newsletter_id: str) -> list[HistoryRow]:
         sql = "SELECT message_id, data FROM messages WHERE newsletter_id = ? ORDER BY id"
@@ -177,6 +220,10 @@ def _insert(
     columns = ", ".join(row)
     placeholders = ", ".join(f":{column}" for column in row)
     connection.execute(f"{verb} INTO {table} ({columns}) VALUES ({placeholders})", row)
+
+
+def _save_newsletter(connection: sqlite3.Connection, newsletter: Newsletter) -> None:
+    _insert(connection, "INSERT OR REPLACE", "newsletters", newsletter.model_dump(mode="json"))
 
 
 def _record(row: sqlite3.Row) -> ExtractRecord:

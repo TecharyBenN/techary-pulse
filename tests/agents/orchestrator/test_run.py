@@ -21,18 +21,23 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pulse.adapters.store import SqliteStore
 from pulse.agents.orchestrator.agent import user_prompt
 from pulse.agents.orchestrator.run import Orchestrator
+from pulse.entities.content import Version, version_of
 from pulse.entities.errors import RunFailed
+from pulse.entities.lifecycle import present
 from pulse.entities.store import HistoryRow
+from tests.emails import make_draft
 from tests.fakes.models import (
     Tools,
     gateway_error,
     make_orchestrator,
     ping_call,
+    present_call,
     reply_with,
     responses,
+    show_call,
     text_response,
 )
-from tests.messages import make_message, make_newsletter
+from tests.messages import OPENED, make_message, make_newsletter
 
 pytestmark = pytest.mark.anyio
 
@@ -81,7 +86,9 @@ def _logged(caplog: pytest.LogCaptureFixture, event: str) -> dict[str, object]:
 
 
 async def test_returns_thereply_with(store: SqliteStore) -> None:
-    reply = await make_orchestrator(store, reply_with("Happy to help.")).handle(make_message())
+    reply = (
+        await make_orchestrator(store, reply_with("Happy to help.")).handle(make_message())
+    ).text
 
     assert reply == "Happy to help."
 
@@ -139,7 +146,7 @@ async def test_without_an_open_newsletter_nothing_is_saved(tmp_path: Path) -> No
     store = SqliteStore(db_path)
     await store.initialise()
 
-    reply = await make_orchestrator(store, reply_with("Hello.")).handle(make_message())
+    reply = (await make_orchestrator(store, reply_with("Hello.")).handle(make_message())).text
 
     assert reply == "Hello."
     assert _feedback_ids(db_path) == []
@@ -149,7 +156,7 @@ async def test_without_an_open_newsletter_nothing_is_saved(tmp_path: Path) -> No
 
 @pytest.mark.parametrize("text", ["NO_REPLY", "  NO_REPLY\n"])
 async def test_noreply_with(store: SqliteStore, db_path: Path, text: str) -> None:
-    reply = await make_orchestrator(store, reply_with(text)).handle(make_message())
+    reply = (await make_orchestrator(store, reply_with(text)).handle(make_message())).text
 
     assert reply is None
     assert _feedback_ids(db_path) == ["r01"]
@@ -203,7 +210,7 @@ async def test_progress_note_for_each_tool_call(store: SqliteStore) -> None:
 
     await make_orchestrator(store, model, Tools()).handle(make_message(), on_progress)
 
-    assert notes == ["Running ping", "Running ping"]
+    assert notes == ["Working on it (ping)", "Working on it (ping)"]
 
 
 async def test_retried_message_resumes_from_saved_steps(store: SqliteStore, db_path: Path) -> None:
@@ -219,7 +226,7 @@ async def test_retried_message_resumes_from_saved_steps(store: SqliteStore, db_p
         seen.append(messages)
         return text_response("Done.")
 
-    reply = await make_orchestrator(store, model, tools).handle(message)
+    reply = (await make_orchestrator(store, model, tools).handle(message)).text
 
     assert reply == "Done."
     assert tools.calls == 1
@@ -236,7 +243,9 @@ async def test_resumes_unprocessed_tool_calls(store: SqliteStore) -> None:
     for saved in (ModelRequest(parts=[UserPromptPart(user_prompt(message))]), ping_call()):
         await store.append_history("n-1", "r01", ModelMessagesTypeAdapter.dump_json([saved]))
 
-    reply = await make_orchestrator(store, responses(text_response("Done.")), tools).handle(message)
+    reply = (
+        await make_orchestrator(store, responses(text_response("Done.")), tools).handle(message)
+    ).text
 
     assert reply == "Done."
     assert tools.calls == 1
@@ -256,7 +265,9 @@ async def test_unfinished_run_is_resumed_before_a_new_message(store: SqliteStore
         seen.append(messages)
         return text_response(f"Reply {len(seen)}")
 
-    reply = await make_orchestrator(store, model, tools).handle(make_message("r02", text="Second"))
+    reply = (
+        await make_orchestrator(store, model, tools).handle(make_message("r02", text="Second"))
+    ).text
 
     assert reply == "Reply 2"
     assert _prompts(seen[0]) == [user_prompt(make_message("r01", text="First"))]
@@ -341,7 +352,7 @@ async def test_exchange_that_opens_a_newsletter_becomes_its_history(
     agent = Agent(FunctionModel(model), output_type=str, tools=[opening_tool])
     orchestrator = Orchestrator(agent, store, 40, timedelta(minutes=15))
 
-    reply = await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))
+    reply = (await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))).text
 
     assert reply == "Started."
     history = await store.load_history("n-9")
@@ -350,3 +361,137 @@ async def test_exchange_that_opens_a_newsletter_becomes_its_history(
         user_prompt(make_message("r01", text="Please draft a newsletter."))
     ]
     assert _feedback_ids(db_path) == ["r01"]
+
+
+async def _save(store: SqliteStore, *messages: ModelMessage) -> None:
+    for message in messages:
+        await store.append_history("n-1", "r01", ModelMessagesTypeAdapter.dump_json([message]))
+
+
+def _tool_exchange(tool: str, call_id: str, content: object) -> list[ModelMessage]:
+    return [
+        ModelResponse(parts=[ToolCallPart(tool, {}, call_id)]),
+        ModelRequest(parts=[ToolReturnPart(tool, content, call_id)]),
+    ]
+
+
+def _tool_results(messages: list[ModelMessage]) -> list[object]:
+    return [
+        part.content
+        for message in messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    ]
+
+
+async def _seen_history(store: SqliteStore) -> list[ModelMessage]:
+    seen: list[list[ModelMessage]] = []
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        return text_response("Done.")
+
+    await make_orchestrator(store, model).handle(make_message("r02", text="What changed?"))
+    return seen[0]
+
+
+async def test_results_before_the_latest_version_are_replaced_by_placeholders(
+    store: SqliteStore,
+) -> None:
+    prompt = ModelRequest(parts=[UserPromptPart(user_prompt(make_message("r01")))])
+    await _save(
+        store,
+        prompt,
+        *_tool_exchange("get_items", "c1", {"items": ["detail"]}),
+        *_tool_exchange("present_draft", "c2", {"version": 1}),
+        *_tool_exchange("get_draft", "c3", {"content": "detail"}),
+        text_response("Version 1 is with the reviewers."),
+    )
+
+    seen = await _seen_history(store)
+
+    assert _tool_results(seen) == [
+        "Earlier get_items result, superseded.",
+        {"version": 1},
+        {"content": "detail"},
+    ]
+    assert _prompts(seen)[0] == user_prompt(make_message("r01"))
+    assert isinstance(seen[-2], ModelResponse)
+    assert seen[-2].parts == [TextPart("Version 1 is with the reviewers.")]
+    # The store keeps every result in full.
+    assert _tool_results([m for _, m in await _history(store)])[0] == {"items": ["detail"]}
+
+
+async def test_a_refused_present_draft_supersedes_nothing(store: SqliteStore) -> None:
+    await _save(
+        store,
+        ModelRequest(parts=[UserPromptPart(user_prompt(make_message("r01")))]),
+        *_tool_exchange("get_items", "c1", {"items": ["detail"]}),
+        *_tool_exchange("present_draft", "c2", "Refused: there is no working draft"),
+        text_response("There is no draft yet."),
+    )
+
+    seen = await _seen_history(store)
+
+    assert _tool_results(seen) == [{"items": ["detail"]}, "Refused: there is no working draft"]
+
+
+async def _version_1(store: SqliteStore) -> Version:
+    """Store version 1, which the stand-in present_draft presents."""
+    version = version_of(make_draft(), 1, OPENED)
+    await store.save_version(present(make_newsletter()), version)
+    return version
+
+
+async def test_reply_carries_the_version_the_run_presented(store: SqliteStore) -> None:
+    version = await _version_1(store)
+    model = responses(present_call(), text_response("Version 1 is ready."))
+
+    reply = await make_orchestrator(store, model, Tools()).handle(make_message())
+
+    assert (reply.text, reply.newsletter) == ("Version 1 is ready.", version.content)
+
+
+async def test_reply_carries_no_version_when_the_run_presented_none(store: SqliteStore) -> None:
+    await _version_1(store)
+
+    reply = await make_orchestrator(store, reply_with("Noted.")).handle(make_message())
+
+    assert reply.newsletter is None
+
+
+async def test_retried_message_carries_the_version_its_earlier_attempt_presented(
+    store: SqliteStore,
+) -> None:
+    version = await _version_1(store)
+    message = make_message("r01")
+    with pytest.raises(RunFailed):
+        await make_orchestrator(store, responses(present_call(), gateway_error()), Tools()).handle(
+            message
+        )
+
+    reply = await make_orchestrator(store, reply_with("Done."), Tools()).handle(message)
+
+    assert reply.newsletter == version.content
+
+
+async def test_a_later_message_does_not_carry_an_earlier_version(store: SqliteStore) -> None:
+    await _version_1(store)
+    model = responses(present_call(), text_response("Version 1 is ready."))
+    await make_orchestrator(store, model, Tools()).handle(make_message("r01"))
+
+    reply = await make_orchestrator(store, reply_with("Noted.")).handle(make_message("r02"))
+
+    assert reply.newsletter is None
+
+
+async def test_reply_carries_the_working_draft_the_run_showed(store: SqliteStore) -> None:
+    await _version_1(store)
+    shown = make_draft(changes=["Shortened the intro"])
+    await store.save_draft("n-1", shown)
+    model = responses(show_call(), text_response("Here is the draft."))
+
+    reply = await make_orchestrator(store, model, Tools()).handle(make_message())
+
+    assert (reply.text, reply.newsletter) == ("Here is the draft.", shown.content)

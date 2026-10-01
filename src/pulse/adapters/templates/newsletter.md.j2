@@ -1,0 +1,10 @@
+**{{ content.headline_title }}**
+
+# {{ content.headline }}
+
+{{ content.intro }}
+{% for section in content.sections if section.entries %}
+## {{ section.title }}
+{% for entry in section.entries %}
+{{ entry.text }}
+{% endfor %}{% endfor %}

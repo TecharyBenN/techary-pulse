@@ -3,7 +3,9 @@ and the pre-filter."""
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
 from typing import Literal, Protocol
+from zoneinfo import ZoneInfo
 
 from pydantic import AwareDatetime
 
@@ -39,10 +41,15 @@ class InboundEmail(Email):
     headers: dict[str, str]
 
 
+class Body(Entity):
+    content: str
+    content_type: Literal["html", "text"]
+
+
 class OutboundEmail(Entity):
     to: list[str]
     subject: str
-    html: str
+    body: Body
     reply_to: str | None
 
 
@@ -66,10 +73,13 @@ class Mailbox(Protocol):
         """Move a message to the named folder, creating the folder if it is absent."""
         ...
 
-    async def send(self, email: OutboundEmail) -> None: ...
+    async def send(self, email: OutboundEmail) -> MessageId:
+        """Send a new message; return its ID."""
+        ...
 
-    async def reply(self, message_id: MessageId, to: Sequence[str], text: str) -> None:
-        """Reply in the message's thread to `to` only, with a plain-text body."""
+    async def reply(self, message_id: MessageId, to: Sequence[str], body: Body) -> MessageId:
+        """Reply in the message's thread to `to` only, keeping the thread's subject; return the
+        reply's ID."""
         ...
 
 
@@ -111,6 +121,18 @@ def screen(
         rejection=rejection,
         body=email.body if rejection is None else None,
     )
+
+
+def display_date(moment: datetime, timezone: ZoneInfo) -> str:
+    """The date in `timezone`, as in 25 September 2026."""
+    local = moment.astimezone(timezone)
+    return f"{local.day} {local:%B %Y}"
+
+
+def subject(template: str, opened_at: datetime, timezone: ZoneInfo, prefix: str = "") -> str:
+    """`subject_template` with `{date}` as the date the newsletter was opened, after `prefix`."""
+    text = template.replace("{date}", display_date(opened_at, timezone))
+    return f"{prefix} {text}" if prefix else text
 
 
 def source_text(email: ScreenedEmail) -> str:

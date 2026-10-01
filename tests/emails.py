@@ -1,5 +1,5 @@
-"""Synthetic inbox messages, and the screened emails, extract records and items derived
-from them."""
+"""Synthetic inbox messages, and the screened emails, extract records, items and drafts
+derived from them."""
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -7,6 +7,7 @@ from typing import Any
 
 import yaml
 
+from pulse.entities.content import Content, Entry, Section, WriterOutput
 from pulse.entities.extracts import (
     Consolidation,
     ConsolidatorItem,
@@ -19,7 +20,9 @@ from pulse.entities.extracts import (
 from pulse.entities.mail import InboundEmail, ScreenedEmail, screen
 from pulse.entities.store import Store
 
-ALLOWED_DOMAINS = ["techary.ai"]
+# The fictional organisation's domain; example.com stands for outside senders.
+STAFF_DOMAIN = "example.org"
+ALLOWED_DOMAINS = [STAFF_DOMAIN]
 CORPUS = Path(__file__).parent / "corpus" / "corpus.yaml"
 HEADLINE = "A new retail customer"
 
@@ -52,7 +55,7 @@ def make_email(message_id: str = "m01", **changes: object) -> InboundEmail:
     fields: dict[str, object] = {
         "message_id": message_id,
         "sender_name": "Priya Shah",
-        "sender_address": "priya.shah@techary.ai",
+        "sender_address": "priya.shah@example.org",
         "subject": "Signed Northwind Retail today",
         "received": datetime(2026, 9, 22, 15, 30, tzinfo=UTC),
         "has_attachments": False,
@@ -116,6 +119,23 @@ def make_consolidation(*items: Item) -> Consolidation:
     return Consolidation(headline=HEADLINE, items=list(items))
 
 
+ENTRY = "Priya Shah and Tom Evans signed Northwind Retail on 22 September."
+
+
+def make_draft(*entries: Entry, **changes: object) -> WriterOutput:
+    """A draft of one customer win entry for item-1, by default."""
+    entries = entries or (Entry(item_id="item-1", text=ENTRY, people=["Priya Shah", "Tom Evans"]),)
+    content = Content(
+        headline_title="Headline of the week",
+        headline=HEADLINE,
+        intro="A strong week for new customers.",
+        sections=[Section(category="customer_win", title="Customer wins", entries=list(entries))],
+        item_ids=list(dict.fromkeys(entry.item_id for entry in entries)),
+    )
+    fields: dict[str, object] = {"content": content, "changes": [], "not_applied": []}
+    return WriterOutput.model_validate(fields | changes)
+
+
 def corpus_messages() -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = _corpus()["messages"]
     return messages
@@ -125,14 +145,10 @@ def corpus_consolidation() -> ConsolidatorOutput:
     return ConsolidatorOutput.model_validate(_corpus()["consolidation"])
 
 
-def sendable_corpus_messages() -> list[dict[str, Any]]:
-    """The corpus messages that can be sent from the tenant: the others need headers or an
-    external sender, so only the unit tests cover them."""
-    return [
-        m
-        for m in corpus_messages()
-        if "headers" not in m and m["sender_address"].endswith("@techary.ai")
-    ]
+def seedable_corpus_messages() -> list[dict[str, Any]]:
+    """The corpus messages that can be placed in the dev inbox: the others need headers Graph
+    will not set, so only the unit tests cover them."""
+    return [m for m in corpus_messages() if "headers" not in m]
 
 
 async def stored_outcomes(store: Store, newsletter_id: str) -> dict[str, str]:

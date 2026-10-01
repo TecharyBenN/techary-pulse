@@ -14,7 +14,7 @@ from pydantic import AliasPath, AwareDatetime, BaseModel, ConfigDict, Field, Val
 from pydantic.alias_generators import to_camel
 
 from pulse.entities.errors import MailboxError
-from pulse.entities.mail import InboundEmail, OutboundEmail
+from pulse.entities.mail import Body, InboundEmail, MessageId, OutboundEmail
 
 GRAPH_URL = "https://graph.microsoft.com/v1.0"
 _AUTHORITY = "https://login.microsoftonline.com/{tenant_id}"
@@ -25,6 +25,7 @@ _INBOX_FIELDS = (
     "id,from,sender,subject,receivedDateTime,uniqueBody,internetMessageHeaders,hasAttachments"
 )
 _PAGE_SIZE = 50
+_CONTENT_TYPES = {"html": "HTML", "text": "Text"}
 _THROTTLED = (429, 503)
 # Graph sends Retry-After with every throttled response; this covers one that does not.
 _DEFAULT_WAIT_SECONDS = 1
@@ -77,10 +78,11 @@ class _Message(BaseModel):
     id: str
     sender_name: str = Field(validation_alias=AliasPath("from", "emailAddress", "name"))
     sender_address: str = Field(validation_alias=AliasPath("from", "emailAddress", "address"))
-    subject: str | None
+    # Graph sends null for some of these, and leaves them out for a message that has none.
+    subject: str | None = None
     received_date_time: AwareDatetime
-    unique_body: dict[str, Any] | None
-    internet_message_headers: list[dict[str, str]] | None
+    unique_body: dict[str, Any] | None = None
+    internet_message_headers: list[dict[str, str]] | None = None
     has_attachments: bool
 
     def email(self) -> InboundEmail:
@@ -146,29 +148,34 @@ class GraphMailbox:
             "POST", f"{self._message(message_id)}/move", json={"destinationId": folder_id}
         )
 
-    async def send(self, email: OutboundEmail) -> None:
+    async def send(self, email: OutboundEmail) -> MessageId:
+        """Create the message, then send it, because sendMail does not return its ID."""
         message: dict[str, Any] = {
             "subject": email.subject,
-            "body": {"contentType": "HTML", "content": email.html},
+            "body": _body(email.body),
             "toRecipients": _recipients(email.to),
         }
         if email.reply_to is not None:
             message["replyTo"] = _recipients([email.reply_to])
-        await self._request("POST", f"{self._base}/sendMail", json={"message": message})
+        response = await self._request("POST", f"{self._base}/messages", json=message)
+        return await self._send(_parse(_Created, response).id)
 
-    async def reply(self, message_id: str, to: Sequence[str], text: str) -> None:
+    async def reply(self, message_id: MessageId, to: Sequence[str], body: Body) -> MessageId:
         response = await self._request("POST", f"{self._message(message_id)}/createReplyAll")
-        reply = self._message(_parse(_Created, response).id)
+        reply_id = _parse(_Created, response).id
+        # The subject is left as Graph sets it, because Exchange starts a new conversation
+        # when a reply's subject changes.
         await self._request(
             "PATCH",
-            reply,
-            json={
-                "toRecipients": _recipients(to),
-                "ccRecipients": [],
-                "body": {"contentType": "Text", "content": text},
-            },
+            self._message(reply_id),
+            json={"toRecipients": _recipients(to), "ccRecipients": [], "body": _body(body)},
         )
-        await self._request("POST", f"{reply}/send")
+        return await self._send(reply_id)
+
+    async def _send(self, draft_id: MessageId) -> MessageId:
+        """Send a draft; its immutable ID stays the same once it is sent."""
+        await self._request("POST", f"{self._message(draft_id)}/send")
+        return draft_id
 
     async def _folder_id(self, folder: str) -> str:
         """The ID of the top-level folder with this name, creating the folder if it is absent."""
@@ -219,6 +226,10 @@ def _parse[T: BaseModel](model: type[T], response: httpx.Response) -> T:
         return model.model_validate_json(response.content)
     except ValidationError as error:
         raise MailboxError(f"Graph returned an unexpected {model.__name__}") from error
+
+
+def _body(body: Body) -> dict[str, str]:
+    return {"contentType": _CONTENT_TYPES[body.content_type], "content": body.content}
 
 
 def _recipients(addresses: Sequence[str]) -> list[dict[str, dict[str, str]]]:

@@ -163,7 +163,7 @@ def test_sources_add_sender_names_and_received_times_in_source_order() -> None:
     emails = [
         make_screened_email("m01", received=first),
         make_screened_email(
-            "m02", sender_name="Tom Evans", sender_address="tom.evans@techary.ai", received=second
+            "m02", sender_name="Tom Evans", sender_address="tom.evans@example.org", received=second
         ),
         make_screened_email("m03", received=second),
     ]

@@ -28,7 +28,7 @@ operator_alerts:
 
 allowed_sender_domains:
   - devtenant.onmicrosoft.com
-  - techary.com
+  - example.org
 allowed_senders: []
 allowed_recipient_domains:
   - devtenant.onmicrosoft.com

@@ -14,6 +14,7 @@ from pydantic_ai.models import Model
 from pulse.adapters.clock import SystemClock
 from pulse.adapters.gateway import gateway_model
 from pulse.adapters.graph import GRAPH_URL, CertificateCredential, GraphMailbox
+from pulse.adapters.render import Renderer
 from pulse.adapters.store import SqliteStore
 from pulse.adapters.tokens import JwtVerifier
 from pulse.agents.consolidator.agent import build_consolidator
@@ -21,6 +22,7 @@ from pulse.agents.extractor.agent import build_extractor
 from pulse.agents.orchestrator.agent import build_agent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import Tools
+from pulse.agents.writer.agent import build_writer
 from pulse.config import Config, ConfigError, load_config
 from pulse.entities.clock import Clock
 from pulse.entities.errors import PulseError
@@ -56,18 +58,26 @@ async def _serve(config: Config) -> None:
     credential = CertificateCredential(graph.tenant_id, graph.client_id, graph.certificate_path)
     _log.info("graph_certificate", extra={"thumbprint": credential.thumbprint})
     async with httpx.AsyncClient(base_url=GRAPH_URL) as client:
-        submissions = GraphMailbox(
-            client, credential.token, config.mailboxes.submissions, graph.max_retries
+        submissions, conversation = (
+            GraphMailbox(client, credential.token, address, graph.max_retries)
+            for address in (config.mailboxes.submissions, config.mailboxes.conversation)
         )
-        orchestrator = build_orchestrator(config, store, submissions, llm_key, clock)
+        orchestrator = build_orchestrator(config, store, submissions, conversation, llm_key, clock)
         auth = config.auth
         verifier = JwtVerifier(auth.issuer, auth.audience, auth.jwks, clock)
-        app = create_app(orchestrator, verifier, auth.reviewer_role, clock)
+        app = create_app(
+            orchestrator, verifier, auth.reviewer_role, clock, _renderer(config).markdown
+        )
         await serve(app, config.chat.port)
 
 
 def build_orchestrator(
-    config: Config, store: Store, submissions: Mailbox, llm_key: str, clock: Clock
+    config: Config,
+    store: Store,
+    submissions: Mailbox,
+    conversation: Mailbox,
+    llm_key: str,
+    clock: Clock,
 ) -> Orchestrator:
     def model(agent: str) -> Model:
         return gateway_model(config.llm.base_url, llm_key, config.llm.models[agent])
@@ -79,11 +89,29 @@ def build_orchestrator(
         allowed_sensitivity_labels=config.allowed_sensitivity_labels,
     )
     categories = {section.category: section.definition for section in config.sections}
+    operations = Operations(
+        store,
+        submissions,
+        conversation,
+        screen_email,
+        _renderer(config).reviewer_email,
+        clock,
+        reviewers=config.reviewers,
+        subject_template=config.subject_template,
+        timezone=config.timezone,
+    )
     tools = Tools(
-        Operations(store, submissions, screen_email, clock),
+        operations,
         store,
         build_extractor(model("extractor"), categories),
         build_consolidator(model("consolidator")),
+        build_writer(
+            model("writer"),
+            categories,
+            {section.category: section.title for section in config.sections},
+            config.headline_title,
+            config.limits.max_words,
+        ),
         categories,
     )
     return Orchestrator(
@@ -92,6 +120,10 @@ def build_orchestrator(
         config.orchestrator.max_tool_calls,
         timedelta(minutes=config.orchestrator.max_run_minutes),
     )
+
+
+def _renderer(config: Config) -> Renderer:
+    return Renderer(config.timezone)
 
 
 def _environment(name: str) -> str:

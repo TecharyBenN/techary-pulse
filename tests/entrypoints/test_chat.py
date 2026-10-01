@@ -15,7 +15,10 @@ from starlette.requests import ClientDisconnect
 
 from pulse.adapters.store import SqliteStore
 from pulse.agents.orchestrator.run import Orchestrator
+from pulse.entities.content import version_of
+from pulse.entities.lifecycle import present
 from pulse.entrypoints.chat import NOT_A_REVIEWER, PATH, create_app
+from tests.emails import make_draft
 from tests.fakes.clock import ControlledClock
 from tests.fakes.models import (
     ModelFunction,
@@ -23,11 +26,13 @@ from tests.fakes.models import (
     gateway_error,
     make_orchestrator,
     ping_call,
+    present_call,
     reply_with,
     responses,
     text_response,
 )
-from tests.messages import make_message, make_newsletter
+from tests.messages import OPENED, make_message, make_newsletter
+from tests.operations import make_renderer
 from tests.tokens import NOW, REVIEWER_OID, REVIEWER_ROLE, make_token, make_verifier
 
 pytestmark = pytest.mark.anyio
@@ -63,7 +68,9 @@ class Recorder:
 
 def _app(orchestrator: Orchestrator) -> FastAPI:
     clock = ControlledClock(NOW)
-    return create_app(orchestrator, make_verifier(clock), REVIEWER_ROLE, clock)
+    return create_app(
+        orchestrator, make_verifier(clock), REVIEWER_ROLE, clock, make_renderer().markdown
+    )
 
 
 def _body(text: str = "Hello", stream: bool = False) -> dict[str, Any]:
@@ -130,12 +137,46 @@ async def test_streamed_reply_follows_the_progress_notes(store: SqliteStore) -> 
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert _streamed_content(response) == "Running ping\n\nDone."
+    assert _streamed_content(response) == "Working on it (ping)\n\nDone."
     events = _events(response)
     assert events[0]["choices"][0]["delta"] == {"role": "assistant"}
     assert all(event["object"] == "chat.completion.chunk" for event in events[:-1])
     assert events[-2]["choices"][0]["finish_reason"] == "stop"
     assert events[-1] == "[DONE]"
+
+
+async def _presented(store: SqliteStore) -> str:
+    """Store version 1, which the stand-in present_draft presents; return its Markdown."""
+    draft = make_draft()
+    await store.save_version(present(make_newsletter()), version_of(draft, 1, OPENED))
+    return make_renderer().markdown(draft.content)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_presented_version_follows_the_reply_in_markdown(
+    store: SqliteStore, stream: bool
+) -> None:
+    newsletter = await _presented(store)
+    model = responses(present_call(), text_response("Version 1 is ready."))
+
+    response = await _post(store, model, _body(stream=stream), tools=Tools())
+
+    if stream:
+        assert _streamed_content(response) == (
+            "Sending the draft to the reviewers (present_draft)\n\n"
+            f"Version 1 is ready.\n\n{newsletter}"
+        )
+    else:
+        content = response.json()["choices"][0]["message"]["content"]
+        assert content == f"Version 1 is ready.\n\n{newsletter}"
+
+
+async def test_reply_without_a_presented_version_has_no_newsletter(store: SqliteStore) -> None:
+    await _presented(store)
+
+    response = await _post(store, reply_with("No changes yet."), _body())
+
+    assert response.json()["choices"][0]["message"]["content"] == "No changes yet."
 
 
 @pytest.mark.parametrize(
@@ -184,7 +225,7 @@ async def test_caller_without_the_reviewer_role_is_forbidden(
     # An identity header proves nothing, so it cannot make the caller a reviewer.
     headers = {
         "Authorization": f"Bearer {make_token(roles=roles)}",
-        "X-User-Email": "testuser@techary.ai",
+        "X-User-Email": "testuser@example.org",
     }
 
     response = await _post(store, model, _body(stream=stream), headers)

@@ -1,17 +1,16 @@
 """The orchestrator agent, its instructions and its user prompt."""
 
-from importlib.resources import files
-
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.toolsets import AbstractToolset
 
+from pulse.agents.prompts import read_instructions
 from pulse.entities.conversation import ReviewerMessage
 
 # The orchestrator's whole reply when a message needs no answer.
 NO_REPLY = "NO_REPLY"
 
-INSTRUCTIONS = files(__package__).joinpath("prompt.md").read_text(encoding="utf-8")
+INSTRUCTIONS = read_instructions(__package__)
 
 
 def build_agent(model: Model, toolset: AbstractToolset[None]) -> Agent[None, str]:

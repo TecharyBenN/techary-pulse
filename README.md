@@ -18,8 +18,8 @@ Pulse connects to mailboxes, a distribution list, a gateway and a chat client th
 
 | Requirement | Detail |
 | --- | --- |
-| Submissions mailbox | A shared mailbox that receives staff updates, for example `pulse@techary.ai`. Pulse creates the `Processed` and `Rejected` folders if they are absent. |
-| Conversation mailbox | A shared mailbox that sends drafts, replies and the newsletter, and receives reviewer messages, for example `pulseagent@techary.ai`. Pulse creates the `Processed` and `Rejected` folders if they are absent. It accepts mail only from members of the reviewers list. |
+| Submissions mailbox | A shared mailbox that receives staff updates, named by `mailboxes.submissions`. Pulse creates the `Processed` and `Rejected` folders if they are absent. |
+| Conversation mailbox | A shared mailbox that sends drafts, replies and the newsletter, and receives reviewer messages, named by `mailboxes.conversation`. Pulse creates the `Processed` and `Rejected` folders if they are absent. It accepts mail only from members of the reviewers list. |
 | Reviewers list | A distribution list of the people who review newsletters. Drafts and notices are sent to it. |
 | Internal senders only | In production, both mailboxes have `RequireSenderAuthenticationEnabled` set, so Exchange rejects mail from unauthenticated or external senders. |
 | All-staff list | The distribution list that receives the approved newsletter. It accepts mail only from the conversation mailbox and named administrators. |
