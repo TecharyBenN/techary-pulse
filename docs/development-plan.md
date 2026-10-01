@@ -8,7 +8,7 @@ This plan sets out how the Techary Pulse minimum viable solution (MVS) is built:
 
 ## Approach
 
-Pulse is built from a clean start. Phase 1 models the entities and rules the design specifies. Phase 2 builds the orchestrator, its entry point and the HTTP adapter, so the agent can be talked to from then on. Phases 4 to 12 are vertical slices: each adds one capability from the design end to end, through every layer it needs, and adds only the code that capability needs.
+Pulse is built from a clean start. Phase 1 models the entities and rules the design specifies. Phase 2 builds the orchestrator, its entry point and the HTTP adapter, so the agent can be talked to from then on. Phases 4 to 11 are vertical slices: each adds one capability from the design end to end, through every layer it needs, and adds only the code that capability needs.
 
 Each phase:
 
@@ -38,7 +38,7 @@ A phase with a live check is complete only when the check has passed against the
 | Bearer token verification | PyJWT with its cryptography extra, through `asyncio.to_thread` | Maintained verification of signatures, issuer and audience, and fetching and caching of an issuer's key set; writing signature checks by hand is a security risk. |
 | Microsoft Graph calls | Direct REST calls through httpx's asynchronous client | Pulse uses a handful of operations, so a software development kit (SDK) would add more than it saves. |
 | Rendering | Jinja2 with autoescaping on | Escapes model output and email-derived text by default. |
-| Scheduling | A cron library that supports IANA time zones, chosen in phase 11 | Computes the next start in `Europe/London` correctly across daylight saving changes. |
+| Scheduling | A cron library that supports IANA time zones, chosen in phase 10 | Computes the next start in `Europe/London` correctly across daylight saving changes. |
 | Logging | Standard library `logging` with a JSON formatter | Structured logs without another dependency. |
 | Command line | `argparse` | Two commands do not need a framework. |
 | Container | `python:3.14-slim`, running as a non-root user | Small image with no build tools. |
@@ -55,12 +55,11 @@ A phase with a live check is complete only when the check has passed against the
 | 5. Consolidate | The consolidator |
 | 6. Write and present | The writer, `present_draft`, the reviewer email |
 | 7. Quality | `check`, the judge |
-| 8. Approve and send | `approve`, delivery |
-| 9. Withdraw and abandon | `withdraw_approval`, `abandon` |
-| 10. Email channel | Reviewer conversations by email |
-| 11. Scheduler | The start instruction on a schedule, `pulse draft` |
-| 12. Recovery and retention | The remaining failure handling, retention |
-| 13. Production pilot | Deployment and the first real newsletter |
+| 8. Approve, send, withdraw and abandon | `approve`, delivery, `withdraw_approval`, `abandon` |
+| 9. Email channel | Reviewer conversations by email |
+| 10. Scheduler | The start instruction on a schedule, `pulse draft` |
+| 11. Recovery and retention | The remaining failure handling, retention |
+| 12. Production pilot | Deployment and the first real newsletter |
 
 ### Phase 0: clean start
 
@@ -167,24 +166,21 @@ Scope: `restore`, which replaces restoring through the writer, so a restored rec
 
 Exit criteria: tests cover the tools and the review section; live check: a draft with a failing check is fixed or presented with the failure listed.
 
-### Phase 8: approve and send
+### Phase 8: approve, send, withdraw and abandon
 
 Scope:
 
 - `approve`, with every check from the design, and the send time;
+- `withdraw_approval` and `abandon` with their refusals, `present_draft` withdrawing an approval first, and the `Send cancelled` and `Abandoned` notices in the newsletter's email thread;
 - delivery, running every `schedule.poll_interval_minutes` inside `pulse serve`: the approval re-check, `send_started`, rendering without the review section, sending to `all_staff` with `replyTo` set to the submissions mailbox, marking the newsletter `sent`, the `Sent` notice in the newsletter's email thread, moving screened emails and the history note;
+- the run lock shared by orchestrator runs and delivery;
+- the conversation of the latest newsletter, which continues after the newsletter closes until the next one opens;
 - operator alerts, sent to `operator_alerts`;
-- the orchestrator instructions for approval.
+- the orchestrator instructions for approval, withdrawal and abandoning.
 
-Exit criteria: tests cover every approval refusal, send timing in both send modes with a controlled clock, a single send to `all_staff`, and the moves; live check: the test user approves a version in LibreChat and the test distribution list receives it.
+Exit criteria: tests cover every refusal of `approve`, `withdraw_approval` and `abandon`, send timing in both send modes with a controlled clock, a single send to `all_staff`, the moves, each notice, and a withdrawal and a send competing for the lock; live check: the test user approves a version in LibreChat and the test distribution list receives it, and an approval withdrawn before delivery runs cancels the send.
 
-### Phase 9: withdraw and abandon
-
-Scope: `withdraw_approval` and `abandon` with their refusals, `present_draft` withdrawing an approval first, the `Send cancelled` and `Abandoned` notices in the newsletter's email thread, and the orchestrator instructions for both.
-
-Exit criteria: tests cover each tool and the state changes; live check: an approval withdrawn in LibreChat cancels the send.
-
-### Phase 10: email channel
+### Phase 9: email channel
 
 Scope:
 
@@ -197,19 +193,19 @@ Scope:
 
 Exit criteria: tests cover each channel rule with fake mailboxes; live check: the test user replies to a reviewer email with feedback, receives the revised version in the thread, and continues the same conversation in LibreChat.
 
-### Phase 11: scheduler
+### Phase 10: scheduler
 
-Scope: choosing the cron library, posting the start instruction on `schedule.draft_cron`, skipping while an approved newsletter awaits its send, the reviewer email opening the conversation from a scheduled run, and `pulse draft`.
+Scope: choosing the cron library, posting the start instruction on `schedule.draft_cron`, skipping while an approved newsletter awaits its send, the reviewer email opening the conversation from a scheduled run, and `pulse draft`, with the run lock shared across processes, because `pulse draft` runs beside `pulse serve`.
 
 Exit criteria: tests cover the schedule and the skip with a controlled clock; live check: `pulse draft` sends version 1 to the test user, who continues the conversation by email.
 
-### Phase 12: recovery and retention
+### Phase 11: recovery and retention
 
 Scope: every row of the design's failure table not yet covered, including delivery with `send_started` but not `sent`, incomplete moves, a `present_draft` retried after its email was sent but its version not saved, and `SIGTERM`; and deleting closed newsletters older than `retention_days`.
 
 Exit criteria: crash-recovery tests inject a failure at each step boundary and assert the outcome in the failure table.
 
-### Phase 13: production pilot
+### Phase 12: production pilot
 
 Scope: the deployment requirements in the production tenant, including the Pulse app registration's reviewer role and the conversation mailbox's sender restriction, the production configuration with Entra ID as the issuer, the container deployed on the Pulse server, and LibreChat connected through the production gateway, passing each user's Entra ID token.
 

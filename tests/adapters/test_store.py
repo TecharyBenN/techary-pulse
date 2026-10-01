@@ -1,7 +1,7 @@
 import asyncio
 import sqlite3
 import stat
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -10,7 +10,7 @@ from pulse.adapters.store import SqliteStore
 from pulse.entities.content import CheckFailure, Version, version_of
 from pulse.entities.errors import StoreError
 from pulse.entities.extracts import Sensitivity, restored
-from pulse.entities.lifecycle import abandon, present, update
+from pulse.entities.lifecycle import abandon, open_newsletter, present, update
 from pulse.entities.store import HistoryRow
 from tests.emails import (
     make_consolidation,
@@ -71,6 +71,68 @@ async def test_closed_newsletter_is_not_open(store: SqliteStore) -> None:
     await store.save_start(abandon(make_newsletter(), REVIEWER, OPENED), [])
 
     assert await store.get_open_newsletter() is None
+
+
+async def test_no_latest_newsletter(store: SqliteStore) -> None:
+    assert await store.get_latest_newsletter() is None
+
+
+async def test_latest_newsletter_is_the_one_opened_last_whether_open_or_closed(
+    store: SqliteStore,
+) -> None:
+    earlier = abandon(make_newsletter("n-1"), REVIEWER, OPENED + timedelta(days=1))
+    later = open_newsletter("n-2", OPENED + timedelta(days=2))
+    await store.save_start(later, [])
+    await store.save_start(earlier, [])
+
+    assert await store.get_latest_newsletter() == later
+    await store.save_newsletter(abandon(later, REVIEWER, OPENED + timedelta(days=3)))
+    latest = await store.get_latest_newsletter()
+    assert latest is not None and latest.newsletter_id == "n-2"
+
+
+async def test_latest_newsletter_compares_times_not_text(store: SqliteStore) -> None:
+    # 18:00 at UTC+05:00 is 13:00 UTC, earlier than 14:00 UTC, though it sorts later as text.
+    earlier = open_newsletter(
+        "n-1", datetime(2026, 9, 25, 18, 0, tzinfo=timezone(timedelta(hours=5)))
+    )
+    later = abandon(
+        open_newsletter("n-2", datetime(2026, 9, 25, 14, 0, tzinfo=UTC)), REVIEWER, OPENED
+    )
+    await store.save_start(later, [])
+    await store.save_start(abandon(earlier, REVIEWER, OPENED), [])
+
+    latest = await store.get_latest_newsletter()
+    assert latest is not None and latest.newsletter_id == "n-2"
+
+
+async def test_save_newsletter_replaces_its_state(store: SqliteStore) -> None:
+    await store.save_start(make_newsletter(), [])
+    abandoned = abandon(make_newsletter(), REVIEWER, OPENED)
+
+    await store.save_newsletter(abandoned)
+
+    assert await store.get_open_newsletter() is None
+    assert await store.get_latest_newsletter() == abandoned
+
+
+async def test_mark_moved_records_the_move(store: SqliteStore) -> None:
+    await store.save_start(
+        make_newsletter(), [make_screened_email("m01"), make_screened_email("m02")]
+    )
+
+    await store.mark_moved("n-1", "m02")
+
+    emails = await store.list_screened_emails("n-1")
+    assert [(e.message_id, e.moved) for e in emails] == [("m01", False), ("m02", True)]
+
+
+async def test_a_message_can_be_feedback_for_two_newsletters(store: SqliteStore) -> None:
+    await store.record_feedback("n-1", make_message("r01"))
+    await store.record_feedback("n-2", make_message("r01"))
+
+    assert [m.message_id for m in await store.list_feedback("n-1")] == ["r01"]
+    assert [m.message_id for m in await store.list_feedback("n-2")] == ["r01"]
 
 
 async def test_feedback_is_recorded_once_per_message(store: SqliteStore, tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from pulse.entities.mail import (
     Mailbox,
     OutboundEmail,
     address_in,
+    destination,
     display_date,
     domain_in,
     header_value,
@@ -198,6 +199,25 @@ def test_passing_screened_email_keeps_its_fields_and_body() -> None:
     assert screened.received == datetime(2026, 9, 22, 15, 30, tzinfo=UTC)
     assert screened.has_attachments
     assert screened.body == "Tom Evans and I signed Northwind Retail on 22 September."
+
+
+def test_screened_email_starts_unmoved() -> None:
+    assert not screen(_sender_email(), ["example.org"], [], []).moved
+
+
+@pytest.mark.parametrize(
+    ("address", "extracted", "expected"),
+    [
+        ("priya.shah@example.org", True, "processed"),
+        ("priya.shah@example.org", False, None),
+        ("alex.morgan@example.com", False, "rejected"),
+    ],
+    ids=["extracted", "not_extracted", "rejected"],
+)
+def test_destination(address: str, extracted: bool, expected: str | None) -> None:
+    email = screen(_sender_email(address), ["example.org"], [], [])
+
+    assert destination(email, extracted) == expected
 
 
 def test_rejected_screened_email_drops_its_body() -> None:

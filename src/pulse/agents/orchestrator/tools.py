@@ -37,10 +37,16 @@ from pulse.entities.extracts import (
     restored,
     with_sources,
 )
-from pulse.entities.lifecycle import Newsletter, require_open
+from pulse.entities.lifecycle import Newsletter, require_latest, require_open
 from pulse.entities.mail import MessageId, ScreenedEmail
 from pulse.entities.store import Store
-from pulse.services.operations import Operations, PresentResult, StartResult
+from pulse.services.operations import (
+    ApproveResult,
+    NoticeResult,
+    Operations,
+    PresentResult,
+    StartResult,
+)
 
 # What a reviewer sees while each tool runs; a tool without a note shows the default.
 PROGRESS_NOTES = {
@@ -57,6 +63,9 @@ PROGRESS_NOTES = {
     "check": "Checking the draft",
     "judge": "Checking the draft against the facts",
     "present_draft": "Sending the draft to the reviewers",
+    "approve": "Recording your approval",
+    "withdraw_approval": "Withdrawing the approval",
+    "abandon": "Abandoning the newsletter",
 }
 _DEFAULT_NOTE = "Working on it"
 
@@ -67,7 +76,14 @@ def progress_note(tool: str) -> str:
 
 # Subjects and bodies stay with the extractor, the only agent that reads them.
 _LISTED_FIELDS = {"message_id", "sender_name", "received", "has_attachments", "rejection"}
-_SUMMARY_FIELDS = {"newsletter_id", "state", "latest_version", "approved_version", "send_time"}
+_SUMMARY_FIELDS = {
+    "newsletter_id",
+    "state",
+    "latest_version",
+    "approved_version",
+    "send_time",
+    "sent_at",
+}
 _CONSOLIDATED_FIELDS = {"item_id", "category", "source_message_ids"}
 
 
@@ -156,6 +172,9 @@ class Tools:
                 self.check,
                 self.judge,
                 self.present_draft,
+                self.approve,
+                self.withdraw_approval,
+                self.abandon,
             ]
         )
 
@@ -166,12 +185,13 @@ class Tools:
         return await self._operations.start_newsletter()
 
     async def get_newsletter(self) -> dict[str, Any] | str:
-        """Summarise the open newsletter: its state, versions presented, item and excluded
-        record counts, whether the items are up to date with the included records, whether the
-        working draft has changed since the latest version, approved version and send time."""
-        newsletter = await self._store.get_open_newsletter()
+        """Summarise the latest newsletter, open, sent or abandoned: its state, versions
+        presented, item and excluded record counts, whether the items are up to date with the
+        included records, whether the working draft has changed since the latest version,
+        approved version, send time and sent time."""
+        newsletter = await self._store.get_latest_newsletter()
         if newsletter is None:
-            return "No newsletter is open."
+            return "No newsletter exists yet."
         newsletter_id = newsletter.newsletter_id
         consolidated = await self._store.get_items(newsletter_id)
         records = await self._store.list_extract_records(newsletter_id)
@@ -187,9 +207,9 @@ class Tools:
 
     @_reported
     async def list_screened_emails(self) -> list[dict[str, Any]]:
-        """List the open newsletter's screened emails: message ID, sender name, received time,
+        """List the latest newsletter's screened emails: message ID, sender name, received time,
         attachment flag, pre-filter outcome and extract record, if there is one."""
-        newsletter = await self._open()
+        newsletter = await self._latest()
         emails = await self._store.list_screened_emails(newsletter.newsletter_id)
         records = {
             record.message_id: record.model_dump(mode="json")
@@ -278,9 +298,9 @@ class Tools:
 
     @_reported
     async def get_items(self) -> dict[str, Any]:
-        """Return the headline, the current items with their sender names and received times,
-        and the excluded records."""
-        newsletter = await self._open()
+        """Return the latest newsletter's headline, current items with their sender names and
+        received times, and excluded records."""
+        newsletter = await self._latest()
         consolidated, items, excluded = await self._items(newsletter.newsletter_id)
         return {
             "headline": consolidated.headline if consolidated else None,
@@ -313,14 +333,17 @@ class Tools:
 
     @_reported
     async def get_draft(self, version: int | None = None) -> dict[str, Any]:
-        """Return the working draft, or, when a version is named, that presented version."""
-        return (await self._draft_or_version(version)).model_dump(mode="json")
+        """Return the latest newsletter's working draft, or, when a version is named, that
+        presented version."""
+        newsletter = await self._latest()
+        return (await self._draft_or_version(newsletter, version)).model_dump(mode="json")
 
     @_reported
     async def show_draft(self, version: int | None = None) -> ShowResult:
-        """Show the reviewer the working draft, or, when a version is named, that presented
-        version. Pulse shows the newsletter after your reply, so never write it out yourself."""
-        await self._draft_or_version(version)
+        """Show the reviewer the latest newsletter's working draft, or, when a version is named,
+        that presented version. Pulse shows the newsletter after your reply, so never write it
+        out yourself."""
+        await self._draft_or_version(await self._latest(), version)
         return ShowResult(version=version)
 
     @_reported
@@ -337,8 +360,9 @@ class Tools:
         """Run the judge on the working draft, which says whether the intro and each entry are
         supported by the facts and feedback, and store its verdicts. Returns how many parts it
         judged and each unsupported claim."""
-        newsletter_id = (await self._open()).newsletter_id
-        content = (await self._draft_or_version(None)).content
+        newsletter = await self._open()
+        newsletter_id = newsletter.newsletter_id
+        content = (await self._draft_or_version(newsletter, None)).content
         _, items, _ = await self._items(newsletter_id)
         feedback = await self._store.list_feedback(newsletter_id)
         output = await run_specialist(
@@ -358,13 +382,34 @@ class Tools:
 
     @_reported
     async def present_draft(self) -> PresentResult:
-        """Save the working draft as the next version and email it to the reviewers. Returns
-        the version number."""
+        """Save the working draft as the next version and email it to the reviewers,
+        withdrawing any approval first. Returns the version number, whether an approval was
+        withdrawn and, if so, whether the reviewers were told."""
         return await self._operations.present_draft()
 
-    async def _draft_or_version(self, version: int | None) -> WriterOutput:
-        """The working draft, or the named version; refuse when there is none."""
-        newsletter_id = (await self._open()).newsletter_id
+    @_reported
+    async def approve(self, ctx: RunContext[ReviewerMessage], version: int) -> ApproveResult:
+        """Record the reviewer's approval of the named version, which must be the latest
+        presented version, and set its send time. Pulse checks that the reviewer's own message
+        starts with approve v{version}. Returns the version and the send time."""
+        # The caller and their words come from the run, never from the model.
+        return await self._operations.approve(version, ctx.deps.author, ctx.deps.text)
+
+    @_reported
+    async def withdraw_approval(self, ctx: RunContext[ReviewerMessage]) -> NoticeResult:
+        """Withdraw the approval, so the newsletter is not sent, and email the reviewers that
+        the send is cancelled. Returns whether that email was sent."""
+        return await self._operations.withdraw_approval(ctx.deps.author)
+
+    @_reported
+    async def abandon(self, ctx: RunContext[ReviewerMessage]) -> NoticeResult:
+        """Close the newsletter unsent, only when a reviewer explicitly asks, and email the
+        reviewers that it was abandoned. Returns whether that email was sent."""
+        return await self._operations.abandon(ctx.deps.author)
+
+    async def _draft_or_version(self, newsletter: Newsletter, version: int | None) -> WriterOutput:
+        """The newsletter's working draft, or the named version; refuse when there is none."""
+        newsletter_id = newsletter.newsletter_id
         if version is None:
             return require_draft(await self._store.get_draft(newsletter_id))
         presented = await self._store.get_version(newsletter_id, version)
@@ -388,3 +433,7 @@ class Tools:
 
     async def _open(self) -> Newsletter:
         return require_open(await self._store.get_open_newsletter())
+
+    async def _latest(self) -> Newsletter:
+        """The newsletter read tools work on, so reviewers can still ask about it once closed."""
+        return require_latest(await self._store.get_latest_newsletter())

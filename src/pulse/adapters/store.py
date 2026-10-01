@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS newsletters (
 );
 CREATE TABLE IF NOT EXISTS feedback (
     {", ".join(_FEEDBACK_COLUMNS)},
-    PRIMARY KEY (message_id)
+    PRIMARY KEY (newsletter_id, message_id)
 );
 CREATE TABLE IF NOT EXISTS screened_emails (
     {", ".join(_SCREENED_EMAIL_COLUMNS)},
@@ -81,6 +81,15 @@ class SqliteStore:
         row = await self._execute(lambda c: c.execute(sql, CLOSED_STATES).fetchone())
         return None if row is None else Newsletter.model_validate(dict(row))
 
+    async def get_latest_newsletter(self) -> Newsletter | None:
+        rows = await self._execute(lambda c: c.execute("SELECT * FROM newsletters").fetchall())
+        newsletters = [Newsletter.model_validate(dict(row)) for row in rows]
+        # Compared here, because stored times may carry different UTC offsets.
+        return max(newsletters, key=lambda n: n.opened_at, default=None)
+
+    async def save_newsletter(self, newsletter: Newsletter) -> None:
+        await self._execute(lambda connection: _save_newsletter(connection, newsletter))
+
     async def save_start(self, newsletter: Newsletter, emails: Sequence[ScreenedEmail]) -> None:
         newsletter_id = newsletter.newsletter_id
         rows = [{"newsletter_id": newsletter_id} | e.model_dump(mode="json") for e in emails]
@@ -98,6 +107,10 @@ class SqliteStore:
         emails = [ScreenedEmail.model_validate(dict(row)) for row in rows]
         # Sorted here, because stored times may carry different UTC offsets.
         return sorted(emails, key=lambda e: (e.received, e.message_id))
+
+    async def mark_moved(self, newsletter_id: str, message_id: MessageId) -> None:
+        sql = "UPDATE screened_emails SET moved = 1 WHERE newsletter_id = ? AND message_id = ?"
+        await self._execute(lambda connection: connection.execute(sql, (newsletter_id, message_id)))
 
     async def save_extract(
         self, newsletter_id: str, message_id: MessageId, output: ExtractorOutput

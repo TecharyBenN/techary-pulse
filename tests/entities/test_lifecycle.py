@@ -10,10 +10,12 @@ from pulse.entities.lifecycle import (
     Scheduled,
     abandon,
     approve,
+    cancel_approval,
     is_due,
     mark_sent,
     open_newsletter,
     present,
+    require_latest,
     require_open,
     send_time,
     start_send,
@@ -130,6 +132,10 @@ def test_withdraw_returns_to_in_review_and_clears_approval() -> None:
     assert withdrawn.send_time is None
 
 
+def test_cancel_approval_returns_to_in_review_and_clears_approval() -> None:
+    assert cancel_approval(_approved()) == withdraw(_approved(), REVIEWER)
+
+
 @pytest.mark.parametrize("newsletter", [_in_review(), _approved()], ids=["in_review", "approved"])
 def test_abandon_closes_newsletter(newsletter: Newsletter) -> None:
     abandoned = abandon(newsletter, REVIEWER, NOW)
@@ -183,6 +189,14 @@ def test_withdraw_refuses(newsletter: Newsletter) -> None:
 def test_abandon_refuses(newsletter: Newsletter) -> None:
     with pytest.raises(Refusal):
         abandon(newsletter, REVIEWER, NOW)
+
+
+@pytest.mark.parametrize(
+    "newsletter", [*UNCHANGEABLE, _in_review()], ids=[*UNCHANGEABLE_IDS, "in_review"]
+)
+def test_cancel_approval_refuses(newsletter: Newsletter) -> None:
+    with pytest.raises(Refusal):
+        cancel_approval(newsletter)
 
 
 def test_withdraw_needs_a_reviewer() -> None:
@@ -374,3 +388,12 @@ def test_require_open_refuses_without_an_open_newsletter() -> None:
     assert require_open(newsletter) == newsletter
     with pytest.raises(Refusal, match="no newsletter is open"):
         require_open(None)
+
+
+def test_require_latest_refuses_before_any_newsletter_exists() -> None:
+    with pytest.raises(Refusal, match="no newsletter exists yet"):
+        require_latest(None)
+
+
+def test_require_latest_accepts_a_closed_newsletter() -> None:
+    assert require_latest(_sent()) == _sent()

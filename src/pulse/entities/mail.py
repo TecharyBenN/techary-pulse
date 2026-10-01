@@ -17,6 +17,8 @@ MessageId = str
 RejectionReason = Literal[
     "sender_domain", "sender_not_allowed", "sensitivity_label", "automatic_reply"
 ]
+# The folder delivery moves a screened email to once its newsletter is sent.
+Destination = Literal["processed", "rejected"]
 
 # Label IDs are GUIDs, so the first underscore after the ID starts the property name.
 _LABEL_ENTRY = re.compile(r"MSIP_Label_([^_=]+)_([^=]+)=(.*)")
@@ -59,6 +61,8 @@ class ScreenedEmail(Email):
     rejection: RejectionReason | None
     # Kept only when the email passed the pre-filter, so rejected content is never stored.
     body: str | None
+    # Whether delivery has moved it out of the inbox.
+    moved: bool
 
 
 class Mailbox(Protocol):
@@ -120,7 +124,15 @@ def screen(
         **email.model_dump(include=set(Email.model_fields)),
         rejection=rejection,
         body=email.body if rejection is None else None,
+        moved=False,
     )
+
+
+def destination(email: ScreenedEmail, extracted: bool) -> Destination | None:
+    """Where a sent newsletter's screened email goes; one not extracted stays pending."""
+    if email.rejection is not None:
+        return "rejected"
+    return "processed" if extracted else None
 
 
 def display_date(moment: datetime, timezone: ZoneInfo) -> str:

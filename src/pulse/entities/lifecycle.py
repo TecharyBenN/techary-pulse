@@ -84,6 +84,13 @@ def require_open(newsletter: Newsletter | None) -> Newsletter:
     return newsletter
 
 
+def require_latest(newsletter: Newsletter | None) -> Newsletter:
+    """The latest newsletter, open or closed, as the store returns it; refuse when there is none."""
+    if newsletter is None:
+        raise Refusal("no newsletter exists yet")
+    return newsletter
+
+
 def require_reviewer(caller: str | None) -> str:
     """`caller` is the reviewer the channel verified, or None in a run with no reviewer."""
     if caller is None:
@@ -142,6 +149,11 @@ def approve(
 
 def withdraw(newsletter: Newsletter, caller: str | None) -> Newsletter:
     require_reviewer(caller)
+    return cancel_approval(newsletter)
+
+
+def cancel_approval(newsletter: Newsletter) -> Newsletter:
+    """Return an approved newsletter to `in_review`, as a withdrawal or a new version does."""
     _require_changeable(newsletter)
     if newsletter.state != "approved":
         raise Refusal("the newsletter is not approved")

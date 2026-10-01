@@ -11,6 +11,9 @@ from pulse.entities.extracts import Consolidation, ExtractorOutput, ExtractRecor
 from pulse.entities.lifecycle import Newsletter
 from pulse.entities.mail import MessageId, ScreenedEmail
 
+# The tag on delivery's note in a newsletter's history, in place of a reviewer message ID.
+DELIVERY_NOTE = "delivery"
+
 
 class HistoryRow(Entity):
     """One saved model request or response, tagged with the message whose run produced it."""
@@ -24,6 +27,14 @@ class Store(Protocol):
         """The newsletter that is neither sent nor abandoned, if there is one."""
         ...
 
+    async def get_latest_newsletter(self) -> Newsletter | None:
+        """The newsletter opened most recently, open or closed, if there is one."""
+        ...
+
+    async def save_newsletter(self, newsletter: Newsletter) -> None:
+        """Save a newsletter's state, replacing what was saved before."""
+        ...
+
     async def save_start(self, newsletter: Newsletter, emails: Sequence[ScreenedEmail]) -> None:
         """Save a newsletter opened or updated by `start_newsletter`, with its new screened emails.
 
@@ -33,6 +44,10 @@ class Store(Protocol):
 
     async def list_screened_emails(self, newsletter_id: str) -> list[ScreenedEmail]:
         """The newsletter's screened emails, sorted by received time, then message ID."""
+        ...
+
+    async def mark_moved(self, newsletter_id: str, message_id: MessageId) -> None:
+        """Record that delivery moved the screened email out of the inbox."""
         ...
 
     async def save_extract(
@@ -78,7 +93,8 @@ class Store(Protocol):
     async def get_version(self, newsletter_id: str, version: int) -> Version | None: ...
 
     async def record_feedback(self, newsletter_id: str, message: ReviewerMessage) -> None:
-        """Record a reviewer message; a message ID already recorded is left as it is."""
+        """Record a reviewer message for the newsletter; a message ID already recorded for it is
+        left as it is."""
         ...
 
     async def list_feedback(self, newsletter_id: str) -> list[ReviewerMessage]:

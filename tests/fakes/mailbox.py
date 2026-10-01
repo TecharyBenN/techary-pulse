@@ -1,6 +1,7 @@
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from pulse.entities.errors import MailboxError
 from pulse.entities.mail import Body, InboundEmail, OutboundEmail
 
 
@@ -20,6 +21,8 @@ class FakeMailbox:
         self.folders: dict[str, list[InboundEmail]] = {}
         self.sent: list[OutboundEmail] = []
         self.replies: list[Reply] = []
+        # How many of the next sends and replies fail, as a Graph error would.
+        self.failures = 0
 
     async def list_inbox(self) -> list[InboundEmail]:
         return sorted(self.inbox, key=lambda email: (email.received, email.message_id))
@@ -30,10 +33,17 @@ class FakeMailbox:
         self.folders.setdefault(folder, []).append(email)
 
     async def send(self, email: OutboundEmail) -> str:
+        self._fail()
         self.sent.append(email)
         return f"sent-{len(self.sent)}"
 
     async def reply(self, message_id: str, to: Sequence[str], body: Body) -> str:
+        self._fail()
         reply_id = f"reply-{len(self.replies) + 1}"
         self.replies.append(Reply(message_id, tuple(to), body, reply_id))
         return reply_id
+
+    def _fail(self) -> None:
+        if self.failures:
+            self.failures -= 1
+            raise MailboxError("Graph returned HTTP 503")

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import timedelta
 from pathlib import Path
@@ -26,6 +27,7 @@ from pulse.agents.writer.agent import build_writer
 from pulse.entities.content import Entry, JudgeOutput
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.lifecycle import start_send
+from pulse.services.operations import ApproveResult, NoticeResult
 from tests.emails import (
     CORPUS_ITEM_SOURCES,
     CORPUS_OUTCOMES,
@@ -128,6 +130,9 @@ async def test_toolset_offers_each_tool(store: SqliteStore) -> None:
         "check",
         "judge",
         "present_draft",
+        "approve",
+        "withdraw_approval",
+        "abandon",
     }
 
 
@@ -156,8 +161,8 @@ async def test_start_newsletter_refuses_once_the_send_has_started(store: SqliteS
     assert await tools.start_newsletter() == "Refused: the send has started"
 
 
-async def test_get_newsletter_without_an_open_newsletter(store: SqliteStore) -> None:
-    assert await _tools(store).get_newsletter() == "No newsletter is open."
+async def test_get_newsletter_before_any_newsletter_exists(store: SqliteStore) -> None:
+    assert await _tools(store).get_newsletter() == "No newsletter exists yet."
 
 
 async def test_get_newsletter_summarises_the_open_newsletter(store: SqliteStore) -> None:
@@ -172,6 +177,7 @@ async def test_get_newsletter_summarises_the_open_newsletter(store: SqliteStore)
         "latest_version": None,
         "approved_version": None,
         "send_time": None,
+        "sent_at": None,
         "items": 0,
         # m01 is included but not yet consolidated.
         "items_up_to_date": False,
@@ -209,15 +215,15 @@ async def test_list_screened_emails_never_returns_subjects_or_bodies(store: Sqli
     assert "Nothing to report." not in text
 
 
-async def test_tools_refuse_without_an_open_newsletter(store: SqliteStore) -> None:
+async def test_tools_refuse_before_any_newsletter_exists(store: SqliteStore) -> None:
     tools = _tools(store)
 
-    assert await tools.list_screened_emails() == "Refused: no newsletter is open"
+    assert await tools.list_screened_emails() == "Refused: no newsletter exists yet"
     assert await tools.extract(["m01"]) == "Refused: no newsletter is open"
     assert await tools.consolidate(["m01"]) == "Refused: no newsletter is open"
-    assert await tools.get_items() == "Refused: no newsletter is open"
+    assert await tools.get_items() == "Refused: no newsletter exists yet"
     assert await tools.write("Write the first draft.") == "Refused: no newsletter is open"
-    assert await tools.get_draft() == "Refused: no newsletter is open"
+    assert await tools.get_draft() == "Refused: no newsletter exists yet"
     assert await tools.present_draft() == "Refused: no newsletter is open"
 
 
@@ -326,7 +332,11 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
         text_response("Done."),
     )
     orchestrator = Orchestrator(
-        build_agent(FunctionModel(model), tools.toolset()), store, 40, timedelta(minutes=15)
+        build_agent(FunctionModel(model), tools.toolset()),
+        store,
+        40,
+        timedelta(minutes=15),
+        asyncio.Lock(),
     )
 
     reply = await orchestrator.handle(make_message(text="Please draft a newsletter."))
@@ -647,3 +657,90 @@ async def test_restore_refuses_without_an_open_newsletter(store: SqliteStore) ->
 
 def _call(tool: str, args: dict[str, object] | None = None) -> ModelResponse:
     return ModelResponse(parts=[ToolCallPart(tool, args or {})])
+
+
+async def _presented(tools: Tools) -> str:
+    """Start a newsletter and present version 1, returning the newsletter ID."""
+    newsletter_id = await _consolidated(tools)
+    await tools.write("Write the first draft.")
+    await tools.present_draft()
+    return newsletter_id
+
+
+async def test_approve_takes_the_reviewer_and_message_from_the_run(store: SqliteStore) -> None:
+    tools = _tools(store)
+    newsletter_id = await _presented(tools)
+
+    result = await tools.approve(_run_for(make_message(text="Approve v1\nThanks!")), 1)
+
+    assert isinstance(result, ApproveResult)
+    assert result.version == 1
+    newsletter = await store.get_latest_newsletter()
+    assert newsletter is not None
+    assert (newsletter.newsletter_id, newsletter.state, newsletter.approver) == (
+        newsletter_id,
+        "approved",
+        REVIEWER,
+    )
+
+
+async def test_approve_refuses_without_the_reviewers_own_words(store: SqliteStore) -> None:
+    tools = _tools(store)
+    await _presented(tools)
+
+    result = await tools.approve(_run_for(make_message(text="Looks good to me")), 1)
+
+    assert result == "Refused: the reviewer's message does not start with approve v1"
+
+
+async def test_withdraw_approval_returns_the_newsletter_to_review(store: SqliteStore) -> None:
+    conversation = FakeMailbox()
+    tools = _tools(store, conversation=conversation)
+    await _presented(tools)
+    await tools.approve(_run_for(make_message(text="approve v1")), 1)
+
+    assert await tools.withdraw_approval(_run_for(make_message())) == NoticeResult(notice_sent=True)
+    assert await tools.withdraw_approval(_run_for(make_message())) == (
+        "Refused: the newsletter is not approved"
+    )
+    summary = await tools.get_newsletter()
+    assert isinstance(summary, dict)
+    assert (summary["state"], summary["approved_version"]) == ("in_review", None)
+
+
+async def test_abandon_closes_the_newsletter(store: SqliteStore) -> None:
+    tools = _tools(store)
+    await _presented(tools)
+
+    assert await tools.abandon(_run_for(make_message())) == NoticeResult(notice_sent=True)
+    assert await tools.abandon(_run_for(make_message())) == "Refused: no newsletter is open"
+
+
+async def test_read_tools_still_work_once_the_newsletter_is_closed(store: SqliteStore) -> None:
+    tools = _tools(store)
+    await _presented(tools)
+    await tools.abandon(_run_for(make_message()))
+
+    summary = await tools.get_newsletter()
+    assert isinstance(summary, dict) and summary["state"] == "abandoned"
+    assert isinstance(await tools.list_screened_emails(), list)
+    assert isinstance(await tools.get_items(), dict)
+    assert isinstance(await tools.get_draft(1), dict)
+    assert isinstance(await tools.get_draft(), dict)
+    assert await tools.show_draft(1) == ShowResult(version=1)
+    assert isinstance(await tools.check(), dict)
+
+
+async def test_action_tools_refuse_once_the_newsletter_is_closed(store: SqliteStore) -> None:
+    tools = _tools(store)
+    await _presented(tools)
+    await tools.abandon(_run_for(make_message()))
+    refused = "Refused: no newsletter is open"
+
+    assert await tools.extract(["m01"]) == refused
+    assert await tools.consolidate(["m01"]) == refused
+    assert await tools.write("Shorten the intro.") == refused
+    assert await tools.judge() == refused
+    assert await tools.present_draft() == refused
+    assert await tools.approve(_run_for(make_message(text="approve v1")), 1) == refused
+    assert await tools.withdraw_approval(_run_for(make_message())) == refused

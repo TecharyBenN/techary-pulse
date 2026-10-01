@@ -20,14 +20,15 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from pulse.adapters.store import SqliteStore
 from pulse.agents.orchestrator.agent import user_prompt
-from pulse.agents.orchestrator.run import Orchestrator
+from pulse.agents.orchestrator.run import Orchestrator, history_note
 from pulse.entities.content import Version, version_of
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import RunFailed
-from pulse.entities.lifecycle import present
-from pulse.entities.store import HistoryRow
+from pulse.entities.lifecycle import abandon, open_newsletter, present
+from pulse.entities.store import DELIVERY_NOTE, HistoryRow
 from tests.emails import make_draft
 from tests.fakes.models import (
+    ModelFunction,
     Tools,
     caller_call,
     gateway_error,
@@ -39,7 +40,7 @@ from tests.fakes.models import (
     show_call,
     text_response,
 )
-from tests.messages import OPENED, make_message, make_newsletter
+from tests.messages import OPENED, REVIEWER, make_message, make_newsletter
 
 pytestmark = pytest.mark.anyio
 
@@ -368,7 +369,7 @@ async def test_exchange_that_opens_a_newsletter_becomes_its_history(
     agent = Agent(
         FunctionModel(model), deps_type=ReviewerMessage, output_type=str, tools=[opening_tool]
     )
-    orchestrator = Orchestrator(agent, store, 40, timedelta(minutes=15))
+    orchestrator = Orchestrator(agent, store, 40, timedelta(minutes=15), asyncio.Lock())
 
     reply = (await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))).text
 
@@ -513,3 +514,151 @@ async def test_reply_carries_the_working_draft_the_run_showed(store: SqliteStore
     reply = await make_orchestrator(store, model, Tools()).handle(make_message())
 
     assert (reply.text, reply.newsletter) == ("Here is the draft.", shown.content)
+
+
+async def _feedback(store: SqliteStore, newsletter_id: str) -> list[str]:
+    return [message.message_id for message in await store.list_feedback(newsletter_id)]
+
+
+async def _owners(store: SqliteStore, newsletter_id: str) -> list[str]:
+    return [row.message_id for row in await store.load_history(newsletter_id)]
+
+
+def _opening(store: SqliteStore, model: ModelFunction) -> Orchestrator:
+    """An orchestrator whose one tool opens newsletter n-2, as start_newsletter would."""
+
+    async def opening_tool() -> str:
+        await store.save_start(open_newsletter("n-2", OPENED + timedelta(days=7)), [])
+        return "opened"
+
+    agent = Agent(
+        FunctionModel(model), deps_type=ReviewerMessage, output_type=str, tools=[opening_tool]
+    )
+    return Orchestrator(agent, store, 40, timedelta(minutes=15), asyncio.Lock())
+
+
+def _opening_call() -> ModelResponse:
+    return ModelResponse(parts=[ToolCallPart("opening_tool", {})])
+
+
+async def _close(store: SqliteStore) -> None:
+    await store.save_newsletter(abandon(make_newsletter(), REVIEWER, OPENED + timedelta(days=1)))
+
+
+async def test_the_conversation_continues_after_the_newsletter_closes(
+    store: SqliteStore,
+) -> None:
+    await make_orchestrator(store, reply_with("Noted.")).handle(make_message("r01"))
+    await _close(store)
+    seen: list[list[ModelMessage]] = []
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        return text_response("It was abandoned.")
+
+    reply = await make_orchestrator(store, model).handle(make_message("r02", text="Is it done?"))
+
+    assert reply.text == "It was abandoned."
+    assert _prompts(seen[0]) == [
+        user_prompt(make_message("r01")),
+        user_prompt(make_message("r02", text="Is it done?")),
+    ]
+    assert await _owners(store, "n-1") == ["r01", "r01", "r02", "r02"]
+    assert await _feedback(store, "n-1") == ["r01", "r02"]
+
+
+async def test_a_run_that_opens_a_newsletter_moves_its_exchange_to_it(
+    store: SqliteStore,
+) -> None:
+    await make_orchestrator(store, reply_with("Noted.")).handle(make_message("r01"))
+    await _close(store)
+    message = make_message("r02", text="Please draft a new newsletter.")
+
+    reply = await _opening(store, responses(_opening_call(), text_response("Started."))).handle(
+        message
+    )
+
+    assert reply.text == "Started."
+    history = [_load(row) for row in await store.load_history("n-2")]
+    assert await _owners(store, "n-2") == ["r02"] * 4
+    # The new newsletter's history is this run alone, from its prompt.
+    assert _prompts(history) == [user_prompt(message)]
+    assert await _feedback(store, "n-2") == ["r02"]
+    # The earlier newsletter keeps its own exchange, with the run's steps before the opening.
+    assert await _owners(store, "n-1") == ["r01", "r01", "r02", "r02"]
+
+
+async def test_a_resumed_run_that_opens_a_newsletter_moves_its_own_exchange(
+    store: SqliteStore,
+) -> None:
+    first = make_message("r01", text="Please draft a newsletter.")
+    await store.record_feedback("n-1", first)
+    await _save(store, ModelRequest(parts=[UserPromptPart(user_prompt(first))]), _opening_call())
+    await _close(store)
+    model = responses(text_response("Started."), text_response("Hello again."))
+
+    reply = await _opening(store, model).handle(make_message("r02", text="Hello?"))
+
+    assert reply.text == "Hello again."
+    assert await _owners(store, "n-2") == ["r01"] * 4 + ["r02"] * 2
+    assert await _feedback(store, "n-2") == ["r01", "r02"]
+    history = [_load(row) for row in await store.load_history("n-2")]
+    assert _prompts(history) == [
+        user_prompt(first),
+        user_prompt(make_message("r02", text="Hello?")),
+    ]
+
+
+async def test_a_retry_after_a_crash_following_the_opening_runs_in_the_new_newsletter(
+    store: SqliteStore,
+) -> None:
+    await _close(store)
+    message = make_message("r01", text="Please draft a new newsletter.")
+    with pytest.raises(RunFailed):
+        await _opening(store, responses(_opening_call(), gateway_error())).handle(message)
+
+    reply = await _opening(store, reply_with("Done.")).handle(message)
+
+    assert reply.text == "Done."
+    assert await _feedback(store, "n-2") == ["r01"]
+    assert _prompts([_load(row) for row in await store.load_history("n-2")]) == [
+        user_prompt(message)
+    ]
+
+
+async def test_the_delivery_note_joins_the_next_prompt(store: SqliteStore) -> None:
+    await make_orchestrator(store, reply_with("Noted.")).handle(make_message("r01"))
+    note = "Pulse sent version 1 to all staff on 28 September 2026 at 09:00."
+    await store.append_history("n-1", DELIVERY_NOTE, history_note(note))
+    seen: list[list[ModelMessage]] = []
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        return text_response("Yes, it went out.")
+
+    reply = await make_orchestrator(store, model).handle(make_message("r02", text="Sent?"))
+
+    assert reply.text == "Yes, it went out."
+    # The note is not an unfinished run, so nothing is resumed and it reaches the model once.
+    assert len(seen) == 1
+    *_, last = seen[0]
+    assert isinstance(last, ModelRequest)
+    assert [p.content for p in last.parts if isinstance(p, UserPromptPart)] == [
+        note,
+        user_prompt(make_message("r02", text="Sent?")),
+    ]
+
+
+async def test_the_delivery_note_after_an_unfinished_run_is_not_resumed(
+    store: SqliteStore,
+) -> None:
+    first = make_message("r01")
+    await store.record_feedback("n-1", first)
+    await _save(store, ModelRequest(parts=[UserPromptPart(user_prompt(first))]), ping_call())
+    await store.append_history("n-1", DELIVERY_NOTE, history_note("Pulse sent version 1."))
+    tools = Tools()
+
+    reply = await make_orchestrator(store, reply_with("Done."), tools).handle(make_message("r02"))
+
+    assert reply.text == "Done."
+    assert tools.calls == 0

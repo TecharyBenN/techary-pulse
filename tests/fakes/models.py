@@ -1,5 +1,6 @@
 """Stand-in models for the orchestrator and the extractor, and a test-only tool."""
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
@@ -57,6 +58,7 @@ def make_orchestrator(
     tools: Tools | None = None,
     max_tool_calls: int = 40,
     max_run_time: timedelta = timedelta(minutes=15),
+    lock: asyncio.Lock | None = None,
 ) -> Orchestrator:
     agent = Agent(
         FunctionModel(model),
@@ -65,7 +67,7 @@ def make_orchestrator(
         instructions=INSTRUCTIONS,
         tools=[tools.ping, tools.caller, tools.present_draft, tools.show_draft] if tools else [],
     )
-    return Orchestrator(agent, store, max_tool_calls, max_run_time)
+    return Orchestrator(agent, store, max_tool_calls, max_run_time, lock or asyncio.Lock())
 
 
 def text_response(text: str) -> ModelResponse:

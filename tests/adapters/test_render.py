@@ -114,6 +114,19 @@ def test_reviewer_email_matches_its_golden_file() -> None:
     _assert_golden("reviewer_email.html", make_renderer().reviewer_email(VERSION, review))
 
 
+def test_notice_matches_its_golden_file() -> None:
+    _assert_golden(
+        "notice.html", make_renderer().notice("Sent", "Version 2 was sent to all staff.")
+    )
+
+
+def test_notice_text_is_escaped() -> None:
+    html = make_renderer().notice("<b>Sent</b>", "<script>alert(1)</script>")
+
+    assert "<script>" not in html and "<b>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
 def test_markdown_newsletter_matches_its_golden_file() -> None:
     _assert_golden("newsletter.md", make_renderer().markdown(CONTENT))
 

@@ -1,5 +1,6 @@
 """Runs the orchestrator through the dev gateway, using ./config.yaml and the keys in .env."""
 
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -38,6 +39,7 @@ async def test_a_reviewer_message_gets_a_reply(tmp_path: Path) -> None:
         FakeMailbox(),
         os.environ[config.llm.api_key_env],
         SystemClock(),
+        asyncio.Lock(),
     )
 
     reply = (await orchestrator.handle(make_message(text="Hello, what can you do for me?"))).text
@@ -69,6 +71,7 @@ async def test_the_corpus_is_extracted_and_consolidated(tmp_path: Path) -> None:
             FakeMailbox(),
             os.environ[config.llm.api_key_env],
             SystemClock(),
+            asyncio.Lock(),
         )
 
         drafted = (
@@ -112,6 +115,7 @@ async def test_version_1_and_a_revised_version_2_reach_the_reviewers(tmp_path: P
             graph_mailbox(config, client, config.mailboxes.conversation),
             os.environ[config.llm.api_key_env],
             SystemClock(),
+            asyncio.Lock(),
         )
 
         first = await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))
@@ -160,6 +164,7 @@ async def test_a_failing_check_is_fixed_or_listed_in_the_version(tmp_path: Path)
             graph_mailbox(config, client, config.mailboxes.conversation),
             os.environ[config.llm.api_key_env],
             SystemClock(),
+            asyncio.Lock(),
         )
 
         await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))

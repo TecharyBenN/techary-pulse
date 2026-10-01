@@ -96,6 +96,7 @@ src/pulse/
 │   └── judge/         agent.py and prompt.md
 ├── services/          Code the tools and the scheduler call
 │   ├── operations.py  Start, check, present, approve, withdraw and abandon: state change, save, email
+│   ├── mail.py        Emails to reviewers in the newsletter's email thread, and operator alerts
 │   └── delivery.py    Sends an approved newsletter, moves its screened emails, recovers a partial send
 ├── adapters/          Microsoft Graph mail, the AI gateway, the SQLite store, the system clock,
 │                      bearer token verification, and the newsletter in HTML and Markdown
@@ -111,7 +112,7 @@ tests/                 Mirrors src/pulse/; fakes/ holds the fake mailbox, fake G
 
 ## Newsletters
 
-A newsletter is one conversation with the reviewers, together with the screened emails it draws on and the draft versions presented in it, from when it is opened until it is sent or abandoned. A newsletter that is not sent or abandoned is open. At most one newsletter is open at a time. The newsletter ID is also the `conversation_id` of its conversation history.
+A newsletter is one conversation with the reviewers, together with the screened emails it draws on and the draft versions presented in it, from when it is opened until it is sent or abandoned. A newsletter that is not sent or abandoned is open. At most one newsletter is open at a time. The newsletter ID is also the `conversation_id` of its conversation history. The latest newsletter is the one opened most recently, whether open or closed; its conversation continues after it closes, so reviewers can still ask about it, until the next newsletter opens.
 
 ```mermaid
 stateDiagram-v2
@@ -164,7 +165,7 @@ Approval applies to one version. The newsletter's send time is set when a versio
 - with `send.mode: on_approval`, it is the approval time;
 - with `send.mode: scheduled`, it is the newsletter's send slot: the first occurrence of `send.day` at `send.time`, in `timezone`, after the newsletter was opened. If the send slot has already passed when the version is approved, the send time is the approval time.
 
-Presenting a new version of an approved newsletter withdraws the approval first. An approval can be withdrawn, and a newsletter abandoned, until `send_started` is recorded. On a withdrawal, the approval and send time are cleared and Pulse emails the reviewers that the send is cancelled.
+Presenting a new version of an approved newsletter withdraws the approval first. An approval can be withdrawn, and a newsletter abandoned, until `send_started` is recorded. On a withdrawal, including one made by presenting a new version, the approval and send time are cleared and Pulse emails the reviewers that the send is cancelled.
 
 ### Starting a newsletter
 
@@ -180,10 +181,10 @@ A run started by the start instruction has no reviewer present and no channel to
 
 Every channel passes each incoming message to one entry point, which returns the reply, or no reply, and sends progress notes while the run works. Each orchestrator run:
 
-1. takes the run lock, so runs are processed one at a time, in the order their messages arrived;
-2. records a reviewer message as feedback for the open newsletter, once per message ID;
-3. loads the open newsletter's stored conversation history;
-4. if the history ends in an unfinished run, one whose last saved step is a request or a response with tool calls not yet run, resumes it from its saved steps with no new prompt. When the unfinished run belongs to this message, as when a failed message is retried, the resumed run is this message's run. Otherwise the resumed run's reply is saved but not delivered, and the run continues with step 5;
+1. takes the run lock, so runs are processed one at a time, in the order their messages arrived; delivery takes the same lock, so a run and a delivery never change a newsletter at the same time;
+2. records a reviewer message as feedback for the latest newsletter, once per message ID;
+3. loads the latest newsletter's stored conversation history;
+4. if the history ends in an unfinished run, one whose last saved step is a request, other than delivery's note, or a response with tool calls not yet run, resumes it from its saved steps with no new prompt. When the unfinished run belongs to this message, as when a failed message is retried, the resumed run is this message's run. Otherwise the resumed run's reply is saved but not delivered, and the run continues with step 5;
 5. runs the orchestrator with the history as `message_history` and the incoming message as the user prompt: a reviewer message with its author and channel, or the start instruction. It iterates the run with Pydantic AI's `agent.iter` and saves each model request, response and tool result to the store as it completes, serialised with `ModelMessagesTypeAdapter` and tagged with the ID of the message whose run produced it;
 6. delivers the reply through the channel the message arrived on; a run started by the start instruction has no reply to deliver;
 7. releases the lock.
@@ -192,7 +193,7 @@ Because every completed step is saved, the history always matches the store. A r
 
 When the history is loaded, tool results from before the latest presented version are replaced by a one-line placeholder naming the tool. Reviewer messages and the orchestrator's replies are kept in full.
 
-A reviewer message received when no newsletter is open starts a run with an empty history. If the run calls `start_newsletter`, the exchange becomes the new newsletter's history.
+A reviewer message received before any newsletter exists starts a run with an empty history. When a run opens a newsletter, the run's steps so far are saved to the new newsletter's history, and its message becomes the new newsletter's feedback; from then on the run's steps are saved there. The latest newsletter's earlier history stays with that newsletter.
 
 The orchestrator's rules are set with `instructions`, which Pydantic AI sends with every request rather than storing in the history. Reviewer messages reach the orchestrator only as user content, and staff emails only as extract records in tool results; neither ever enters its instructions. Each run may make at most `orchestrator.max_tool_calls` tool calls and last at most `orchestrator.max_run_minutes` minutes.
 
@@ -208,7 +209,7 @@ The orchestrator's rules are set with `instructions`, which Pydantic AI sends wi
 | `write` | Specialist | Runs the writer on the items, the excluded records, all feedback, the orchestrator's instruction and, when revising, the working draft, and stores the result as the working draft. A call is a revision whenever a working draft exists. Returns the included IDs, the changes, the feedback not applied and whether the working draft has changed since the latest version. |
 | `judge` | Specialist | Runs the judge on the working draft and stores its verdicts. |
 | `check` | Read | Runs the code checks in [draft checks](#draft-checks) on the working draft and returns every failure. |
-| `get_newsletter` | Read | Returns a summary: state, versions presented, item and excluded record counts, whether the items are up to date (built from exactly the included records), whether the working draft has changed since the latest version, approved version and send time. |
+| `get_newsletter` | Read | Returns a summary of the latest newsletter: state, versions presented, item and excluded record counts, whether the items are up to date (built from exactly the included records), whether the working draft has changed since the latest version, approved version, send time and sent time. |
 | `get_draft` | Read | Returns the working draft, or a named version. |
 | `show_draft` | Read | Shows the reviewer the working draft, or a named version: the channel shows it after the reply, rendered by code, as when a version is presented. |
 | `get_items` | Read | Returns the headline, the current items with the sender names and received times of their source emails, and the excluded records. |
@@ -217,7 +218,7 @@ The orchestrator's rules are set with `instructions`, which Pydantic AI sends wi
 | `withdraw_approval` | Action | Returns an approved newsletter to `in_review`. |
 | `abandon` | Action | Closes the newsletter unsent and emails the reviewers that it was abandoned. |
 
-Tools return IDs, counts and short summaries, with totals wherever the orchestrator would otherwise have to count; `get_draft` and `get_items` return detail when the orchestrator needs it.
+Read tools work on the latest newsletter, so reviewers can still ask about it once it is sent or abandoned; every other tool works on the open newsletter. Tools return IDs, counts and short summaries, with totals wherever the orchestrator would otherwise have to count; `get_draft` and `get_items` return detail when the orchestrator needs it.
 
 Every tool checks its preconditions in code, records its effect in the store as it happens, and returns the reason when it refuses:
 
@@ -235,6 +236,8 @@ The orchestrator's instructions apply these rules:
 - before acting on a message, call `get_newsletter`, and treat the store as the record of what has already been done;
 - on the start instruction, or when a reviewer asks for a newsletter, call `start_newsletter`, then present a draft built from the newsletter's screened emails;
 - treat a message that asks for changes as feedback, even if it also mentions approval: revise the draft, present the new version and ask the reviewer to confirm approval of it;
+- when a message asks for any change to an approved newsletter, call `withdraw_approval` first, then ask for clarification or revise, so the old version is not sent while the change is in progress;
+- once a new newsletter opens, treat feedback given earlier in the conversation as belonging to the previous newsletter;
 - fix a failing check or unsupported claim with the smallest change that corrects it, such as revising only the affected entries;
 - accept a check failure that cannot be corrected without losing content; the review section lists it;
 - approve only the latest presented version, and name the version approved in the reply;
@@ -253,7 +256,7 @@ The reply may use Markdown. When a run presents a version or calls `show_draft`,
 
 ## Channels
 
-Both channels feed the open newsletter's single conversation.
+Both channels feed the latest newsletter's single conversation.
 
 | Channel | Receiving | Identifying the sender | Replying |
 | --- | --- | --- | --- |
@@ -417,9 +420,12 @@ To send, delivery:
 2. records `send_started`;
 3. renders the approved version without the review section, with the subject built from `subject_template`;
 4. sends it from the conversation mailbox to `all_staff`, with `replyTo` set to the submissions mailbox, so staff replies arrive as pending emails;
-5. marks the newsletter `sent` and emails `reviewers` a confirmation;
-6. moves the newsletter's screened emails as described in [screened emails](#screened-emails), recording each move;
-7. appends a note to the conversation history that the newsletter was sent.
+5. marks the newsletter `sent`;
+6. appends a note to the conversation history that the newsletter was sent, as a request holding one line from Pulse, tagged `delivery` in place of a message ID, so the orchestrator knows of the send when the conversation continues;
+7. emails `reviewers` a confirmation, the `Sent` notice;
+8. moves the newsletter's screened emails as described in [screened emails](#screened-emails), recording each move.
+
+Delivery holds the run lock from the approval re-check to the last move, so a withdrawal, an abandonment or a new version either takes effect before `send_started` is recorded or is refused because the send has started. A send due while a run is in progress waits for the run to finish.
 
 If delivery finds a newsletter with `send_started` recorded but not marked `sent`, it does not send it again: it sends an operator alert to check the conversation mailbox's Sent Items.
 
@@ -438,7 +444,7 @@ The store is a SQLite database at `state.db_path`, on the mounted volume. Every 
 | `drafts` | Each newsletter's working draft, and the judge's latest verdicts on it |
 | `versions` | Each presented version's content, changes, feedback not applied, judge verdicts, check results and creation time |
 | `feedback` | Each reviewer message: message ID, newsletter, reviewer, channel, text and received time |
-| `messages` | Each orchestrator run's model requests, responses and tool results, serialised, in order, by newsletter, each with the ID of the message whose run produced it |
+| `messages` | Each orchestrator run's model requests, responses and tool results, serialised, in order, by newsletter, each with the ID of the message whose run produced it, and delivery's note tagged `delivery` |
 | `handled_messages` | IDs of conversation mailbox messages seen, each with its attempt count and whether it has been handled |
 
 Pulse deletes closed newsletters older than `retention_days`.
@@ -505,6 +511,7 @@ Deployment requirements, documented in the README and outside the codebase:
 | --- | --- |
 | Specialist agent, invalid response after one retry | The tool returns the error to the orchestrator, which reports it or tries another approach. |
 | Orchestrator run, gateway error, tool error or run limit reached | The history holds every step completed before the failure, and the effects of completed tools are in the store. An email stays in the inbox and its run is retried at the next poll, resuming from the saved steps; after `chat.max_attempts` failures it is moved to `Rejected` and an operator alert is sent. A LibreChat request receives an error response. A run started by the start instruction sends an operator alert. |
+| Notice to `reviewers` cannot be sent | The state change it reports stays saved and the error is logged. A tool's result says the reviewers were not emailed, so the orchestrator tells the reviewer; delivery carries on with its next step. |
 | Delivery, approval re-check fails | No send. An operator alert names the newsletter. |
 | Delivery, Graph error before `send_started` | The newsletter stays `approved`, and the send is retried at the next poll. |
 | Delivery, `send_started` without `sent` | No resend. An operator alert asks for the conversation mailbox's Sent Items to be checked. |

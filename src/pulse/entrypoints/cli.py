@@ -15,5 +15,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser = argparse.ArgumentParser(prog="pulse")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("serve", parents=[common], help="run the chat endpoint until stopped")
+    commands.add_parser(
+        "serve", parents=[common], help="run the chat endpoint and delivery until stopped"
+    )
     return parser.parse_args(argv)

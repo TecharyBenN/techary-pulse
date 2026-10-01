@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
 import pytest
@@ -6,9 +6,8 @@ import pytest
 from pulse.adapters.store import SqliteStore
 from pulse.entities.content import CheckFailure, Version
 from pulse.entities.errors import MailboxError, Refusal, StoreError
-from pulse.entities.lifecycle import Newsletter, start_send
-from pulse.entities.mail import OutboundEmail
-from pulse.services.operations import Operations
+from pulse.entities.lifecycle import Newsletter, Scheduled, abandon, start_send
+from pulse.services.operations import ApproveResult, NoticeResult, Operations, PresentResult
 from tests.emails import (
     ENTRY,
     make_consolidation,
@@ -21,10 +20,11 @@ from tests.emails import (
 )
 from tests.fakes.clock import ControlledClock
 from tests.fakes.mailbox import FakeMailbox
-from tests.messages import OPENED, make_newsletter
-from tests.operations import REVIEWERS, make_operations
+from tests.messages import OPENED, REVIEWER, make_newsletter
+from tests.operations import REVIEWERS, TIMEZONE, make_operations
 
 PRESENTED = OPENED + timedelta(hours=2)
+MONDAY_NINE = Scheduled(mode="scheduled", day="MON", time=time(9, 0))
 
 pytestmark = pytest.mark.anyio
 
@@ -119,20 +119,6 @@ async def test_refuses_once_the_send_has_started(
 
     with pytest.raises(Refusal, match="send has started"):
         await operations.start_newsletter()
-
-
-class _FailingMailbox(FakeMailbox):
-    """A conversation mailbox whose first send fails, as a Graph error would."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.failures = 1
-
-    async def send(self, email: OutboundEmail) -> str:
-        if self.failures:
-            self.failures -= 1
-            raise MailboxError("Graph returned HTTP 503")
-        return await super().send(email)
 
 
 class _FailingStore(SqliteStore):
@@ -322,7 +308,8 @@ async def test_failed_send_saves_nothing_and_the_retry_presents_the_same_version
     store: SqliteStore,
 ) -> None:
     await _drafted(store)
-    conversation = _FailingMailbox()
+    conversation = FakeMailbox()
+    conversation.failures = 1
     operations = make_operations(store, conversation=conversation)
 
     with pytest.raises(MailboxError):
@@ -352,3 +339,223 @@ async def test_failed_save_after_the_send_resends_the_same_version(tmp_path: Pat
         "Draft: Pulse: 25 September 2026",
         "Draft: Pulse: 25 September 2026",
     ]
+
+
+APPROVED = PRESENTED + timedelta(hours=1)
+
+
+async def _presented(operations: Operations, store: SqliteStore) -> None:
+    """An open newsletter with version 1 presented to the reviewers."""
+    await _drafted(store)
+    await operations.present_draft()
+
+
+async def _approved(
+    operations: Operations, store: SqliteStore, clock: ControlledClock
+) -> ApproveResult:
+    await _presented(operations, store)
+    clock.time = APPROVED
+    return await operations.approve(1, REVIEWER, "approve v1")
+
+
+async def _newsletter(store: SqliteStore) -> Newsletter:
+    newsletter = await store.get_latest_newsletter()
+    assert newsletter is not None
+    return newsletter
+
+
+async def test_approve_records_the_approval_with_a_send_time_of_now(
+    operations: Operations, store: SqliteStore, clock: ControlledClock
+) -> None:
+    result = await _approved(operations, store, clock)
+
+    newsletter = await _newsletter(store)
+    assert (newsletter.state, newsletter.approved_version, newsletter.approver) == (
+        "approved",
+        1,
+        REVIEWER,
+    )
+    assert newsletter.approved_at == newsletter.send_time == APPROVED
+    assert result == ApproveResult(version=1, send_time=APPROVED.astimezone(TIMEZONE))
+
+
+async def test_approve_in_scheduled_mode_sends_in_the_send_slot(
+    store: SqliteStore, mailbox: FakeMailbox, conversation: FakeMailbox, clock: ControlledClock
+) -> None:
+    operations = make_operations(store, mailbox, conversation, clock, send_rule=MONDAY_NINE)
+
+    result = await _approved(operations, store, clock)
+
+    # Opened on Friday 25 September, so the slot is Monday 28 September at 09:00 in London.
+    assert result.send_time == datetime(2026, 9, 28, 9, 0, tzinfo=TIMEZONE)
+    assert result.send_time.tzinfo == TIMEZONE
+    assert (await _newsletter(store)).send_time == datetime(2026, 9, 28, 8, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("version", "caller", "message", "reason"),
+    [
+        (2, REVIEWER, "approve v2", "not the latest presented version"),
+        (1, REVIEWER, "Looks good", "does not start with approve v1"),
+        (1, None, "approve v1", "no reviewer is present"),
+    ],
+)
+async def test_approve_refuses_and_changes_nothing(
+    operations: Operations,
+    store: SqliteStore,
+    version: int,
+    caller: str | None,
+    message: str,
+    reason: str,
+) -> None:
+    await _presented(operations, store)
+    before = await _newsletter(store)
+
+    with pytest.raises(Refusal, match=reason):
+        await operations.approve(version, caller, message)
+
+    assert await _newsletter(store) == before
+
+
+async def test_approve_refuses_an_approved_newsletter(
+    operations: Operations, store: SqliteStore, clock: ControlledClock
+) -> None:
+    await _approved(operations, store, clock)
+
+    with pytest.raises(Refusal, match="approved, not in review"):
+        await operations.approve(1, REVIEWER, "approve v1")
+
+
+async def test_withdraw_returns_to_review_and_emails_send_cancelled(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox, clock: ControlledClock
+) -> None:
+    await _approved(operations, store, clock)
+
+    result = await operations.withdraw_approval(REVIEWER)
+
+    assert result == NoticeResult(notice_sent=True)
+    newsletter = await _newsletter(store)
+    assert (newsletter.state, newsletter.approved_version, newsletter.send_time) == (
+        "in_review",
+        None,
+        None,
+    )
+    [notice] = conversation.replies
+    assert notice.message_id == "sent-1"
+    assert "Send cancelled" in notice.body.content
+    assert newsletter.thread_message_id == notice.reply_id
+
+
+async def test_withdraw_reports_a_notice_that_could_not_be_sent(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox, clock: ControlledClock
+) -> None:
+    await _approved(operations, store, clock)
+    conversation.failures = 1
+
+    result = await operations.withdraw_approval(REVIEWER)
+
+    assert result == NoticeResult(notice_sent=False)
+    newsletter = await _newsletter(store)
+    # The withdrawal stands, and the thread's latest message is unchanged.
+    assert (newsletter.state, newsletter.thread_message_id) == ("in_review", "sent-1")
+
+
+async def test_withdraw_refuses(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox, clock: ControlledClock
+) -> None:
+    await _presented(operations, store)
+    with pytest.raises(Refusal, match="not approved"):
+        await operations.withdraw_approval(REVIEWER)
+
+    clock.time = APPROVED
+    await operations.approve(1, REVIEWER, "approve v1")
+    with pytest.raises(Refusal, match="no reviewer is present"):
+        await operations.withdraw_approval(None)
+
+    await store.save_newsletter(start_send(await _newsletter(store)))
+    with pytest.raises(Refusal, match="send has started"):
+        await operations.withdraw_approval(REVIEWER)
+    assert conversation.replies == []
+
+
+async def test_abandon_closes_the_newsletter_and_emails_abandoned(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox, clock: ControlledClock
+) -> None:
+    await _presented(operations, store)
+    clock.time = APPROVED
+
+    result = await operations.abandon(REVIEWER)
+
+    assert result == NoticeResult(notice_sent=True)
+    newsletter = await _newsletter(store)
+    assert (newsletter.state, newsletter.closed_at) == ("abandoned", APPROVED)
+    assert await store.get_open_newsletter() is None
+    [notice] = conversation.replies
+    assert "Abandoned" in notice.body.content
+    assert newsletter.thread_message_id == notice.reply_id
+
+
+async def test_abandon_before_any_version_starts_the_thread(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox
+) -> None:
+    await store.save_start(make_newsletter(), [])
+
+    await operations.abandon(REVIEWER)
+
+    [email] = conversation.sent
+    assert email.subject == "Abandoned: Pulse: 25 September 2026"
+
+
+async def test_abandon_refuses(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox, clock: ControlledClock
+) -> None:
+    with pytest.raises(Refusal, match="no newsletter is open"):
+        await operations.abandon(REVIEWER)
+
+    await _approved(operations, store, clock)
+    with pytest.raises(Refusal, match="no reviewer is present"):
+        await operations.abandon(None)
+
+    await store.save_newsletter(start_send(await _newsletter(store)))
+    with pytest.raises(Refusal, match="send has started"):
+        await operations.abandon(REVIEWER)
+    assert conversation.replies == []
+
+
+async def test_present_over_an_approval_withdraws_it_first(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox, clock: ControlledClock
+) -> None:
+    await _approved(operations, store, clock)
+    await store.save_draft("n-1", make_draft(changes=["Shortened the intro"]))
+
+    result = await operations.present_draft()
+
+    assert result == PresentResult(version=2, approval_withdrawn=True, notice_sent=True)
+    newsletter = await _newsletter(store)
+    assert (newsletter.state, newsletter.latest_version, newsletter.approved_version) == (
+        "in_review",
+        2,
+        None,
+    )
+    # The notice comes first, then the new version replies to it.
+    notice, presented = conversation.replies
+    assert "Send cancelled" in notice.body.content
+    assert (presented.message_id, "Version 2" in presented.body.content) == (notice.reply_id, True)
+
+
+async def test_present_without_an_approval_withdraws_nothing(
+    operations: Operations, store: SqliteStore
+) -> None:
+    await _drafted(store)
+
+    assert await operations.present_draft() == PresentResult(version=1)
+
+
+async def test_check_works_on_a_closed_newsletter(
+    operations: Operations, store: SqliteStore
+) -> None:
+    await _drafted(store)
+    await store.save_draft("n-1", DASHED)
+    await store.save_newsletter(abandon(make_newsletter(), REVIEWER, OPENED))
+
+    assert await operations.check() == [DASH_FAILURE]

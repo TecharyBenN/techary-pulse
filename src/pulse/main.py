@@ -21,7 +21,7 @@ from pulse.agents.consolidator.agent import build_consolidator
 from pulse.agents.extractor.agent import build_extractor
 from pulse.agents.judge.agent import build_judge
 from pulse.agents.orchestrator.agent import build_agent
-from pulse.agents.orchestrator.run import Orchestrator
+from pulse.agents.orchestrator.run import Orchestrator, history_note
 from pulse.agents.orchestrator.tools import Tools
 from pulse.agents.writer.agent import build_writer
 from pulse.config import Config, ConfigError, load_config
@@ -31,7 +31,10 @@ from pulse.entities.mail import Mailbox, screen
 from pulse.entities.store import Store
 from pulse.entrypoints.chat import create_app, serve
 from pulse.entrypoints.cli import parse_args
+from pulse.entrypoints.scheduler import poll
 from pulse.logging import configure_logging
+from pulse.services.delivery import Delivery
+from pulse.services.mail import Outbox
 from pulse.services.operations import Operations
 
 _log = logging.getLogger(__name__)
@@ -63,13 +66,26 @@ async def _serve(config: Config) -> None:
             GraphMailbox(client, credential.token, address, graph.max_retries)
             for address in (config.mailboxes.submissions, config.mailboxes.conversation)
         )
-        orchestrator = build_orchestrator(config, store, submissions, conversation, llm_key, clock)
+        # One run lock for orchestrator runs and delivery.
+        lock = asyncio.Lock()
+        orchestrator = build_orchestrator(
+            config, store, submissions, conversation, llm_key, clock, lock
+        )
+        delivery = build_delivery(config, store, submissions, conversation, clock, lock)
         auth = config.auth
         verifier = JwtVerifier(auth.issuer, auth.audience, auth.jwks, clock)
         app = create_app(
             orchestrator, verifier, auth.reviewer_role, clock, _renderer(config).markdown
         )
-        await serve(app, config.chat.port)
+        stop = asyncio.Event()
+        interval = timedelta(minutes=config.schedule.poll_interval_minutes)
+        polling = asyncio.create_task(poll(delivery.deliver, interval, stop))
+        try:
+            await serve(app, config.chat.port)
+        finally:
+            # A delivery in progress finishes before Pulse exits.
+            stop.set()
+            await polling
 
 
 def build_orchestrator(
@@ -79,6 +95,7 @@ def build_orchestrator(
     conversation: Mailbox,
     llm_key: str,
     clock: Clock,
+    lock: asyncio.Lock,
 ) -> Orchestrator:
     def model(agent: str) -> Model:
         return gateway_model(config.llm.base_url, llm_key, config.llm.models[agent])
@@ -93,12 +110,11 @@ def build_orchestrator(
     operations = Operations(
         store,
         submissions,
-        conversation,
+        _outbox(config, conversation, store),
         screen_email,
         _renderer(config).reviewer_email,
         clock,
-        reviewers=config.reviewers,
-        subject_template=config.subject_template,
+        send_rule=config.send,
         timezone=config.timezone,
         categories=list(categories),
         max_words=config.limits.max_words,
@@ -123,11 +139,51 @@ def build_orchestrator(
         store,
         config.orchestrator.max_tool_calls,
         timedelta(minutes=config.orchestrator.max_run_minutes),
+        lock,
+    )
+
+
+def build_delivery(
+    config: Config,
+    store: Store,
+    submissions: Mailbox,
+    conversation: Mailbox,
+    clock: Clock,
+    lock: asyncio.Lock,
+) -> Delivery:
+    mailboxes = config.mailboxes
+    return Delivery(
+        store,
+        conversation,
+        submissions,
+        _outbox(config, conversation, store),
+        _renderer(config).newsletter,
+        history_note,
+        clock,
+        lock,
+        all_staff=config.all_staff,
+        reply_to=mailboxes.submissions,
+        subject_template=config.subject_template,
+        timezone=config.timezone,
+        processed_folder=mailboxes.processed_folder,
+        rejected_folder=mailboxes.rejected_folder,
     )
 
 
 def _renderer(config: Config) -> Renderer:
     return Renderer(config.timezone)
+
+
+def _outbox(config: Config, conversation: Mailbox, store: Store) -> Outbox:
+    return Outbox(
+        conversation,
+        store,
+        _renderer(config).notice,
+        reviewers=config.reviewers,
+        operator_alerts=config.operator_alerts,
+        subject_template=config.subject_template,
+        timezone=config.timezone,
+    )
 
 
 def _environment(name: str) -> str:

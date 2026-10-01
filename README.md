@@ -2,7 +2,7 @@
 
 Techary Pulse turns staff updates emailed to a Microsoft 365 submissions mailbox into a newsletter. An orchestrator agent drafts each newsletter, discusses it with reviewers over email or LibreChat, revises it from their feedback and, once a reviewer approves it, sends it to an all-staff distribution list. This README covers what Pulse needs to run and how to work on it. Behaviour is defined in the [design document](docs/techary-pulse-design.md), and delivery is planned in the [development plan](docs/development-plan.md).
 
-Pulse is being rebuilt to the current design. So far, `pulse serve` runs the chat endpoint, where reviewers talk to the orchestrator, which can start a newsletter from the submissions mailbox, extract its emails and consolidate them into items. The development plan sets out the order in which the rest arrives.
+Pulse is being rebuilt to the current design. So far, `pulse serve` runs the chat endpoint, where reviewers talk to the orchestrator, and delivery. The orchestrator can start a newsletter from the submissions mailbox, draft, check and present it, record approval, withdraw an approval and abandon a newsletter; delivery sends an approved newsletter to all staff at its send time. The email channel and the schedule are still to come, as the development plan sets out.
 
 ## How it works
 
@@ -96,13 +96,13 @@ Run format, lint, type check and tests before every commit, and after every upgr
 
 ### Running Pulse locally
 
-Copy [config/config.dev.example.yaml](config/config.dev.example.yaml) to `config.yaml` and fill in the dev tenant and gateway values, with `auth.jwks` pointing at the stand-in issuer's key set file. Put `PULSE_LLM_API_KEY` in `.env`, then start the chat endpoint:
+Copy [config/config.dev.example.yaml](config/config.dev.example.yaml) to `config.yaml` and fill in the dev tenant and gateway values, with `auth.jwks` pointing at the stand-in issuer's key set file. Put `PULSE_LLM_API_KEY` in `.env`, then start the chat endpoint and delivery:
 
 ```sh
 uv run --env-file .env pulse serve
 ```
 
-Until delivery and `abandon` arrive, a newsletter never closes, so each request for a newsletter adds to the same open one. To start again from a clean dev inbox, stop Pulse and delete `state/pulse.db`, so the store and the mailbox match.
+Every `schedule.poll_interval_minutes`, delivery sends an approved newsletter whose send time has come; with the dev configuration's `send.mode: on_approval`, that is the first poll after approval. A sent newsletter's emails move out of the dev submissions inbox; before drafting again, empty the inbox and reseed the corpus with `uv run --env-file .env pytest -m live -k test_seed_the_corpus -s`. To start again from a clean dev inbox, stop Pulse and delete `state/pulse.db`, so the store and the mailbox match. The store has no migrations, so also delete `state/pulse.db` after a change to its tables.
 
 Pulse reads `./config.yaml` unless `--config` names another file. It listens on `chat.port`, which must be free on the machine. To check the endpoint, send a non-streamed request, then the same request with `"stream": true` and `curl -N`, which returns progress notes and the reply as server-sent events ending in `data: [DONE]`. `TOKEN` is a token from the issuer in `auth`, for the audience in `auth.audience`, carrying the reviewer role; without the role, Pulse returns HTTP 403:
 

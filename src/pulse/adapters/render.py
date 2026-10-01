@@ -41,6 +41,9 @@ class Renderer:
     def reviewer_email(self, version: Version, review: Review) -> str:
         return self._render(self._html, "newsletter.html.j2", version.content, version, review)
 
+    def notice(self, title: str, text: str) -> str:
+        return self._html.get_template("notice.html.j2").render(title=title, text=text)
+
     def markdown(self, content: Content) -> str:
         return self._render(self._markdown, "newsletter.md.j2", content, None, None)
 
