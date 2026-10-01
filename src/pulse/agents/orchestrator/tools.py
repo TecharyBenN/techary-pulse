@@ -6,15 +6,23 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Self
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.toolsets import FunctionToolset
 
 from pulse.agents.consolidator import agent as consolidator_agent
 from pulse.agents.extractor import agent as extractor_agent
+from pulse.agents.judge import agent as judge_agent
 from pulse.agents.runner import run_specialist
 from pulse.agents.writer import agent as writer_agent
 from pulse.entities.base import Entity
-from pulse.entities.content import Version, WriterOutput, draft_changed
+from pulse.entities.content import (
+    JudgeOutput,
+    Version,
+    WriterOutput,
+    draft_changed,
+    require_draft,
+)
+from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import Refusal, SpecialistFailed
 from pulse.entities.extracts import (
     Consolidation,
@@ -26,6 +34,7 @@ from pulse.entities.extracts import (
     consolidation_input,
     items_up_to_date,
     make_consolidation,
+    restored,
     with_sources,
 )
 from pulse.entities.lifecycle import Newsletter, require_open
@@ -39,11 +48,14 @@ PROGRESS_NOTES = {
     "start_newsletter": "Collecting new updates",
     "list_screened_emails": "Looking through the updates",
     "extract": "Reading the updates",
+    "restore": "Putting the update back in",
     "consolidate": "Combining related news",
     "get_items": "Looking at the news items",
     "write": "Writing the draft",
     "get_draft": "Reading the draft",
     "show_draft": "Getting the draft ready to show you",
+    "check": "Checking the draft",
+    "judge": "Checking the draft against the facts",
     "present_draft": "Sending the draft to the reviewers",
 }
 _DEFAULT_NOTE = "Working on it"
@@ -116,6 +128,7 @@ class Tools:
         extractor: Agent[None, ExtractorOutput],
         consolidator: Agent[None, ConsolidatorOutput],
         writer: Agent[None, WriterOutput],
+        judge: Agent[None, JudgeOutput],
         categories: Mapping[str, str],
     ) -> None:
         self._operations = operations
@@ -123,9 +136,10 @@ class Tools:
         self._extractor = extractor
         self._consolidator = consolidator
         self._writer = writer
+        self._judge = judge
         self._categories = categories
 
-    def toolset(self) -> FunctionToolset[None]:
+    def toolset(self) -> FunctionToolset[ReviewerMessage]:
         # Add a tool by writing its method and listing it here.
         return FunctionToolset(
             [
@@ -133,11 +147,14 @@ class Tools:
                 self.get_newsletter,
                 self.list_screened_emails,
                 self.extract,
+                self.restore,
                 self.consolidate,
                 self.get_items,
                 self.write,
                 self.get_draft,
                 self.show_draft,
+                self.check,
+                self.judge,
                 self.present_draft,
             ]
         )
@@ -225,6 +242,17 @@ class Tools:
         )
 
     @_reported
+    async def restore(self, ctx: RunContext[ReviewerMessage], excluded_id: str) -> dict[str, str]:
+        """Include the named excluded record, only when a reviewer's feedback asks for it. The
+        items are then out of date, so call consolidate next with every included record."""
+        newsletter_id = (await self._open()).newsletter_id
+        records = await self._store.list_extract_records(newsletter_id)
+        # The caller comes from the run, never from the model.
+        record = restored(records, excluded_id, ctx.deps.author)
+        await self._store.save_restored(newsletter_id, record)
+        return {"excluded_id": excluded_id, "message_id": record.message_id}
+
+    @_reported
     async def consolidate(self, message_ids: list[MessageId]) -> dict[str, Any]:
         """Run the consolidator on the named extract records, which must all be included, and
         store the resulting items and headline, replacing any earlier ones. Name every included
@@ -235,7 +263,7 @@ class Tools:
         output = await run_specialist(
             self._consolidator,
             consolidator_agent.consolidator_prompt(selected),
-            lambda output: consolidator_agent.output_checks(output, selected),
+            lambda output: consolidator_agent.output_checks(output, selected, self._categories),
         )
         consolidation = make_consolidation(output, selected)
         await self._store.save_items(newsletter.newsletter_id, consolidation)
@@ -271,9 +299,7 @@ class Tools:
         consolidated, items, excluded = await self._items(newsletter_id)
         feedback = await self._store.list_feedback(newsletter_id)
         draft = await self._store.get_draft(newsletter_id)
-        known = [item.item_id for item in items] + [
-            record.excluded_id for record in excluded if record.excluded_id
-        ]
+        known = [item.item_id for item in items]
         output = await run_specialist(
             self._writer,
             writer_agent.writer_prompt(consolidated, items, excluded, feedback, instruction, draft),
@@ -298,6 +324,39 @@ class Tools:
         return ShowResult(version=version)
 
     @_reported
+    async def check(self) -> dict[str, Any]:
+        """Run the code checks on the working draft. Returns every failure and their count."""
+        failures = await self._operations.check()
+        return {
+            "failure_count": len(failures),
+            "failures": [failure.model_dump(mode="json") for failure in failures],
+        }
+
+    @_reported
+    async def judge(self) -> dict[str, Any]:
+        """Run the judge on the working draft, which says whether the intro and each entry are
+        supported by the facts and feedback, and store its verdicts. Returns how many parts it
+        judged and each unsupported claim."""
+        newsletter_id = (await self._open()).newsletter_id
+        content = (await self._draft_or_version(None)).content
+        _, items, _ = await self._items(newsletter_id)
+        feedback = await self._store.list_feedback(newsletter_id)
+        output = await run_specialist(
+            self._judge,
+            judge_agent.judge_prompt(content, items, feedback),
+            lambda output: judge_agent.output_checks(output, content),
+        )
+        await self._store.save_verdicts(newsletter_id, output.verdicts)
+        return {
+            "judged": len(output.verdicts),
+            "unsupported": [
+                verdict.model_dump(mode="json", include={"target", "claim"})
+                for verdict in output.verdicts
+                if not verdict.supported
+            ],
+        }
+
+    @_reported
     async def present_draft(self) -> PresentResult:
         """Save the working draft as the next version and email it to the reviewers. Returns
         the version number."""
@@ -307,10 +366,7 @@ class Tools:
         """The working draft, or the named version; refuse when there is none."""
         newsletter_id = (await self._open()).newsletter_id
         if version is None:
-            draft = await self._store.get_draft(newsletter_id)
-            if draft is None:
-                raise Refusal("there is no working draft")
-            return draft
+            return require_draft(await self._store.get_draft(newsletter_id))
         presented = await self._store.get_version(newsletter_id, version)
         if presented is None:
             raise Refusal(f"v{version} has not been presented")

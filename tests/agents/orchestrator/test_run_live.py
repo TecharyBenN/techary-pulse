@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, ToolReturnPart
 
 from pulse.adapters.clock import SystemClock
 from pulse.adapters.graph import GRAPH_URL
@@ -143,3 +144,65 @@ async def test_version_1_and_a_revised_version_2_reach_the_reviewers(tmp_path: P
     for reply in (drafted, revised):
         assert reply is not None
         assert not _MESSAGE_ID.search(reply)
+
+
+async def test_a_failing_check_is_fixed_or_listed_in_the_version(tmp_path: Path) -> None:
+    """The phase 7 check: needs the dev inbox to hold the seedable corpus, as seeded. The
+    drafts are sent to the dev reviewers list, so the test user receives them."""
+    config = load_config(Path("config.yaml"))
+    store = SqliteStore(tmp_path / "pulse.db")
+    await store.initialise()
+    async with httpx.AsyncClient(base_url=GRAPH_URL) as client:
+        orchestrator = build_orchestrator(
+            config,
+            store,
+            graph_mailbox(config, client, config.mailboxes.submissions),
+            graph_mailbox(config, client, config.mailboxes.conversation),
+            os.environ[config.llm.api_key_env],
+            SystemClock(),
+        )
+
+        await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))
+        newsletter = await store.get_open_newsletter()
+        assert newsletter is not None
+        newsletter_id = newsletter.newsletter_id
+        # The writer avoids dashes, so one is planted in the working draft for the run to meet.
+        draft = await store.get_draft(newsletter_id)
+        assert draft is not None
+        dashed = draft.content.model_copy(
+            update={"intro": f"{draft.content.intro} \N{EM DASH} with thanks to everyone."}
+        )
+        await store.save_draft(newsletter_id, draft.model_copy(update={"content": dashed}))
+        presented = await orchestrator.handle(
+            make_message(
+                "r02",
+                text="Please send the current working draft to the reviewers as a new version.",
+            )
+        )
+
+    print(f"--- reply\n{presented.text}")
+    newsletter = await store.get_open_newsletter()
+    assert newsletter is not None and newsletter.latest_version == 2
+    version = await store.get_version(newsletter_id, 2)
+    assert version is not None
+    print(f"--- intro\n{version.content.intro}\n--- failures\n{version.check_failures}")
+    history = [
+        message
+        for row in await store.load_history(newsletter_id)
+        if row.message_id == "r02"
+        for message in ModelMessagesTypeAdapter.validate_json(row.data)
+    ]
+    checks = [
+        part.content
+        for message in history
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart) and part.tool_name == "check"
+    ]
+    print(f"--- check results\n{checks}")
+    assert checks
+    assert version.verdicts is not None
+    # The planted dash was in the draft when the run started: a version without it was fixed.
+    dash_in_intro = "\N{EM DASH}" in version.content.intro
+    listed = any(f.check == "dashes" and f.target == "intro" for f in version.check_failures)
+    assert dash_in_intro == listed

@@ -4,7 +4,7 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
     ModelMessage,
@@ -19,6 +19,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pulse.agents.orchestrator.agent import INSTRUCTIONS
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import ShowResult
+from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.store import Store
 from pulse.services.operations import PresentResult
 
@@ -30,10 +31,16 @@ class Tools:
 
     def __init__(self) -> None:
         self.calls = 0
+        # The message ID each run passed to its tools, in call order.
+        self.callers: list[str] = []
 
     def ping(self) -> str:
         self.calls += 1
         return "pong"
+
+    def caller(self, ctx: RunContext[ReviewerMessage]) -> str:
+        self.callers.append(ctx.deps.message_id)
+        return "noted"
 
     def present_draft(self) -> PresentResult:
         """Stands in for the real tool, presenting version 1, which the test stores."""
@@ -53,9 +60,10 @@ def make_orchestrator(
 ) -> Orchestrator:
     agent = Agent(
         FunctionModel(model),
+        deps_type=ReviewerMessage,
         output_type=str,
         instructions=INSTRUCTIONS,
-        tools=[tools.ping, tools.present_draft, tools.show_draft] if tools else [],
+        tools=[tools.ping, tools.caller, tools.present_draft, tools.show_draft] if tools else [],
     )
     return Orchestrator(agent, store, max_tool_calls, max_run_time)
 
@@ -66,6 +74,10 @@ def text_response(text: str) -> ModelResponse:
 
 def ping_call() -> ModelResponse:
     return ModelResponse(parts=[ToolCallPart("ping", {})])
+
+
+def caller_call() -> ModelResponse:
+    return ModelResponse(parts=[ToolCallPart("caller", {})])
 
 
 def present_call() -> ModelResponse:

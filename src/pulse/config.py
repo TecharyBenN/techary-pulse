@@ -115,6 +115,11 @@ class Config(StrictEntity):
     state: StateConfig
     retention_days: PositiveInt
 
+    @property
+    def categories(self) -> dict[str, str]:
+        """Each configured category with its definition, in configuration order."""
+        return {section.category: section.definition for section in self.sections}
+
     @field_validator("timezone", mode="before")
     @classmethod
     def _zone(cls, value: object) -> ZoneInfo:

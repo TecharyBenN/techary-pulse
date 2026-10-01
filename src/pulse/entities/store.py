@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from pulse.entities.base import Entity
-from pulse.entities.content import Version, WriterOutput
+from pulse.entities.content import Verdict, Version, WriterOutput
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.extracts import Consolidation, ExtractorOutput, ExtractRecord
 from pulse.entities.lifecycle import Newsletter
@@ -41,6 +41,10 @@ class Store(Protocol):
         """Save the output as the email's extract record, replacing any earlier one."""
         ...
 
+    async def save_restored(self, newsletter_id: str, record: ExtractRecord) -> None:
+        """Save a restored record in place of the excluded record it was."""
+        ...
+
     async def list_extract_records(self, newsletter_id: str) -> list[ExtractRecord]:
         """The newsletter's extract records, in the order they were first saved."""
         ...
@@ -54,10 +58,18 @@ class Store(Protocol):
         ...
 
     async def save_draft(self, newsletter_id: str, draft: WriterOutput) -> None:
-        """Save the newsletter's working draft, replacing any earlier one."""
+        """Save the newsletter's working draft, replacing any earlier one and its verdicts."""
         ...
 
     async def get_draft(self, newsletter_id: str) -> WriterOutput | None: ...
+
+    async def save_verdicts(self, newsletter_id: str, verdicts: Sequence[Verdict]) -> None:
+        """Save the judge's verdicts on the working draft, replacing any earlier ones."""
+        ...
+
+    async def get_verdicts(self, newsletter_id: str) -> list[Verdict] | None:
+        """The judge's latest verdicts, or None when the working draft has not been judged."""
+        ...
 
     async def save_version(self, newsletter: Newsletter, version: Version) -> None:
         """Save a presented version with the newsletter that numbers it, in one transaction."""

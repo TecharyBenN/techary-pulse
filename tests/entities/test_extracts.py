@@ -16,6 +16,7 @@ from pulse.entities.extracts import (
     items_up_to_date,
     make_consolidation,
     make_record,
+    restored,
     with_sources,
 )
 from tests.emails import (
@@ -29,6 +30,7 @@ from tests.emails import (
 )
 
 FLAG = Sensitivity(type="commercial", evidence="mentions annual contract value")
+REVIEWER = "reviewer-oid"
 
 
 def test_included_record_has_no_outcome() -> None:
@@ -111,6 +113,42 @@ def test_record_excluded_again_after_inclusion_gets_a_new_number() -> None:
     previous = _record(make_output())
 
     assert _record(make_output(category=None), previous, "excluded-1").excluded_id == "excluded-2"
+
+
+def test_restored_record_stays_included_when_extracted_again() -> None:
+    previous = restored([_record(make_output(sensitivity=[FLAG]))], "excluded-1", REVIEWER)
+
+    record = _record(make_output(sensitivity=[FLAG]), previous, "excluded-1")
+
+    assert (record.exclusion, record.excluded_id, record.restored_by) == (
+        None,
+        "excluded-1",
+        REVIEWER,
+    )
+
+
+def test_restoring_includes_the_record_and_records_the_reviewer() -> None:
+    excluded = _record(make_output(category=None))
+
+    record = restored([_record(make_output()), excluded], "excluded-1", REVIEWER)
+
+    assert record == excluded.model_copy(update={"exclusion": None, "restored_by": REVIEWER})
+
+
+def test_restoring_refuses_without_a_reviewer() -> None:
+    with pytest.raises(Refusal, match="no reviewer is present in this run"):
+        restored([_record(make_output(category=None))], "excluded-1", None)
+
+
+def test_restoring_refuses_an_id_that_names_no_excluded_record() -> None:
+    record = restored([_record(make_output(category=None))], "excluded-1", REVIEWER)
+
+    for records, excluded_id in (([record], "excluded-1"), ([], "excluded-2")):
+        with pytest.raises(Refusal) as refused:
+            restored(records, excluded_id, REVIEWER)
+        assert str(refused.value) == (
+            f"{excluded_id} names no excluded record in the open newsletter"
+        )
 
 
 INCLUDED = make_extract_record("m01")
@@ -203,3 +241,10 @@ def test_item_from_a_record_now_excluded_makes_items_out_of_date() -> None:
     consolidation = _stored(make_item(source_message_ids=["m01", "m03"]))
 
     assert not items_up_to_date(consolidation, [INCLUDED, EXCLUDED])
+
+
+def test_restored_record_is_included_in_the_items() -> None:
+    record = restored([EXCLUDED], "excluded-1", REVIEWER)
+
+    assert not items_up_to_date(_stored(make_item(source_message_ids=["m01"])), [INCLUDED, record])
+    assert consolidation_input([INCLUDED, record], ["m01", "m03"]) == [INCLUDED, record]

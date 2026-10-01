@@ -163,7 +163,7 @@ Exit criteria: tests cover the writer's output checks, each tool, the history pl
 
 ### Phase 7: quality
 
-Scope: `check`, the draft checks run in `present_draft`, the judge and `judge`, check failures and unsupported claims in the review section, the "not judged" note, and the orchestrator instructions for fixing failures and accepting those that cannot be fixed.
+Scope: `restore`, which replaces restoring through the writer, so a restored record is included in the store and becomes an item; `check`, the draft checks run in `present_draft`, the judge and `judge`, check failures and unsupported claims in the review section, the "not judged" note, and the orchestrator instructions for fixing failures and accepting those that cannot be fixed.
 
 Exit criteria: tests cover the tools and the review section; live check: a draft with a failing check is fixed or presented with the failure listed.
 

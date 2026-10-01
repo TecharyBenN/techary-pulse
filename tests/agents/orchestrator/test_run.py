@@ -22,12 +22,14 @@ from pulse.adapters.store import SqliteStore
 from pulse.agents.orchestrator.agent import user_prompt
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.entities.content import Version, version_of
+from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import RunFailed
 from pulse.entities.lifecycle import present
 from pulse.entities.store import HistoryRow
 from tests.emails import make_draft
 from tests.fakes.models import (
     Tools,
+    caller_call,
     gateway_error,
     make_orchestrator,
     ping_call,
@@ -276,6 +278,20 @@ async def test_unfinished_run_is_resumed_before_a_new_message(store: SqliteStore
     assert [message_id for message_id, _ in history] == ["r01"] * 4 + ["r02"] * 2
 
 
+async def test_each_run_gives_its_tools_its_own_message(store: SqliteStore) -> None:
+    tools = Tools()
+    first = make_message("r01", text="First")
+    await store.record_feedback("n-1", first)
+    for saved in (ModelRequest(parts=[UserPromptPart(user_prompt(first))]), caller_call()):
+        await store.append_history("n-1", "r01", ModelMessagesTypeAdapter.dump_json([saved]))
+    model = responses(text_response("Resumed."), caller_call(), text_response("Done."))
+
+    await make_orchestrator(store, model, tools).handle(make_message("r02", text="Second"))
+
+    # The resumed run is r01's, so its tools act for r01's reviewer, not r02's.
+    assert tools.callers == ["r01", "r02"]
+
+
 async def test_runs_are_processed_one_at_a_time_in_arrival_order(store: SqliteStore) -> None:
     gate = asyncio.Event()
     started: list[object] = []
@@ -349,7 +365,9 @@ async def test_exchange_that_opens_a_newsletter_becomes_its_history(
     model = responses(
         ModelResponse(parts=[ToolCallPart("opening_tool", {})]), text_response("Started.")
     )
-    agent = Agent(FunctionModel(model), output_type=str, tools=[opening_tool])
+    agent = Agent(
+        FunctionModel(model), deps_type=ReviewerMessage, output_type=str, tools=[opening_tool]
+    )
     orchestrator = Orchestrator(agent, store, 40, timedelta(minutes=15))
 
     reply = (await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))).text
@@ -439,7 +457,7 @@ async def test_a_refused_present_draft_supersedes_nothing(store: SqliteStore) ->
 
 async def _version_1(store: SqliteStore) -> Version:
     """Store version 1, which the stand-in present_draft presents."""
-    version = version_of(make_draft(), 1, OPENED)
+    version = version_of(make_draft(), 1, OPENED, [], None)
     await store.save_version(present(make_newsletter()), version)
     return version
 

@@ -100,21 +100,13 @@ async def test_has_no_tools_uses_native_output_and_keeps_input_out_of_instructio
 
 
 def test_valid_output_has_no_problems() -> None:
-    assert output_checks(make_draft(), ["item-1", "excluded-1"]) == []
-
-
-def test_restored_record_is_a_known_id() -> None:
-    draft = make_draft(Entry(item_id="excluded-1", text="Priya Shah.", people=["Priya Shah"]))
-
-    assert output_checks(draft, ["item-1", "excluded-1"]) == []
+    assert output_checks(make_draft(), ["item-1"]) == []
 
 
 def test_unknown_item_id_is_a_problem() -> None:
     draft = make_draft(Entry(item_id="item-9", text="Unknown.", people=[]))
 
-    assert output_checks(draft, ["item-1"]) == [
-        "item-9 in item_ids is not a known item or excluded record"
-    ]
+    assert output_checks(draft, ["item-1"]) == ["item-9 in item_ids is not a known item"]
 
 
 def test_entry_outside_item_ids_is_a_problem() -> None:

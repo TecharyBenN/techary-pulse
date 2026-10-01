@@ -5,7 +5,13 @@ from collections.abc import Collection, Mapping, Sequence
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models import Model
 
-from pulse.agents.prompts import categories_instruction, data_block, listed, read_instructions
+from pulse.agents.prompts import (
+    categories_instruction,
+    data_block,
+    feedback_block,
+    listed,
+    read_instructions,
+)
 from pulse.entities.content import WriterOutput
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.extracts import Consolidation, ExtractRecord, SourcedItem
@@ -24,7 +30,6 @@ _EXCLUDED_FIELDS = {
     "people",
     "sensitivity",
 }
-_FEEDBACK_FIELDS = {"received", "text"}
 
 
 def build_writer(
@@ -77,10 +82,7 @@ def writer_prompt(
             "excluded_records",
             [record.model_dump(mode="json", include=_EXCLUDED_FIELDS) for record in excluded],
         ),
-        data_block(
-            "feedback",
-            [message.model_dump(mode="json", include=_FEEDBACK_FIELDS) for message in feedback],
-        ),
+        feedback_block(feedback),
         data_block("instruction", instruction),
     ]
     if draft is not None:
@@ -89,17 +91,16 @@ def writer_prompt(
 
 
 def output_checks(output: WriterOutput, known_ids: Collection[str]) -> list[str]:
-    """`known_ids` holds the item IDs and excluded record IDs of the newsletter."""
+    """`known_ids` holds the item IDs of the newsletter."""
     content = output.content
     unknown = [
-        f"{item_id} in item_ids is not a known item or excluded record"
+        f"{item_id} in item_ids is not a known item"
         for item_id in dict.fromkeys(content.item_ids)
         if item_id not in known_ids
     ]
     missing = [
         f"the entry for {entry.item_id} is not in item_ids"
-        for section in content.sections
-        for entry in section.entries
+        for entry in content.entries()
         if entry.item_id not in content.item_ids
     ]
     return unknown + missing

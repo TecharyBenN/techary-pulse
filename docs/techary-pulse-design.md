@@ -95,7 +95,7 @@ src/pulse/
 │   ├── writer/        agent.py and prompt.md
 │   └── judge/         agent.py and prompt.md
 ├── services/          Code the tools and the scheduler call
-│   ├── operations.py  Start, present, approve, withdraw and abandon: state change, save, email
+│   ├── operations.py  Start, check, present, approve, withdraw and abandon: state change, save, email
 │   └── delivery.py    Sends an approved newsletter, moves its screened emails, recovers a partial send
 ├── adapters/          Microsoft Graph mail, the AI gateway, the SQLite store, the system clock,
 │                      bearer token verification, and the newsletter in HTML and Markdown
@@ -203,6 +203,7 @@ The orchestrator's rules are set with `instructions`, which Pydantic AI sends wi
 | `start_newsletter` | Action | Opens a newsletter with the pending emails, or adds those that have arrived since to the open one, and applies the pre-filter to them. |
 | `list_screened_emails` | Read | Returns each screened email's message ID, sender name, received time, attachment flag, pre-filter outcome, and extract record if one exists. Never returns subjects or bodies. |
 | `extract` | Specialist | Runs the extractor on the named screened emails, in parallel, and stores each extract record with its exclusion outcome. Returns each email's outcome and the totals included, excluded by reason, and failed. |
+| `restore` | Action | Includes a named excluded record, recording the reviewer who asked. The items are then out of date until `consolidate` runs. |
 | `consolidate` | Specialist | Runs the consolidator on the named extract records and stores the resulting items and headline, replacing any earlier ones. Returns the headline, the item count and each item's ID, category and sources. |
 | `write` | Specialist | Runs the writer on the items, the excluded records, all feedback, the orchestrator's instruction and, when revising, the working draft, and stores the result as the working draft. A call is a revision whenever a working draft exists. Returns the included IDs, the changes, the feedback not applied and whether the working draft has changed since the latest version. |
 | `judge` | Specialist | Runs the judge on the working draft and stores its verdicts. |
@@ -221,7 +222,8 @@ Tools return IDs, counts and short summaries, with totals wherever the orchestra
 Every tool checks its preconditions in code, records its effect in the store as it happens, and returns the reason when it refuses:
 
 - `approve` records approval only when the run's caller is a verified reviewer, the newsletter is `in_review`, the named version is the latest presented version, and the first non-empty line of the reviewer's message in the current run, trimmed, is exactly `approve v{version}`, ignoring case. The caller and the reviewer's message come from code, never from tool arguments.
-- `withdraw_approval` and `abandon` require the run's caller to be a verified reviewer, so they refuse in runs started by the start instruction.
+- `restore`, `withdraw_approval` and `abandon` require the run's caller to be a verified reviewer, so they refuse in runs started by the start instruction.
+- `restore` refuses an ID that names no excluded record in the open newsletter.
 - `start_newsletter`, `present_draft`, `withdraw_approval` and `abandon` refuse once `send_started` is recorded.
 - `present_draft` refuses when there is no working draft.
 - `extract` refuses emails the pre-filter rejected, and `consolidate` refuses excluded records, emails with no extract record, and a call naming no records.
@@ -238,7 +240,7 @@ The orchestrator's instructions apply these rules:
 - approve only the latest presented version, and name the version approved in the reply;
 - when a reviewer wants to approve, ask them to reply with `approve v{version}` as the first line of their message, unless their message already starts with it;
 - when feedback is ambiguous, or contradicts earlier feedback from another reviewer, ask for clarification instead of revising;
-- restore an excluded record only when a reviewer's feedback names it;
+- restore an excluded record only when a reviewer's feedback names it, then consolidate and revise the draft so it includes the new item;
 - abandon a newsletter only when a reviewer explicitly asks to abandon or scrap it;
 - when the reviewer's previous message in the newsletter came through the other channel, start the reply with a short summary of what has happened since;
 - report feedback that could not be applied, with the reason;
@@ -271,11 +273,11 @@ Each specialist agent is a Pydantic AI agent whose instructions are part of its 
 | Agent | Called by | Input | Model tier |
 | --- | --- | --- | --- |
 | `extractor` | `extract`, once per screened email | Sender name and address from `from`, subject, received time and `uniqueBody` | Small |
-| `consolidator` | `consolidate` | Extract records that were not excluded | Mid |
+| `consolidator` | `consolidate` | Included extract records, and the configured categories | Mid |
 | `writer` | `write` | Consolidated items with sender names and received dates, excluded records, all feedback, the orchestrator's instruction and, when revising, the working draft | Mid |
 | `judge` | `judge` | Working draft, items and all feedback | Mid |
 
-The extractor is the only agent that reads message subjects and bodies. Extract records are derived from them, so every agent that receives an extract record, including the orchestrator, treats it as untrusted data. The code checks on each tool limit what a malicious record could cause: approval needs the reviewer's own words, and withdrawing or abandoning needs a reviewer as the caller.
+The extractor is the only agent that reads message subjects and bodies. Extract records are derived from them, so every agent that receives an extract record, including the orchestrator, treats it as untrusted data. The code checks on each tool limit what a malicious record could cause: approval needs the reviewer's own words, and restoring, withdrawing or abandoning needs a reviewer as the caller.
 
 The model for each agent, including the orchestrator, comes from `llm.models` in configuration, keyed by agent name. Configuration fails to load if an agent has no model entry or an entry names no agent.
 
@@ -307,7 +309,7 @@ Pulse sends every model call to `llm.base_url` in the OpenAI-compatible chat com
 | `exclusion_reason` | `null` when `category` is set; otherwise one short sentence for the reviewers saying why the email fits no category |
 | `sensitivity.type` | `commercial` (deal values, margins, pricing, revenue), `personal` (health, family, performance, HR matters; a birthday is newsletter content, not personal), `unannounced` (confidential, draft or not yet announced) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
 
-The extractor states only facts in the message, writing the sender's name where the message says I or we, so each fact names who it is about. Code attaches the email's message ID to the extractor's output, making it the email's extract record, and excludes every record that has no category or carries a sensitivity flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. Extracting an email again replaces its extract record, which keeps its excluded ID while it stays excluded. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries any sensitivity flag, and `no_category`, when `category` is `null`. The extractor's output checks require exactly one of `category` and `exclusion_reason`, and the category to be configured.
+The extractor states only facts in the message, writing the sender's name where the message says I or we, so each fact names who it is about. Code attaches the email's message ID to the extractor's output, making it the email's extract record, and excludes every record that has no category or carries a sensitivity flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. Restoring a record includes it: `restore` clears its exclusion outcome, keeps its excluded ID and records the reviewer who restored it, and the record then becomes an item like any other included record. Extracting an email again replaces its extract record, which keeps its excluded ID while it stays excluded, and stays included if it was restored. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries any sensitivity flag, and `no_category`, when `category` is `null`. The extractor's output checks require exactly one of `category` and `exclusion_reason`, and the category to be configured.
 
 ### Consolidate
 
@@ -324,7 +326,7 @@ The extractor states only facts in the message, writing the sender's name where 
 }
 ```
 
-The consolidator merges records describing the same news and writes the headline. Its output checks require every source message ID to come from its input, and every input record to appear in exactly one item. Code turns each merged entry into an item: it gives the item an ID of the form `item-{n}`, numbered from 1 in the order the consolidator returned them, and the people of its source records, each once. The `write` tool adds each item's sender names and received dates to the writer's input, from the item's source emails. The headline is one short line in sentence case.
+The consolidator merges records describing the same news and writes the headline. A restored record with no category takes the configured category its news fits. Its output checks require every source message ID to come from its input, every input record to appear in exactly one item, and every category to be configured. Code turns each merged entry into an item: it gives the item an ID of the form `item-{n}`, numbered from 1 in the order the consolidator returned them, and the people of its source records, each once. The `write` tool adds each item's sender names and received dates to the writer's input, from the item's source emails. The headline is one short line in sentence case.
 
 ### Write
 
@@ -352,7 +354,7 @@ The consolidator merges records describing the same news and writes the headline
 }
 ```
 
-The writer returns the complete content (the headline title, the headline, the intro, the sections with their titles, in order, and the included item IDs), a list of changes and any feedback it did not apply; the changes and feedback not applied are empty for a first draft. When revising, it can remove items, including by received date, restore an excluded record, and rename or reorder sections and the headline title. Its output checks require every item ID to be a known item or excluded record, and every entry's item to be in `item_ids`. A restored record takes the category of the section it is placed in.
+The writer returns the complete content (the headline title, the headline, the intro, the sections with their titles, in order, and the included item IDs), a list of changes and any feedback it did not apply; the changes and feedback not applied are empty for a first draft. When revising, it can remove items, including by received date, and rename or reorder sections and the headline title. It receives the excluded records only to explain feedback it cannot apply, and never includes them. Its output checks require every item ID to be a known item, and every entry's item to be in `item_ids`.
 
 The writer's instructions give `headline_title`, and the configured sections with their titles in configuration order, as the defaults it uses unless the orchestrator's instruction or feedback asks otherwise. Code renders the content as the writer returns it: the headline under its headline title, then the intro, then each section under its title, in the order given, omitting sections with no entries. It renders the newsletter in HTML for email and in Markdown for the chat endpoint. The draft has no subject: code builds it from `subject_template`. The writer's instructions apply these rules:
 
@@ -366,7 +368,7 @@ The writer's instructions give `headline_title`, and the configured sections wit
 
 ### Judge
 
-The judge returns, for the intro and each entry, whether its text is supported by the facts of the items and the feedback, and the unsupported claim when it is not. Each verdict has a `target`, which is `intro` or the entry's item ID, `supported`, and `claim`, which is `null` when the text is supported.
+The judge returns, for the intro and each entry, whether its text is supported by the facts of the items and the feedback, and the unsupported claim when it is not. Each verdict has a `target`, which is `intro` or the entry's item ID, `supported`, and `claim`, which is `null` when the text is supported. Its output checks require exactly one verdict for the intro and for each entry, no other targets, and a claim exactly when the text is not supported. The verdicts are stored with the working draft, and a new working draft has none until the judge runs on it, so a version presented without them is not judged.
 
 ## Draft checks
 
@@ -381,9 +383,9 @@ Code checks a draft for these conditions. A source message's text is its subject
 - every entry references an included item, and every included item appears exactly once;
 - only configured categories appear.
 
-Each check verifies an entry against its item, or against the excluded record when the entry restores one. Each failure names the check, where it occurred (the headline title, the headline, the intro, an entry's item ID, a section's category, or the whole draft for the word count) and the offending detail, such as the name, the digit sequence or the count.
+Each check verifies an entry against its item. Each failure names the check, where it occurred (the headline title, the headline, the intro, an entry's item ID, a section's category, or the whole draft for the word count) and the offending detail, such as the name, the digit sequence or the count.
 
-The checks run through `check` and again in `present_draft`. A version can be presented with failures; its reviewer email lists them first.
+The checks run through `check` and again in `present_draft`. A version can be presented with failures; its reviewer email lists them first. The review section names where each failure or unsupported claim is as reviewers see the newsletter: an entry by its text, a section by its title, and the headline title, headline, intro or whole newsletter by name.
 
 ## Reviewer email
 
@@ -431,7 +433,7 @@ The store is a SQLite database at `state.db_path`, on the mounted volume. Every 
 | --- | --- |
 | `newsletters` | Newsletter ID, state, time opened, time last updated, latest version, approved version, approver, approval time, send time, `send_started`, sent time, closed time, and the message ID of the latest message in its email thread |
 | `screened_emails` | Each newsletter's screened emails: message ID, sender name and address, subject, received time, attachment flag, pre-filter outcome and reason, and whether the message has been moved; the body for emails that passed the pre-filter |
-| `extract_records` | Each screened email's extract record and exclusion outcome, with the ID given to an excluded record |
+| `extract_records` | Each screened email's extract record and exclusion outcome, with the ID given to an excluded record and the reviewer who restored it |
 | `items` | Each newsletter's current consolidated items and headline |
 | `drafts` | Each newsletter's working draft, and the judge's latest verdicts on it |
 | `versions` | Each presented version's content, changes, feedback not applied, judge verdicts, check results and creation time |
@@ -481,7 +483,7 @@ Within Pulse:
 - staff emails and reviewer messages never enter agent instructions or system prompts;
 - the orchestrator's tools are those listed in [tools](#tools), and each enforces its own checks in code;
 - the pre-filter rejects senders outside `allowed_sender_domains`, and outside `allowed_senders` when that list is not empty, and messages whose sensitivity label is not allowed;
-- the extractor flags sensitive and inappropriate content, and code excludes every flagged record unless a reviewer's feedback restores it;
+- the extractor flags sensitive and inappropriate content, and code excludes every flagged record unless a verified reviewer restores it;
 - drafts use only extracted facts and reviewer feedback, and the draft checks verify names and numbers against them;
 - rendering escapes all model output and email-derived text, in HTML and in Markdown;
 - the chat endpoint accepts only requests whose bearer token verifies against the configured issuer, audience and key set, and trusts no identity a client states in any other way.

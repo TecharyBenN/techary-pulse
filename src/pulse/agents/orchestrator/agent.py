@@ -13,9 +13,17 @@ NO_REPLY = "NO_REPLY"
 INSTRUCTIONS = read_instructions(__package__)
 
 
-def build_agent(model: Model, toolset: AbstractToolset[None]) -> Agent[None, str]:
+def build_agent(
+    model: Model, toolset: AbstractToolset[ReviewerMessage]
+) -> Agent[ReviewerMessage, str]:
+    """Each run's dependency is the message it answers, so tools take the caller from code."""
     return Agent(
-        model, output_type=str, instructions=INSTRUCTIONS, toolsets=[toolset], name="orchestrator"
+        model,
+        deps_type=ReviewerMessage,
+        output_type=str,
+        instructions=INSTRUCTIONS,
+        toolsets=[toolset],
+        name="orchestrator",
     )
 
 

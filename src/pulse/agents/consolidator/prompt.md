@@ -8,7 +8,7 @@ Return these fields:
 
 - `headline`: one short line in sentence case, summing up the newsletter's main news.
 - `items`: one entry per piece of news, each with:
-  - `category`: the category of its records;
+  - `category`: the category of its records. A record with no category was restored by a reviewer; give its item the configured category its news fits;
   - `facts`: the facts of its records, one short sentence each, stating each fact once and keeping names, dates and numbers exactly as written;
   - `source_message_ids`: the message ID of every record merged into it.
 

@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from pulse.entities.content import Content, Entry, Section, WriterOutput
+from pulse.entities.content import Content, Entry, Section, Verdict, WriterOutput
 from pulse.entities.extracts import (
     Consolidation,
     ConsolidatorItem,
@@ -134,6 +134,11 @@ def make_draft(*entries: Entry, **changes: object) -> WriterOutput:
     )
     fields: dict[str, object] = {"content": content, "changes": [], "not_applied": []}
     return WriterOutput.model_validate(fields | changes)
+
+
+def make_verdict(target: str = "item-1", claim: str | None = None) -> Verdict:
+    """A supported verdict, unless it names an unsupported claim."""
+    return Verdict(target=target, supported=claim is None, claim=claim)
 
 
 def corpus_messages() -> list[dict[str, Any]]:

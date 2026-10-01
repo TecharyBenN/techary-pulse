@@ -18,7 +18,7 @@ def _get_newsletter() -> str:
 def test_agent_offers_the_toolset_and_nothing_else() -> None:
     model = TestModel(call_tools=[])
 
-    build_agent(model, FunctionToolset([_get_newsletter])).run_sync("hello")
+    build_agent(model, FunctionToolset([_get_newsletter])).run_sync("hello", deps=make_message())
 
     assert model.last_model_request_parameters is not None
     tools = model.last_model_request_parameters.function_tools

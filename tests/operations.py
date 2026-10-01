@@ -12,6 +12,8 @@ from tests.fakes.mailbox import FakeMailbox
 from tests.messages import OPENED
 
 REVIEWERS = "pulse-reviewers@example.org"
+CATEGORIES = ("customer_win", "shout_out")
+MAX_WORDS = 400
 SUBJECT_TEMPLATE = "Pulse: {date}"
 TIMEZONE = ZoneInfo("Europe/London")
 
@@ -36,4 +38,6 @@ def make_operations(
         reviewers=REVIEWERS,
         subject_template=SUBJECT_TEMPLATE,
         timezone=TIMEZONE,
+        categories=CATEGORIES,
+        max_words=MAX_WORDS,
     )

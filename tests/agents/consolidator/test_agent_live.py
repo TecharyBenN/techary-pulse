@@ -28,9 +28,9 @@ async def test_duplicate_reports_merge_into_single_items() -> None:
     records = [record for record in extracted if record.exclusion is None]
 
     output = await run_specialist(
-        build_consolidator(model),
+        build_consolidator(model, config.categories),
         consolidator_prompt(records),
-        lambda output: output_checks(output, records),
+        lambda output: output_checks(output, records, config.categories),
     )
 
     print(output.model_dump_json(indent=2))

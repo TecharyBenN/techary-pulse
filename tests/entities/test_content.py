@@ -10,13 +10,14 @@ from pulse.entities.content import (
     check_content,
     draft_changed,
     item_sources,
+    require_draft,
     version_of,
 )
+from pulse.entities.errors import Refusal
 from pulse.entities.mail import ScreenedEmail, screen
 from tests.emails import (
     make_draft,
     make_email,
-    make_extract_record,
     make_item,
     make_screened_email,
 )
@@ -271,22 +272,6 @@ def test_sender_matches_ignoring_case() -> None:
     assert _check(_entry_one("priya shah signed Northwind Retail.")) == []
 
 
-def test_restored_record_is_checked_against_its_sources() -> None:
-    sources = SOURCES | {
-        "excluded-1": [_source("Ben Carter", "Plants", "The office has 12 plants.")]
-    }
-    content = _content(
-        entries=[
-            ("customer_win", "item-1", "Priya Shah signed Northwind Retail.", []),
-            ("shout_out", "item-2", "Dan Wood thanks Sam Patel.", []),
-            ("shout_out", "excluded-1", "Ben Carter reports 12 plants.", ["Ben Carter"]),
-        ],
-        item_ids=["item-1", "item-2", "excluded-1"],
-    )
-
-    assert _check(content, sources=sources) == []
-
-
 def test_entry_for_item_not_included_fails() -> None:
     content = _content(item_ids=["item-1"])
 
@@ -345,29 +330,31 @@ def test_every_failure_is_returned() -> None:
     ]
 
 
-def test_item_sources_maps_items_and_restored_records_to_their_emails() -> None:
+def test_item_sources_maps_each_included_item_to_its_emails() -> None:
     emails = [make_screened_email(m) for m in ("m01", "m02", "m03")]
-    excluded = make_extract_record("m03", category=None)
     content = make_draft(
         Entry(item_id="item-1", text="", people=[]),
-        Entry(item_id=str(excluded.excluded_id), text="", people=[]),
         Entry(item_id="item-9", text="", people=[]),
     ).content
 
-    sources = item_sources(
-        content, [make_item(source_message_ids=["m01", "m02"])], [excluded], emails
-    )
+    sources = item_sources(content, [make_item(source_message_ids=["m01", "m02"])], emails)
 
     # An unknown ID is left out, so the items check reports it.
-    assert sources == {"item-1": emails[:2], "excluded-1": emails[2:]}
+    assert sources == {"item-1": emails[:2]}
 
 
 def test_draft_changed_compares_the_content_with_the_latest_version() -> None:
     draft = make_draft()
-    latest = version_of(draft, 1, datetime(2026, 9, 26, 9, 0, tzinfo=UTC))
+    latest = version_of(draft, 1, datetime(2026, 9, 26, 9, 0, tzinfo=UTC), [], None)
     revised = make_draft(Entry(item_id="item-1", text="Shorter.", people=[]))
 
     assert draft_changed(None, None) is False
     assert draft_changed(draft, None) is True
     assert draft_changed(draft, latest) is False
     assert draft_changed(revised, latest) is True
+
+
+def test_require_draft_refuses_when_there_is_no_working_draft() -> None:
+    assert require_draft(make_draft()) == make_draft()
+    with pytest.raises(Refusal, match="there is no working draft"):
+        require_draft(None)

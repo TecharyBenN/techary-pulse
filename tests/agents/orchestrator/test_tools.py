@@ -3,6 +3,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from pydantic_ai import RunContext
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -11,15 +12,19 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RunUsage
 
 from pulse.adapters.store import SqliteStore
 from pulse.agents.consolidator.agent import build_consolidator
 from pulse.agents.extractor.agent import build_extractor
+from pulse.agents.judge.agent import build_judge
 from pulse.agents.orchestrator.agent import build_agent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import PROGRESS_NOTES, ShowResult, Tools, progress_note
 from pulse.agents.writer.agent import build_writer
-from pulse.entities.content import Entry
+from pulse.entities.content import Entry, JudgeOutput
+from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.lifecycle import start_send
 from tests.emails import (
     CORPUS_ITEM_SOURCES,
@@ -34,11 +39,12 @@ from tests.emails import (
     make_email,
     make_item,
     make_output,
+    make_verdict,
     stored_outcomes,
 )
 from tests.fakes.mailbox import FakeMailbox
 from tests.fakes.models import extractor_model, reply_with, responses, text_response
-from tests.messages import make_message
+from tests.messages import REVIEWER, make_message
 from tests.operations import REVIEWERS, make_operations
 
 pytestmark = pytest.mark.anyio
@@ -59,6 +65,7 @@ OUTPUTS = {
 CONSOLIDATOR_OUTPUT = make_consolidator_output(make_consolidator_item("m01"))
 CONSOLIDATION = make_consolidation(make_item(source_message_ids=["m01"]))
 DRAFT = make_draft()
+JUDGED = JudgeOutput(verdicts=[make_verdict("intro"), make_verdict(claim="Signed two customers")])
 
 
 @pytest.fixture
@@ -74,13 +81,15 @@ def _tools(
     consolidator: FunctionModel | None = None,
     writer: FunctionModel | None = None,
     conversation: FakeMailbox | None = None,
+    judge: FunctionModel | None = None,
 ) -> Tools:
     return Tools(
         make_operations(store, FakeMailbox(INBOX), conversation),
         store,
         build_extractor(extractor or extractor_model(OUTPUTS), CATEGORIES),
         build_consolidator(
-            consolidator or FunctionModel(reply_with(CONSOLIDATOR_OUTPUT.model_dump_json()))
+            consolidator or FunctionModel(reply_with(CONSOLIDATOR_OUTPUT.model_dump_json())),
+            CATEGORIES,
         ),
         build_writer(
             writer or FunctionModel(reply_with(DRAFT.model_dump_json())),
@@ -89,6 +98,7 @@ def _tools(
             "Headline of the week",
             400,
         ),
+        build_judge(judge or FunctionModel(reply_with(JUDGED.model_dump_json()))),
         CATEGORIES,
     )
 
@@ -109,11 +119,14 @@ async def test_toolset_offers_each_tool(store: SqliteStore) -> None:
         "get_newsletter",
         "list_screened_emails",
         "extract",
+        "restore",
         "consolidate",
         "get_items",
         "write",
         "get_draft",
         "show_draft",
+        "check",
+        "judge",
         "present_draft",
     }
 
@@ -291,7 +304,7 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
         make_operations(store, FakeMailbox(inbox)),
         store,
         build_extractor(extractor_model(outputs), categories),
-        build_consolidator(consolidator),
+        build_consolidator(consolidator, categories),
         build_writer(
             FunctionModel(reply_with(DRAFT.model_dump_json())),
             categories,
@@ -299,6 +312,7 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
             "Headline of the week",
             400,
         ),
+        build_judge(FunctionModel(reply_with(JUDGED.model_dump_json()))),
         categories,
     )
     passed = [m for m, outcome in CORPUS_OUTCOMES.items() if not outcome.startswith("rejected")]
@@ -471,24 +485,6 @@ async def test_write_revises_the_working_draft_with_all_feedback(store: SqliteSt
     ]
 
 
-async def test_write_can_restore_an_excluded_record(store: SqliteStore) -> None:
-    newsletter_id = await _consolidated(_tools(store))
-    [excluded_id, _] = sorted(
-        r.excluded_id for r in await store.list_extract_records(newsletter_id) if r.excluded_id
-    )
-    restored = make_draft(
-        Entry(item_id="item-1", text="Priya Shah signed Northwind Retail.", people=["Priya Shah"]),
-        Entry(item_id=excluded_id, text="Priya Shah has nothing to report.", people=["Priya Shah"]),
-    )
-    tools = _tools(store, writer=FunctionModel(reply_with(restored.model_dump_json())))
-
-    result = await tools.write(f"Restore {excluded_id}.")
-
-    assert isinstance(result, dict)
-    assert result["item_ids"] == ["item-1", excluded_id]
-    assert await store.get_draft(newsletter_id) == restored
-
-
 async def test_write_reports_an_invalid_response_and_stores_nothing(store: SqliteStore) -> None:
     invalid = make_draft(Entry(item_id="item-9", text="Unknown.", people=[])).model_dump_json()
     tools = _tools(store, writer=FunctionModel(reply_with(invalid)))
@@ -497,8 +493,7 @@ async def test_write_reports_an_invalid_response_and_stores_nothing(store: Sqlit
     result = await tools.write("Write the first draft.")
 
     assert result == (
-        "Failed: writer gave no valid response: "
-        "item-9 in item_ids is not a known item or excluded record"
+        "Failed: writer gave no valid response: item-9 in item_ids is not a known item"
     )
     assert await store.get_draft(newsletter_id) is None
 
@@ -563,6 +558,91 @@ async def test_get_newsletter_shows_whether_the_draft_changed(store: SqliteStore
     shorter = DRAFT.content.model_copy(update={"intro": "A shorter intro."})
     await store.save_draft(newsletter_id, DRAFT.model_copy(update={"content": shorter}))
     assert await draft_changed() is True
+
+
+async def test_check_returns_every_failure_of_the_working_draft(store: SqliteStore) -> None:
+    tools = _tools(store)
+    newsletter_id = await _consolidated(tools)
+    assert await tools.check() == "Refused: there is no working draft"
+    dashed = DRAFT.content.model_copy(update={"intro": "A strong week \N{EN DASH} again."})
+    await store.save_draft(newsletter_id, DRAFT.model_copy(update={"content": dashed}))
+
+    assert await tools.check() == {
+        "failure_count": 1,
+        "failures": [{"check": "dashes", "target": "intro", "detail": "em or en dash"}],
+    }
+
+
+async def test_judge_stores_its_verdicts_and_returns_the_unsupported_claims(
+    store: SqliteStore,
+) -> None:
+    tools = _tools(store)
+    newsletter_id = await _consolidated(tools)
+    assert await tools.judge() == "Refused: there is no working draft"
+    await tools.write("Write the first draft.")
+
+    result = await tools.judge()
+
+    assert result == {
+        "judged": 2,
+        "unsupported": [{"target": "item-1", "claim": "Signed two customers"}],
+    }
+    assert await store.get_verdicts(newsletter_id) == JUDGED.verdicts
+
+
+async def test_judge_reports_an_invalid_response_and_stores_nothing(store: SqliteStore) -> None:
+    invalid = JudgeOutput(verdicts=[make_verdict("intro")]).model_dump_json()
+    tools = _tools(store, judge=FunctionModel(reply_with(invalid)))
+    newsletter_id = await _consolidated(tools)
+    await tools.write("Write the first draft.")
+
+    assert await tools.judge() == "Failed: judge gave no valid response: item-1 has 0 verdicts"
+    assert await store.get_verdicts(newsletter_id) is None
+
+
+def _run_for(message: ReviewerMessage) -> RunContext[ReviewerMessage]:
+    """The context a run gives its tools: the reviewer message it answers."""
+    return RunContext(deps=message, model=TestModel(), usage=RunUsage())
+
+
+async def _excluded_id(store: SqliteStore, newsletter_id: str, message_id: str) -> str:
+    records = await store.list_extract_records(newsletter_id)
+    [record] = [r for r in records if r.message_id == message_id]
+    assert record.excluded_id is not None
+    return record.excluded_id
+
+
+async def test_restore_includes_the_record_for_the_reviewer(store: SqliteStore) -> None:
+    tools = _tools(store)
+    newsletter_id = await _consolidated(tools)
+    excluded_id = await _excluded_id(store, newsletter_id, "m02")
+
+    result = await tools.restore(_run_for(make_message()), excluded_id)
+
+    assert result == {"excluded_id": excluded_id, "message_id": "m02"}
+    records = {r.message_id: r for r in await store.list_extract_records(newsletter_id)}
+    assert (records["m02"].exclusion, records["m02"].restored_by) == (None, REVIEWER)
+    # The restored record is not in the items until consolidate runs again.
+    summary = await tools.get_newsletter()
+    assert isinstance(summary, dict)
+    assert summary["items_up_to_date"] is False
+
+
+async def test_restore_refuses_an_id_that_names_no_excluded_record(store: SqliteStore) -> None:
+    tools = _tools(store)
+    newsletter_id = await _consolidated(tools)
+    excluded_id = await _excluded_id(store, newsletter_id, "m02")
+    await tools.restore(_run_for(make_message()), excluded_id)
+
+    assert await tools.restore(_run_for(make_message()), excluded_id) == (
+        f"Refused: {excluded_id} names no excluded record in the open newsletter"
+    )
+
+
+async def test_restore_refuses_without_an_open_newsletter(store: SqliteStore) -> None:
+    assert await _tools(store).restore(_run_for(make_message()), "excluded-1") == (
+        "Refused: no newsletter is open"
+    )
 
 
 def _call(tool: str, args: dict[str, object] | None = None) -> ModelResponse:

@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 
 from pulse.adapters.store import SqliteStore
-from pulse.entities.content import Version, version_of
+from pulse.entities.content import CheckFailure, Version, version_of
 from pulse.entities.errors import StoreError
-from pulse.entities.extracts import Sensitivity
+from pulse.entities.extracts import Sensitivity, restored
 from pulse.entities.lifecycle import abandon, present, update
 from pulse.entities.store import HistoryRow
 from tests.emails import (
@@ -18,6 +18,7 @@ from tests.emails import (
     make_item,
     make_output,
     make_screened_email,
+    make_verdict,
 )
 from tests.messages import OPENED, REVIEWER, make_message, make_newsletter
 
@@ -195,6 +196,20 @@ async def test_replaced_extract_record_keeps_its_excluded_id(store: SqliteStore)
     assert await store.list_extract_records("n-1") == [replaced]
 
 
+async def test_restored_record_is_saved_in_place(store: SqliteStore) -> None:
+    await store.save_start(make_newsletter(), [])
+    first = await store.save_extract("n-1", "m01", make_output(category=None))
+    second = await store.save_extract("n-1", "m02", make_output())
+    record = restored([first], "excluded-1", REVIEWER)
+
+    await store.save_restored("n-1", record)
+
+    assert await store.list_extract_records("n-1") == [record, second]
+    # Extracting it again keeps the restore.
+    again = await store.save_extract("n-1", "m01", make_output(category=None))
+    assert (again.exclusion, again.restored_by) == (None, REVIEWER)
+
+
 async def test_no_items_before_consolidation(store: SqliteStore) -> None:
     await store.save_start(make_newsletter(), [])
 
@@ -228,7 +243,8 @@ async def test_parallel_extracts_get_distinct_excluded_ids(store: SqliteStore) -
 
 
 def _version(number: int) -> Version:
-    return version_of(make_draft(), number, OPENED)
+    failure = CheckFailure(check="dashes", target="intro", detail="em or en dash")
+    return version_of(make_draft(), number, OPENED, [failure], [make_verdict(claim="Made up")])
 
 
 async def test_no_draft_before_writing(store: SqliteStore) -> None:
@@ -243,6 +259,20 @@ async def test_saved_draft_replaces_the_earlier_draft(store: SqliteStore) -> Non
 
     assert await store.get_draft("n-1") == revised
     assert await store.get_draft("n-2") is None
+
+
+async def test_verdicts_belong_to_the_working_draft_they_judged(store: SqliteStore) -> None:
+    await store.save_draft("n-1", make_draft())
+    assert await store.get_verdicts("n-1") is None
+    verdicts = [make_verdict("intro"), make_verdict(claim="Signed two customers")]
+
+    await store.save_verdicts("n-1", verdicts)
+
+    assert await store.get_verdicts("n-1") == verdicts
+    assert await store.get_draft("n-1") == make_draft()
+    # A new working draft has not been judged.
+    await store.save_draft("n-1", make_draft(changes=["Shortened the intro"]))
+    assert await store.get_verdicts("n-1") is None
 
 
 async def test_version_is_saved_with_the_newsletter_that_numbers_it(store: SqliteStore) -> None:

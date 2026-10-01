@@ -10,7 +10,8 @@ from typing import Literal
 from pydantic import AwareDatetime, PositiveInt
 
 from pulse.entities.base import Entity, StrictEntity
-from pulse.entities.extracts import ExtractRecord, Item
+from pulse.entities.errors import Refusal
+from pulse.entities.extracts import Item
 from pulse.entities.mail import ScreenedEmail, sender_names, source_text
 
 CheckName = Literal[
@@ -45,6 +46,10 @@ class Content(StrictEntity):
     sections: list[Section]
     item_ids: list[str]
 
+    def entries(self) -> Iterator[Entry]:
+        for section in self.sections:
+            yield from section.entries
+
 
 class NotApplied(StrictEntity):
     feedback: str
@@ -59,32 +64,70 @@ class WriterOutput(StrictEntity):
     not_applied: list[NotApplied]
 
 
+class Verdict(StrictEntity):
+    """Whether the judge found the intro, or an entry, supported by its facts and feedback."""
+
+    # "intro", or the entry's item ID.
+    target: str
+    supported: bool
+    # The unsupported claim, or None when the text is supported.
+    claim: str | None
+
+
+class JudgeOutput(StrictEntity):
+    verdicts: list[Verdict]
+
+
+class CheckFailure(Entity):
+    check: CheckName
+    # "headline_title", "headline", "intro", an item ID, a category, or None for the whole draft.
+    target: str | None
+    detail: str
+
+
 class Version(WriterOutput):
     """A working draft as presented to the reviewers."""
 
     version: PositiveInt
     created_at: AwareDatetime
+    check_failures: list[CheckFailure]
+    # None when the version was not judged.
+    verdicts: list[Verdict] | None
 
 
-def version_of(draft: WriterOutput, number: int, created_at: datetime) -> Version:
+def version_of(
+    draft: WriterOutput,
+    number: int,
+    created_at: datetime,
+    check_failures: Sequence[CheckFailure],
+    verdicts: Sequence[Verdict] | None,
+) -> Version:
     """The working draft as the version it is presented as."""
-    return Version(**draft.model_dump(), version=number, created_at=created_at)
+    return Version(
+        **draft.model_dump(),
+        version=number,
+        created_at=created_at,
+        check_failures=list(check_failures),
+        verdicts=None if verdicts is None else list(verdicts),
+    )
+
+
+def require_draft(draft: WriterOutput | None) -> WriterOutput:
+    """The working draft, as the store returns it; refuse when there is none."""
+    if draft is None:
+        raise Refusal("there is no working draft")
+    return draft
 
 
 def item_sources(
-    content: Content,
-    items: Sequence[Item],
-    records: Sequence[ExtractRecord],
-    emails: Sequence[ScreenedEmail],
+    content: Content, items: Sequence[Item], emails: Sequence[ScreenedEmail]
 ) -> dict[str, list[ScreenedEmail]]:
-    """Map each included item ID, or restored record ID, to its source emails.
+    """Map each included item ID to its source emails.
 
-    IDs that name no item or excluded record are left out, so the checks can report them.
+    IDs that name no item are left out, so the checks can report them.
     """
     by_message = {email.message_id: email for email in emails}
-    by_id = {item.item_id: item.source_message_ids for item in items} | {
-        record.excluded_id: [record.message_id] for record in records if record.excluded_id
-    }
+    by_id = {item.item_id: item.source_message_ids for item in items}
     return {
         item_id: [by_message[message_id] for message_id in by_id[item_id]]
         for item_id in dict.fromkeys(content.item_ids)
@@ -97,13 +140,6 @@ def draft_changed(draft: WriterOutput | None, latest: Version | None) -> bool:
     return draft is not None and (latest is None or draft.content != latest.content)
 
 
-class CheckFailure(Entity):
-    check: CheckName
-    # "headline_title", "headline", "intro", an item ID, a category, or None for the whole draft.
-    target: str | None
-    detail: str
-
-
 @dataclass(frozen=True)
 class _Context:
     content: Content
@@ -111,10 +147,6 @@ class _Context:
     feedback: Sequence[str]
     categories: Collection[str]
     max_words: int
-
-    def entries(self) -> Iterator[Entry]:
-        for section in self.content.sections:
-            yield from section.entries
 
     def texts(self, item_id: str) -> list[str]:
         return [source_text(email) for email in self.sources.get(item_id, ())]
@@ -142,7 +174,7 @@ def check_content(
 ) -> list[CheckFailure]:
     """Return every check failure.
 
-    `sources` maps each included item ID, or restored record ID, to its source emails.
+    `sources` maps each included item ID to its source emails.
     """
     context = _Context(content, sources, feedback, categories, max_words)
     return [failure for check in _CHECKS for failure in check(context)]
@@ -179,13 +211,13 @@ def _unsupported_digits(target: str, text: str, sources: Sequence[str]) -> Itera
 def _digits(context: _Context) -> Iterator[CheckFailure]:
     all_texts = [text for item_id in context.sources for text in context.texts(item_id)]
     yield from _unsupported_digits("intro", context.content.intro, [*all_texts, *context.feedback])
-    for entry in context.entries():
+    for entry in context.content.entries():
         sources = [*context.texts(entry.item_id), *context.feedback]
         yield from _unsupported_digits(entry.item_id, entry.text, sources)
 
 
 def _people(context: _Context) -> Iterator[CheckFailure]:
-    for entry in context.entries():
+    for entry in context.content.entries():
         sources = [
             *context.texts(entry.item_id),
             *context.senders(entry.item_id),
@@ -205,14 +237,14 @@ def _people(context: _Context) -> Iterator[CheckFailure]:
 
 
 def _sentences(context: _Context) -> Iterator[CheckFailure]:
-    for entry in context.entries():
+    for entry in context.content.entries():
         count = sum(1 for part in _SENTENCE_END.split(entry.text) if part.strip())
         if count > _MAX_SENTENCES:
             yield CheckFailure(check="sentences", target=entry.item_id, detail=f"{count} sentences")
 
 
 def _senders(context: _Context) -> Iterator[CheckFailure]:
-    for entry in context.entries():
+    for entry in context.content.entries():
         for sender in context.senders(entry.item_id):
             if not _contains(entry.text, sender):
                 yield CheckFailure(
@@ -222,10 +254,10 @@ def _senders(context: _Context) -> Iterator[CheckFailure]:
 
 def _items(context: _Context) -> Iterator[CheckFailure]:
     included = context.content.item_ids
-    for entry in context.entries():
+    for entry in context.content.entries():
         if entry.item_id not in included or entry.item_id not in context.sources:
             yield CheckFailure(check="items", target=entry.item_id, detail="not an included item")
-    counts = Counter(entry.item_id for entry in context.entries())
+    counts = Counter(entry.item_id for entry in context.content.entries())
     for item_id in dict.fromkeys(included):
         if counts[item_id] != 1:
             yield CheckFailure(

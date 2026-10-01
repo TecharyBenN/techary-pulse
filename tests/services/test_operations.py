@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from pulse.adapters.store import SqliteStore
-from pulse.entities.content import Version
+from pulse.entities.content import CheckFailure, Version
 from pulse.entities.errors import MailboxError, Refusal, StoreError
 from pulse.entities.lifecycle import Newsletter, start_send
 from pulse.entities.mail import OutboundEmail
@@ -16,6 +16,7 @@ from tests.emails import (
     make_email,
     make_item,
     make_output,
+    make_verdict,
     screen_email,
 )
 from tests.fakes.clock import ControlledClock
@@ -221,6 +222,69 @@ async def test_later_versions_reply_to_the_latest_message_in_the_thread(
     newsletter = await store.get_open_newsletter()
     assert newsletter is not None
     assert newsletter.thread_message_id == "reply-2"
+
+
+DASHED = make_draft().model_copy(
+    update={
+        "content": make_draft().content.model_copy(
+            update={"intro": "A strong week \N{EM DASH} again."}
+        )
+    }
+)
+DASH_FAILURE = CheckFailure(check="dashes", target="intro", detail="em or en dash")
+
+
+async def test_check_returns_every_failure_of_the_working_draft(
+    operations: Operations, store: SqliteStore
+) -> None:
+    await _drafted(store)
+    assert await operations.check() == []
+
+    await store.save_draft("n-1", DASHED)
+
+    assert await operations.check() == [DASH_FAILURE]
+
+
+async def test_check_refuses_without_a_working_draft(
+    operations: Operations, store: SqliteStore
+) -> None:
+    await store.save_start(make_newsletter(), [])
+
+    with pytest.raises(Refusal, match="there is no working draft"):
+        await operations.check()
+
+
+async def test_present_saves_the_check_failures_and_the_latest_verdicts(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox
+) -> None:
+    await _drafted(store)
+    await store.save_draft("n-1", DASHED)
+    verdicts = [make_verdict("intro"), make_verdict(claim="Signed two customers")]
+    await store.save_verdicts("n-1", verdicts)
+
+    await operations.present_draft()
+
+    # A version can be presented with failures; its reviewer email lists them.
+    [version] = await _versions(store)
+    assert (version.check_failures, version.verdicts) == ([DASH_FAILURE], verdicts)
+    [email] = conversation.sent
+    assert "Dashes: em or en dash" in email.body.content
+    assert "Signed two customers" in email.body.content
+
+
+async def test_a_draft_rewritten_since_it_was_judged_is_presented_not_judged(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox
+) -> None:
+    await _drafted(store)
+    await store.save_verdicts("n-1", [make_verdict("intro"), make_verdict()])
+    await store.save_draft("n-1", make_draft(changes=["Shortened the intro"]))
+
+    await operations.present_draft()
+
+    [version] = await _versions(store)
+    assert version.verdicts is None
+    [email] = conversation.sent
+    assert "This version was not judged." in email.body.content
 
 
 async def test_present_refuses_without_an_open_newsletter(operations: Operations) -> None:

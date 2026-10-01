@@ -19,6 +19,7 @@ from pulse.adapters.store import SqliteStore
 from pulse.adapters.tokens import JwtVerifier
 from pulse.agents.consolidator.agent import build_consolidator
 from pulse.agents.extractor.agent import build_extractor
+from pulse.agents.judge.agent import build_judge
 from pulse.agents.orchestrator.agent import build_agent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import Tools
@@ -88,7 +89,7 @@ def build_orchestrator(
         allowed_senders=config.allowed_senders,
         allowed_sensitivity_labels=config.allowed_sensitivity_labels,
     )
-    categories = {section.category: section.definition for section in config.sections}
+    categories = config.categories
     operations = Operations(
         store,
         submissions,
@@ -99,12 +100,14 @@ def build_orchestrator(
         reviewers=config.reviewers,
         subject_template=config.subject_template,
         timezone=config.timezone,
+        categories=list(categories),
+        max_words=config.limits.max_words,
     )
     tools = Tools(
         operations,
         store,
         build_extractor(model("extractor"), categories),
-        build_consolidator(model("consolidator")),
+        build_consolidator(model("consolidator"), categories),
         build_writer(
             model("writer"),
             categories,
@@ -112,6 +115,7 @@ def build_orchestrator(
             config.headline_title,
             config.limits.max_words,
         ),
+        build_judge(model("judge")),
         categories,
     )
     return Orchestrator(

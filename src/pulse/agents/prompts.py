@@ -1,9 +1,14 @@
 """What every agent's prompts share: instructions read from the agent's folder, untrusted data
-in delimited blocks, and the configured categories."""
+in delimited blocks, reviewer feedback and the configured categories."""
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from importlib.resources import files
+
+from pulse.entities.conversation import ReviewerMessage
+
+# Who sent each message is for the store, so agents are not given it.
+_FEEDBACK_FIELDS = {"received", "text"}
 
 
 def read_instructions(package: str | None) -> str:
@@ -14,6 +19,12 @@ def read_instructions(package: str | None) -> str:
 def data_block(tag: str, data: object) -> str:
     """Untrusted data as JSON inside a tagged block, which the instructions say is data."""
     return f"<{tag}>\n{json.dumps(data, ensure_ascii=False)}\n</{tag}>"
+
+
+def feedback_block(feedback: Sequence[ReviewerMessage]) -> str:
+    """Every reviewer message about the newsletter, oldest first, as untrusted data."""
+    data = [message.model_dump(mode="json", include=_FEEDBACK_FIELDS) for message in feedback]
+    return data_block("feedback", data)
 
 
 def listed(values: Mapping[str, str]) -> str:

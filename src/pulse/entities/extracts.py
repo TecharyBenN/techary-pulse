@@ -9,6 +9,7 @@ from pydantic import AwareDatetime
 
 from pulse.entities.base import StrictEntity
 from pulse.entities.errors import Refusal
+from pulse.entities.lifecycle import require_reviewer
 from pulse.entities.mail import MessageId, ScreenedEmail, sender_names
 
 SensitivityType = Literal["commercial", "personal", "unannounced", "inappropriate"]
@@ -48,8 +49,11 @@ class ExtractRecord(ExtractorOutput):
 
     message_id: MessageId
     exclusion: ExclusionReason | None
-    # Reviewers restore an excluded record by this ID, so it never changes while excluded.
+    # Reviewers restore an excluded record by this ID, so it never changes while excluded, and
+    # a restored record keeps it.
     excluded_id: str | None
+    # The reviewer who restored the record, which is then included.
+    restored_by: str | None
 
 
 def make_record(
@@ -58,18 +62,38 @@ def make_record(
     previous: ExtractRecord | None,
     used_ids: Collection[str],
 ) -> ExtractRecord:
-    """Apply the exclusion rules, keeping the excluded ID of the record this one replaces.
+    """Apply the exclusion rules, keeping the excluded ID and any restore of the record this
+    one replaces, so extracting again never undoes a reviewer's restore.
 
     `used_ids` holds the excluded IDs in use within the newsletter.
     """
-    exclusion = exclusion_outcome(output)
+    restored_by = previous.restored_by if previous else None
+    exclusion = None if restored_by else exclusion_outcome(output)
     excluded_id = None
-    if exclusion is not None:
+    if exclusion is not None or restored_by:
         excluded_id = previous.excluded_id if previous else None
         excluded_id = excluded_id or f"excluded-{_highest(used_ids) + 1}"
     return ExtractRecord(
-        **output.model_dump(), message_id=message_id, exclusion=exclusion, excluded_id=excluded_id
+        **output.model_dump(),
+        message_id=message_id,
+        exclusion=exclusion,
+        excluded_id=excluded_id,
+        restored_by=restored_by,
     )
+
+
+def restored(
+    records: Sequence[ExtractRecord], excluded_id: str, caller: str | None
+) -> ExtractRecord:
+    """The excluded record a reviewer named, now included; `caller` comes from the run, never
+    from the model."""
+    caller = require_reviewer(caller)
+    record = next(
+        (r for r in records if r.excluded_id == excluded_id and r.exclusion is not None), None
+    )
+    if record is None:
+        raise Refusal(f"{excluded_id} names no excluded record in the open newsletter")
+    return record.model_copy(update={"exclusion": None, "restored_by": caller})
 
 
 def _highest(used_ids: Collection[str]) -> int:

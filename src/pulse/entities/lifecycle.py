@@ -84,6 +84,13 @@ def require_open(newsletter: Newsletter | None) -> Newsletter:
     return newsletter
 
 
+def require_reviewer(caller: str | None) -> str:
+    """`caller` is the reviewer the channel verified, or None in a run with no reviewer."""
+    if caller is None:
+        raise Refusal("no reviewer is present in this run")
+    return caller
+
+
 def update(newsletter: Newsletter, now: dt.datetime) -> Newsletter:
     """Record that `start_newsletter` added the emails that arrived since."""
     _require_changeable(newsletter)
@@ -115,7 +122,7 @@ def approve(
 
     `caller` is the reviewer the channel verified, or None in a run with no reviewer.
     """
-    caller = _require_reviewer(caller)
+    caller = require_reviewer(caller)
     if newsletter.state != "in_review":
         raise Refusal(f"the newsletter is {newsletter.state}, not in review")
     if version != newsletter.latest_version:
@@ -134,7 +141,7 @@ def approve(
 
 
 def withdraw(newsletter: Newsletter, caller: str | None) -> Newsletter:
-    _require_reviewer(caller)
+    require_reviewer(caller)
     _require_changeable(newsletter)
     if newsletter.state != "approved":
         raise Refusal("the newsletter is not approved")
@@ -142,7 +149,7 @@ def withdraw(newsletter: Newsletter, caller: str | None) -> Newsletter:
 
 
 def abandon(newsletter: Newsletter, caller: str | None, now: dt.datetime) -> Newsletter:
-    _require_reviewer(caller)
+    require_reviewer(caller)
     _require_changeable(newsletter)
     return newsletter.model_copy(update={"state": "abandoned", "closed_at": now})
 
@@ -191,12 +198,6 @@ def _send_slot(rule: Scheduled, timezone: ZoneInfo, opened_at: dt.datetime) -> d
     if slot <= opened:
         slot = dt.datetime.combine(day + dt.timedelta(days=7), rule.time, tzinfo=timezone)
     return slot.astimezone(dt.UTC)
-
-
-def _require_reviewer(caller: str | None) -> str:
-    if caller is None:
-        raise Refusal("no reviewer is present in this run")
-    return caller
 
 
 def _require_changeable(newsletter: Newsletter) -> None:

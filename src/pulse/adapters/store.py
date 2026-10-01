@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
 
-from pulse.entities.content import Version, WriterOutput
+from pulse.entities.content import JudgeOutput, Verdict, Version, WriterOutput
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import StoreError
 from pulse.entities.extracts import Consolidation, ExtractorOutput, ExtractRecord, make_record
@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE TABLE IF NOT EXISTS drafts (
     newsletter_id TEXT NOT NULL,
     data TEXT NOT NULL,
+    verdicts TEXT,
     PRIMARY KEY (newsletter_id)
 );
 CREATE TABLE IF NOT EXISTS versions (
@@ -131,6 +132,11 @@ class SqliteStore:
 
         return await self._execute(save)
 
+    async def save_restored(self, newsletter_id: str, record: ExtractRecord) -> None:
+        sql = "UPDATE extract_records SET data = ? WHERE newsletter_id = ? AND message_id = ?"
+        params = (record.model_dump_json(), newsletter_id, record.message_id)
+        await self._execute(lambda connection: connection.execute(sql, params))
+
     async def list_extract_records(self, newsletter_id: str) -> list[ExtractRecord]:
         sql = "SELECT data FROM extract_records WHERE newsletter_id = ? ORDER BY rowid"
         rows = await self._execute(lambda c: c.execute(sql, (newsletter_id,)).fetchall())
@@ -153,6 +159,18 @@ class SqliteStore:
         sql = "SELECT data FROM drafts WHERE newsletter_id = ?"
         row = await self._execute(lambda c: c.execute(sql, (newsletter_id,)).fetchone())
         return None if row is None else WriterOutput.model_validate_json(row["data"])
+
+    async def save_verdicts(self, newsletter_id: str, verdicts: Sequence[Verdict]) -> None:
+        sql = "UPDATE drafts SET verdicts = ? WHERE newsletter_id = ?"
+        params = (JudgeOutput(verdicts=list(verdicts)).model_dump_json(), newsletter_id)
+        await self._execute(lambda connection: connection.execute(sql, params))
+
+    async def get_verdicts(self, newsletter_id: str) -> list[Verdict] | None:
+        sql = "SELECT verdicts FROM drafts WHERE newsletter_id = ?"
+        row = await self._execute(lambda c: c.execute(sql, (newsletter_id,)).fetchone())
+        if row is None or row["verdicts"] is None:
+            return None
+        return JudgeOutput.model_validate_json(row["verdicts"]).verdicts
 
     async def save_version(self, newsletter: Newsletter, version: Version) -> None:
         row = {

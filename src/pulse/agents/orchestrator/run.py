@@ -82,6 +82,14 @@ class _History:
         self.messages = _superseded_results_replaced([message for _, message in loaded])
         self.owner = rows[-1].message_id if rows else None
 
+    async def recorded(self, message_id: str) -> ReviewerMessage:
+        """The recorded reviewer message whose run saved the given steps."""
+        feedback = await self._store.list_feedback(self.newsletter_id) if self.newsletter_id else []
+        recorded = next((m for m in feedback if m.message_id == message_id), None)
+        if recorded is None:
+            raise RunFailed(f"message {message_id} has saved steps but is not recorded")
+        return recorded
+
     def unfinished(self) -> bool:
         """Whether the latest run stopped before its final response."""
         last = self.messages[-1] if self.messages else None
@@ -121,7 +129,7 @@ class Orchestrator:
 
     def __init__(
         self,
-        agent: Agent[None, str],
+        agent: Agent[ReviewerMessage, str],
         store: Store,
         max_tool_calls: int,
         max_run_time: timedelta,
@@ -183,21 +191,26 @@ class Orchestrator:
         await history.load()
         if history.unfinished() and history.owner is not None:
             owner = history.owner
-            reply = await self._run(None, owner, history, on_progress)
-            # A retried message is complete once its own run is; a different message still runs.
             if owner == message.message_id:
-                return reply
-        return await self._run(user_prompt(message), message.message_id, history, on_progress)
+                # A retried message is complete once its own run is.
+                return await self._run(None, message, history, on_progress)
+            await self._run(None, await history.recorded(owner), history, on_progress)
+        return await self._run(user_prompt(message), message, history, on_progress)
 
     async def _run(
-        self, prompt: str | None, message_id: str, history: _History, on_progress: Progress
+        self,
+        prompt: str | None,
+        message: ReviewerMessage,
+        history: _History,
+        on_progress: Progress,
     ) -> str:
-        """Run the agent once; with no prompt, resume the unfinished run in the history."""
+        """Run the agent once for the message; with no prompt, resume its unfinished run."""
         # A resumed run starts from the step it resumes from, which is already saved.
         skip_step = prompt is None
         async with self._agent.iter(
             prompt,
             message_history=list(history.messages),
+            deps=message,
             conversation_id=history.newsletter_id,
             usage_limits=UsageLimits(tool_calls_limit=self._max_tool_calls, request_limit=None),
         ) as run:
@@ -207,7 +220,7 @@ class Orchestrator:
                         node.request if Agent.is_model_request_node(node) else node.model_response
                     )
                     if not skip_step:
-                        await history.add(message_id, step)
+                        await history.add(message.message_id, step)
                     skip_step = False
                 if Agent.is_call_tools_node(node):
                     await _call_tools(node, run, history.newsletter_id, on_progress)
@@ -218,8 +231,8 @@ class Orchestrator:
 
 
 async def _call_tools(
-    node: CallToolsNode[None, str],
-    run: AgentRun[None, str],
+    node: CallToolsNode[ReviewerMessage, str],
+    run: AgentRun[ReviewerMessage, str],
     newsletter_id: str | None,
     on_progress: Progress,
 ) -> None:

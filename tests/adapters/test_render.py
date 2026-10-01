@@ -8,10 +8,17 @@ from pathlib import Path
 import pytest
 
 from pulse.adapters.render import escape_markdown
-from pulse.entities.content import Content, Entry, NotApplied, Section, Version
+from pulse.entities.content import CheckFailure, Content, Entry, NotApplied, Section, Version
 from pulse.entities.extracts import Sensitivity, make_record
 from pulse.entities.review import build_review
-from tests.emails import make_consolidation, make_email, make_item, make_output, screen_email
+from tests.emails import (
+    make_consolidation,
+    make_email,
+    make_item,
+    make_output,
+    make_verdict,
+    screen_email,
+)
 from tests.operations import make_renderer
 
 GOLDEN = Path(__file__).parent / "golden"
@@ -79,6 +86,12 @@ VERSION = Version(
     not_applied=[NotApplied(feedback="Add the contract value", reason="Commercially sensitive")],
     version=2,
     created_at=datetime(2026, 9, 26, 9, 0, tzinfo=UTC),
+    check_failures=[CheckFailure(check="digits", target="item-2", detail="3")],
+    verdicts=[
+        make_verdict("intro"),
+        make_verdict(),
+        make_verdict("item-2", claim="covering the service desk"),
+    ],
 )
 
 
@@ -191,11 +204,19 @@ def test_model_output_and_email_text_are_escaped() -> None:
         }
     )
     emails = [screen_email(make_email("m01", subject=script, has_attachments=True))]
-    version = VERSION.model_copy(update={"content": content, "changes": [script]})
+    version = VERSION.model_copy(
+        update={
+            "content": content,
+            "changes": [script],
+            "check_failures": [],
+            "verdicts": [make_verdict("intro"), make_verdict(claim=script)],
+        }
+    )
     review = build_review(version, CONSOLIDATION, RECORDS[:1], emails)
 
     html = make_renderer().reviewer_email(version, review)
 
     assert "<script>" not in html
-    # The headline, the entry, the change, the attachment, and the source map's text and subject.
-    assert html.count("&lt;script&gt;alert(1)&lt;/script&gt;") == 6
+    # The headline, the entry, the unsupported claim and the entry it names, the change, the
+    # attachment, and the source map's text and subject.
+    assert html.count("&lt;script&gt;alert(1)&lt;/script&gt;") == 8

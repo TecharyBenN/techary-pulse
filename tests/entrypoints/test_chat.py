@@ -148,7 +148,7 @@ async def test_streamed_reply_follows_the_progress_notes(store: SqliteStore) -> 
 async def _presented(store: SqliteStore) -> str:
     """Store version 1, which the stand-in present_draft presents; return its Markdown."""
     draft = make_draft()
-    await store.save_version(present(make_newsletter()), version_of(draft, 1, OPENED))
+    await store.save_version(present(make_newsletter()), version_of(draft, 1, OPENED, [], None))
     return make_renderer().markdown(draft.content)
 
 

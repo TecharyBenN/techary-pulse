@@ -39,6 +39,14 @@ def test_values_are_parsed(tmp_path: Path) -> None:
     assert config.schedule.draft_cron == "30 17 * * FRI"
 
 
+def test_categories_map_each_section_to_its_definition_in_order(tmp_path: Path) -> None:
+    data = _example()
+    config = _load(tmp_path, data)
+
+    assert config.categories == {s["category"]: s["definition"] for s in data["sections"]}
+    assert list(config.categories) == [s["category"] for s in data["sections"]]
+
+
 def test_draft_cron_can_be_unset(tmp_path: Path) -> None:
     data = _example()
     del data["schedule"]["draft_cron"]

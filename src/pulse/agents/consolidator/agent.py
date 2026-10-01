@@ -1,12 +1,12 @@
 """The consolidator: merges extract records that report the same news and writes the headline."""
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models import Model
 
-from pulse.agents.prompts import data_block, read_instructions
+from pulse.agents.prompts import categories_instruction, data_block, read_instructions
 from pulse.entities.extracts import ConsolidatorOutput, ExtractRecord
 
 INSTRUCTIONS = read_instructions(__package__)
@@ -15,11 +15,15 @@ INSTRUCTIONS = read_instructions(__package__)
 _PROMPT_FIELDS = {"message_id", "category", "summary", "facts", "people"}
 
 
-def build_consolidator(model: Model) -> Agent[None, ConsolidatorOutput]:
+def build_consolidator(
+    model: Model, categories: Mapping[str, str]
+) -> Agent[None, ConsolidatorOutput]:
+    """`categories` maps each configured category to its definition, so the consolidator can
+    place a restored record that has none."""
     return Agent(
         model,
         output_type=NativeOutput(ConsolidatorOutput),
-        instructions=INSTRUCTIONS,
+        instructions=[INSTRUCTIONS, categories_instruction(categories)],
         name="consolidator",
     )
 
@@ -30,7 +34,9 @@ def consolidator_prompt(records: Sequence[ExtractRecord]) -> str:
     return data_block("extract_records", data)
 
 
-def output_checks(output: ConsolidatorOutput, records: Sequence[ExtractRecord]) -> list[str]:
+def output_checks(
+    output: ConsolidatorOutput, records: Sequence[ExtractRecord], categories: Mapping[str, str]
+) -> list[str]:
     inputs = [record.message_id for record in records]
     counts = Counter(message_id for item in output.items for message_id in item.source_message_ids)
     unknown = [
@@ -43,4 +49,9 @@ def output_checks(output: ConsolidatorOutput, records: Sequence[ExtractRecord]) 
         for message_id in inputs
         if counts[message_id] != 1
     ]
-    return unknown + misplaced
+    unconfigured = [
+        f"category {category} is not a configured category"
+        for category in dict.fromkeys(item.category for item in output.items)
+        if category not in categories
+    ]
+    return unknown + misplaced + unconfigured
