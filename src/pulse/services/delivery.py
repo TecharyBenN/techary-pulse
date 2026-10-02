@@ -1,11 +1,11 @@
-"""Sends an approved newsletter to all staff at its send time, and moves its screened emails."""
+"""Delivery: sends an approved newsletter to all staff and moves its screened emails."""
 
 import asyncio
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from pulse.entities.clock import Clock
 from pulse.entities.content import Content
 from pulse.entities.errors import Refusal, StoreError
 from pulse.entities.lifecycle import Newsletter, is_due, mark_sent, start_send
@@ -19,13 +19,13 @@ from pulse.entities.mail import (
     subject,
 )
 from pulse.entities.store import DELIVERY_NOTE, Store
-from pulse.services.mail import Outbox
+from pulse.services.outbox import Outbox
 
 _log = logging.getLogger(__name__)
 
 
 class Delivery:
-    """The only code that sends to the all-staff list."""
+    """Sends the open newsletter when it is due. The only code that sends to the all-staff list."""
 
     def __init__(
         self,
@@ -35,7 +35,7 @@ class Delivery:
         outbox: Outbox,
         render_newsletter: Callable[[Content], str],
         history_note: Callable[[str], bytes],
-        clock: Clock,
+        clock: Callable[[], datetime],
         lock: asyncio.Lock,
         *,
         all_staff: str,
@@ -67,7 +67,7 @@ class Delivery:
         """Send the open newsletter if it is approved and its send time has come."""
         async with self._lock:
             newsletter = await self._store.get_open_newsletter()
-            if newsletter is None or not is_due(newsletter, self._clock.now()):
+            if newsletter is None or not is_due(newsletter, self._clock()):
                 return
             try:
                 started = start_send(newsletter)
@@ -98,7 +98,7 @@ class Delivery:
             reply_to=self._reply_to,
         )
         await self._conversation.send(email)
-        now = self._clock.now()
+        now = self._clock()
         sent = mark_sent(started, now)
         await self._store.save_newsletter(sent)
         local = now.astimezone(self._timezone)

@@ -1,243 +1,202 @@
-"""Microsoft Graph: certificate sign-in through MSAL, and the Graph mailbox."""
+"""Microsoft Graph adapter: GraphMailbox implements Mailbox with Microsoft's Graph SDK."""
 
-import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 import httpx
-import msal
+from azure.core.credentials_async import AsyncTokenCredential
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
-from pydantic import AliasPath, AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
-from pydantic.alias_generators import to_camel
+from kiota_abstractions.api_error import APIError
+from kiota_abstractions.base_request_configuration import RequestConfiguration
+from kiota_authentication_azure.azure_identity_authentication_provider import (
+    AzureIdentityAuthenticationProvider,
+)
+from kiota_http.kiota_client_factory import KiotaClientFactory
+from kiota_http.middleware.options.retry_handler_option import RetryHandlerOption
+from msgraph.generated.models.body_type import BodyType
+from msgraph.generated.models.email_address import EmailAddress
+from msgraph.generated.models.item_body import ItemBody
+from msgraph.generated.models.mail_folder import MailFolder
+from msgraph.generated.models.message import Message
+from msgraph.generated.models.recipient import Recipient
+from msgraph.generated.users.item.mail_folders.item.messages.messages_request_builder import (
+    MessagesRequestBuilder,
+)
+from msgraph.generated.users.item.mail_folders.mail_folders_request_builder import (
+    MailFoldersRequestBuilder,
+)
+from msgraph.generated.users.item.messages.item.create_reply_all.create_reply_all_post_request_body import (  # noqa: E501
+    CreateReplyAllPostRequestBody,
+)
+from msgraph.generated.users.item.messages.item.move.move_post_request_body import (
+    MovePostRequestBody,
+)
+from msgraph.graph_request_adapter import GraphRequestAdapter
+from msgraph.graph_service_client import GraphServiceClient
+from pydantic import ValidationError
 
 from pulse.entities.errors import MailboxError
 from pulse.entities.mail import Body, InboundEmail, MessageId, OutboundEmail
 
-GRAPH_URL = "https://graph.microsoft.com/v1.0"
-_AUTHORITY = "https://login.microsoftonline.com/{tenant_id}"
-_SCOPES = ["https://graph.microsoft.com/.default"]
+# Message IDs stay the same when messages move folders.
 _IMMUTABLE_IDS = 'IdType="ImmutableId"'
 _PLAIN_TEXT = 'outlook.body-content-type="text"'
-_INBOX_FIELDS = (
-    "id,from,sender,subject,receivedDateTime,uniqueBody,internetMessageHeaders,hasAttachments"
-)
+_INBOX_FIELDS = [
+    "id",
+    "from",
+    "sender",
+    "subject",
+    "receivedDateTime",
+    "uniqueBody",
+    "internetMessageHeaders",
+    "hasAttachments",
+]
 _PAGE_SIZE = 50
-_CONTENT_TYPES = {"html": "HTML", "text": "Text"}
-_THROTTLED = (429, 503)
-# Graph sends Retry-After with every throttled response; this covers one that does not.
-_DEFAULT_WAIT_SECONDS = 1
+_BODY_TYPES = {"html": BodyType.Html, "text": BodyType.Text}
 
 
-class CertificateCredential:
-    """Signs in as the Pulse app with the certificate and private key in one PEM file."""
+def graph_client(
+    credential: AsyncTokenCredential, http_client: httpx.AsyncClient | None = None
+) -> GraphServiceClient:
+    """A Graph client that signs in with `credential`.
 
-    def __init__(
-        self, tenant_id: str, client_id: str, certificate_path: Path, http_client: Any = None
-    ) -> None:
-        try:
-            pem = certificate_path.read_bytes()
-            certificate = x509.load_pem_x509_certificate(pem)
-        except (OSError, ValueError) as error:
-            raise MailboxError(
-                f"cannot read the Graph certificate: {type(error).__name__}"
-            ) from error
-        # Entra ID shows the SHA-1 thumbprint, so an operator can match it to the app registration.
-        self.thumbprint = certificate.fingerprint(hashes.SHA1()).hex().upper()
-        self._settings: dict[str, Any] = {
-            "client_id": client_id,
-            "authority": _AUTHORITY.format(tenant_id=tenant_id),
-            "client_credential": {"private_key": pem.decode(), "thumbprint": self.thumbprint},
-            # MSAL's own HTTP client when None; tests pass a stub.
-            "http_client": http_client,
-        }
-        self._app: Any = None
-
-    async def token(self) -> str:
-        """An access token for Graph; MSAL caches it until it nears expiry."""
-        result: dict[str, Any] = await asyncio.to_thread(self._acquire)
-        if "access_token" not in result:
-            # The error description can echo request details, so only the code is kept.
-            raise MailboxError(f"Graph sign-in failed: {result.get('error', 'unknown error')}")
-        token: str = result["access_token"]
-        return token
-
-    def _acquire(self) -> dict[str, Any]:
-        # Creating the app fetches the tenant's metadata, so it happens here, off the event loop.
-        if self._app is None:
-            self._app = msal.ConfidentialClientApplication(**self._settings)
-        result: dict[str, Any] = self._app.acquire_token_for_client(scopes=_SCOPES)
-        return result
+    It is built on Kiota's client factory because msgraph-core's own transport skips the SDK
+    middleware, so throttled requests would never be retried.
+    """
+    client = KiotaClientFactory.create_with_default_middleware(client=http_client)
+    auth = AzureIdentityAuthenticationProvider(credential)
+    return GraphServiceClient(request_adapter=GraphRequestAdapter(auth, client))
 
 
-class _Message(BaseModel):
-    model_config = ConfigDict(alias_generator=to_camel)
-
-    id: str
-    sender_name: str = Field(validation_alias=AliasPath("from", "emailAddress", "name"))
-    sender_address: str = Field(validation_alias=AliasPath("from", "emailAddress", "address"))
-    # Graph sends null for some of these, and leaves them out for a message that has none.
-    subject: str | None = None
-    received_date_time: AwareDatetime
-    unique_body: dict[str, Any] | None = None
-    internet_message_headers: list[dict[str, str]] | None = None
-    has_attachments: bool
-
-    def email(self) -> InboundEmail:
-        headers: dict[str, str] = {}
-        for header in self.internet_message_headers or []:
-            # A repeated header keeps its first value, as header_value would read it.
-            headers.setdefault(header["name"], header["value"])
-        return InboundEmail(
-            message_id=self.id,
-            sender_name=self.sender_name,
-            sender_address=self.sender_address,
-            subject=self.subject or "",
-            received=self.received_date_time,
-            has_attachments=self.has_attachments,
-            body=(self.unique_body or {}).get("content") or "",
-            headers=headers,
-        )
-
-
-class _Page(BaseModel):
-    value: list[_Message]
-    next_link: str | None = Field(default=None, validation_alias="@odata.nextLink")
-
-
-class _Created(BaseModel):
-    id: str
-
-
-class _Folders(BaseModel):
-    value: list[_Created]
+def certificate_thumbprint(path: Path) -> str:
+    """The SHA-1 thumbprint Entra ID shows for the certificate in the PEM file."""
+    try:
+        certificate = x509.load_pem_x509_certificate(path.read_bytes())
+    except (OSError, ValueError) as error:
+        raise MailboxError(f"cannot read the Graph certificate: {type(error).__name__}") from error
+    return certificate.fingerprint(hashes.SHA1()).hex().upper()
 
 
 class GraphMailbox:
-    """One Pulse mailbox, reached through Graph as the Pulse app."""
+    """A Pulse mailbox reached through Microsoft Graph."""
 
-    def __init__(
-        self,
-        client: httpx.AsyncClient,
-        token: Callable[[], Awaitable[str]],
-        mailbox: str,
-        max_retries: int,
-    ) -> None:
-        self._client = client
-        self._token = token
-        self._base = f"/users/{quote(mailbox, safe='@')}"
+    def __init__(self, client: GraphServiceClient, mailbox: str, max_retries: int) -> None:
+        self._user = client.users.by_user_id(mailbox)
         self._max_retries = max_retries
 
     async def list_inbox(self) -> list[InboundEmail]:
-        url: str | None = f"{self._base}/mailFolders/inbox/messages"
-        params: dict[str, str] | None = {"$select": _INBOX_FIELDS, "$top": str(_PAGE_SIZE)}
-        emails: list[InboundEmail] = []
-        while url is not None:
-            response = await self._request("GET", url, params=params, prefer=_PLAIN_TEXT)
-            page = _parse(_Page, response)
-            emails.extend(message.email() for message in page.value)
+        builder = self._user.mail_folders.by_mail_folder_id("inbox").messages
+        query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+            select=_INBOX_FIELDS, top=_PAGE_SIZE
+        )
+        config = self._config(query, _PLAIN_TEXT)
+        page = await self._call(builder.get(config))
+        messages: list[Message] = []
+        while page is not None:
+            messages.extend(page.value or [])
             # The next link carries the query itself.
-            url, params = page.next_link, None
+            next_link = page.odata_next_link
+            page = (
+                await self._call(builder.with_url(next_link).get(self._config(None, _PLAIN_TEXT)))
+                if next_link
+                else None
+            )
+        emails = [_inbound(message) for message in messages]
         return sorted(emails, key=lambda email: (email.received, email.message_id))
 
-    async def move(self, message_id: str, folder: str) -> None:
-        folder_id = await self._folder_id(folder)
-        await self._request(
-            "POST", f"{self._message(message_id)}/move", json={"destinationId": folder_id}
-        )
+    async def move(self, message_id: MessageId, folder: str) -> None:
+        destination = MovePostRequestBody(destination_id=await self._folder_id(folder))
+        message = self._user.messages.by_message_id(message_id)
+        await self._call(message.move.post(destination, self._config()))
 
     async def send(self, email: OutboundEmail) -> MessageId:
         """Create the message, then send it, because sendMail does not return its ID."""
-        message: dict[str, Any] = {
-            "subject": email.subject,
-            "body": _body(email.body),
-            "toRecipients": _recipients(email.to),
-        }
-        if email.reply_to is not None:
-            message["replyTo"] = _recipients([email.reply_to])
-        response = await self._request("POST", f"{self._base}/messages", json=message)
-        return await self._send(_parse(_Created, response).id)
+        message = Message(
+            subject=email.subject,
+            body=_item_body(email.body),
+            to_recipients=_recipients(email.to),
+            reply_to=_recipients([email.reply_to]) if email.reply_to else None,
+        )
+        draft = await self._call(self._user.messages.post(message, self._config()))
+        return await self._send(_id(draft))
 
     async def reply(self, message_id: MessageId, to: Sequence[str], body: Body) -> MessageId:
-        response = await self._request("POST", f"{self._message(message_id)}/createReplyAll")
-        reply_id = _parse(_Created, response).id
-        # The subject is left as Graph sets it, because Exchange starts a new conversation
-        # when a reply's subject changes.
-        await self._request(
-            "PATCH",
-            self._message(reply_id),
-            json={"toRecipients": _recipients(to), "ccRecipients": [], "body": _body(body)},
+        replying = self._user.messages.by_message_id(message_id).create_reply_all
+        reply_id = _id(
+            await self._call(replying.post(CreateReplyAllPostRequestBody(), self._config()))
         )
+        # The subject stays as Graph sets it: Exchange starts a new conversation when it changes.
+        changes = Message(to_recipients=_recipients(to), cc_recipients=[], body=_item_body(body))
+        await self._call(self._user.messages.by_message_id(reply_id).patch(changes, self._config()))
         return await self._send(reply_id)
 
     async def _send(self, draft_id: MessageId) -> MessageId:
-        """Send a draft; its immutable ID stays the same once it is sent."""
-        await self._request("POST", f"{self._message(draft_id)}/send")
+        await self._call(self._user.messages.by_message_id(draft_id).send.post(self._config()))
         return draft_id
 
     async def _folder_id(self, folder: str) -> str:
-        """The ID of the top-level folder with this name, creating the folder if it is absent."""
+        """The ID of the top-level folder with this name, created if it is absent."""
         escaped = folder.replace("'", "''")
-        params = {"$filter": f"displayName eq '{escaped}'"}
-        response = await self._request("GET", f"{self._base}/mailFolders", params=params)
-        found = _parse(_Folders, response).value
-        if found:
-            return found[0].id
-        response = await self._request(
-            "POST", f"{self._base}/mailFolders", json={"displayName": folder}
+        query = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters(
+            filter=f"displayName eq '{escaped}'"
         )
-        return _parse(_Created, response).id
+        found = await self._call(self._user.mail_folders.get(self._config(query)))
+        if found is not None and found.value:
+            return _id(found.value[0])
+        created = MailFolder(display_name=folder)
+        return _id(await self._call(self._user.mail_folders.post(created, self._config())))
 
-    def _message(self, message_id: str) -> str:
-        return f"{self._base}/messages/{quote(message_id, safe='')}"
+    def _config(self, query: object = None, prefer: str | None = None) -> RequestConfiguration[Any]:
+        """Every request asks for immutable IDs and retries while Graph throttles it."""
+        config = RequestConfiguration[Any](
+            query_parameters=query, options=[RetryHandlerOption(max_retries=self._max_retries)]
+        )
+        config.headers.add("Prefer", [_IMMUTABLE_IDS, *([prefer] if prefer else [])])
+        return config
 
-    async def _request(
-        self,
-        method: str,
-        url: str,
-        *,
-        params: dict[str, str] | None = None,
-        json: dict[str, Any] | None = None,
-        prefer: str | None = None,
-    ) -> httpx.Response:
-        """Send the request, waiting and retrying while Graph throttles it."""
-        preferences = ", ".join(p for p in (_IMMUTABLE_IDS, prefer) if p)
-        for attempt in range(self._max_retries + 1):
-            headers = {"Authorization": f"Bearer {await self._token()}", "Prefer": preferences}
-            try:
-                response = await self._client.request(
-                    method, url, params=params, json=json, headers=headers
-                )
-            except httpx.HTTPError as error:
-                raise MailboxError(f"Graph request failed: {type(error).__name__}") from error
-            if response.status_code not in _THROTTLED or attempt == self._max_retries:
-                break
-            await asyncio.sleep(_retry_after(response))
-        if response.is_error:
-            # Graph's error body can quote message content, so only the status is kept.
-            raise MailboxError(f"Graph returned HTTP {response.status_code}")
-        return response
+    async def _call[T](self, request: Awaitable[T]) -> T:
+        try:
+            return await request
+        except APIError as error:
+            raise MailboxError(f"Graph returned HTTP {error.response_status_code}") from error
+        except httpx.HTTPError as error:
+            raise MailboxError(f"Graph request failed: {type(error).__name__}") from error
 
 
-def _parse[T: BaseModel](model: type[T], response: httpx.Response) -> T:
+def _inbound(message: Message) -> InboundEmail:
+    sender = message.from_.email_address if message.from_ else None
+    headers: dict[str, str] = {}
+    for header in message.internet_message_headers or []:
+        if header.name is not None:
+            headers.setdefault(header.name, header.value or "")
     try:
-        return model.model_validate_json(response.content)
+        return InboundEmail.model_validate(
+            {
+                "message_id": message.id,
+                "sender_name": sender.name if sender else None,
+                "sender_address": sender.address if sender else None,
+                "subject": message.subject or "",
+                "received": message.received_date_time,
+                "has_attachments": message.has_attachments,
+                "body": (message.unique_body.content if message.unique_body else None) or "",
+                "headers": headers,
+            }
+        )
     except ValidationError as error:
-        raise MailboxError(f"Graph returned an unexpected {model.__name__}") from error
+        raise MailboxError("Graph returned an unexpected message") from error
 
 
-def _body(body: Body) -> dict[str, str]:
-    return {"contentType": _CONTENT_TYPES[body.content_type], "content": body.content}
+def _id(item: Message | MailFolder | None) -> str:
+    if item is None or item.id is None:
+        raise MailboxError("Graph returned no ID")
+    return item.id
 
 
-def _recipients(addresses: Sequence[str]) -> list[dict[str, dict[str, str]]]:
-    return [{"emailAddress": {"address": address}} for address in addresses]
+def _item_body(body: Body) -> ItemBody:
+    return ItemBody(content_type=_BODY_TYPES[body.content_type], content=body.content)
 
 
-def _retry_after(response: httpx.Response) -> float:
-    try:
-        return float(response.headers.get("Retry-After", _DEFAULT_WAIT_SECONDS))
-    except ValueError:
-        return _DEFAULT_WAIT_SECONDS
+def _recipients(addresses: Sequence[str]) -> list[Recipient]:
+    return [Recipient(email_address=EmailAddress(address=address)) for address in addresses]

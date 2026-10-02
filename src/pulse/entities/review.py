@@ -1,4 +1,4 @@
-"""The review section of a reviewer email: what reviewers need to judge a version."""
+"""The review section of a reviewer email."""
 
 from collections.abc import Sequence
 
@@ -9,6 +9,8 @@ from pulse.entities.mail import ScreenedEmail
 
 
 class Exclusion(Entity):
+    """An excluded record with its email."""
+
     email: ScreenedEmail
     record: ExtractRecord
 

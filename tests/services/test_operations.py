@@ -201,16 +201,18 @@ async def test_present_without_emailing_saves_the_version_and_leaves_the_thread(
     assert (newsletter.latest_version, newsletter.thread_message_id) == (1, None)
 
 
-async def test_review_is_built_from_the_newsletter_records(
+async def test_reviewer_email_shows_the_reply_and_the_version(
     operations: Operations, store: SqliteStore
 ) -> None:
     await _drafted(store)
     await operations.present_draft(email_reviewers=False)
     [version] = await _versions(store)
 
-    review = await operations.review("n-1", version)
+    body = await operations.reviewer_email(await _newsletter(store), version, "Here it is.")
 
-    assert [link.text for link in review.source_map] == [ENTRY]
+    assert body.content_type == "html"
+    assert "Here it is." in body.content
+    assert ENTRY in body.content
 
 
 async def test_later_versions_reply_to_the_latest_message_in_the_thread(

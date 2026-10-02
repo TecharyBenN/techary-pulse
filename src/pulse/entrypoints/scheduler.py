@@ -1,5 +1,4 @@
-"""The scheduler: runs the email channel's poll and delivery every poll interval inside
-`pulse serve`."""
+"""The scheduler: poll runs the email channel and delivery every poll interval."""
 
 import asyncio
 import contextlib
@@ -23,9 +22,9 @@ async def poll(
                 return
             try:
                 await job()
-            except PulseError as error:
-                # The next poll tries again; the failure table says what each failure leaves.
-                _log.error("poll_failed", extra={"job": name, "error_type": type(error).__name__})
+            except PulseError:
+                # The next poll tries again.
+                _log.exception("poll_failed", extra={"job": name})
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(interval.total_seconds()):
                 await stop.wait()

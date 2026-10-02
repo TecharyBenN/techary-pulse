@@ -1,5 +1,5 @@
-"""The newsletter in HTML for email and in Markdown for the chat endpoint, rendered from the
-templates with every value escaped, and the orchestrator's replies in HTML for email."""
+"""Rendering: Renderer turns content into the newsletter's HTML and Markdown, and the orchestrator's
+replies into HTML."""
 
 import functools
 import re
@@ -21,10 +21,9 @@ _MARKDOWN_LIST_START = re.compile(r"^(\s*(?:[0-9]+)?)([-+.)])", re.MULTILINE)
 
 
 class Renderer:
-    """Renders content as the writer structured it: its titles, in its order."""
+    """Renders the newsletter, reviewer emails, notices and replies from the templates."""
 
     def __init__(self, timezone: ZoneInfo) -> None:
-        # Model output and email-derived text are escaped; nothing is ever marked safe.
         self._html = Environment(
             loader=PackageLoader("pulse.adapters"), autoescape=True, undefined=StrictUndefined
         )

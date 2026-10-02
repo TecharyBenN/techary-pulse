@@ -1,4 +1,5 @@
-"""The judge: says whether the intro and each entry are supported by the facts and feedback."""
+"""The judge agent, which says whether the intro and each entry are supported by the facts and
+feedback: its definition, prompt and output checks."""
 
 from collections import Counter
 from collections.abc import Sequence

@@ -83,8 +83,7 @@ src/pulse/
 │                      the exclusion rules and items, drafts, versions and the draft checks,
 │                      the review section, the newsletter lifecycle, the specialist agents'
 │                      output types, which entities extend, Pulse's exception types, and the
-│                      interfaces the other layers implement, including the mailbox, the
-│                      store, the token verifier and the clock
+│                      interfaces the other layers implement: the mailbox and the store
 ├── agents/            Every agent, one folder each
 │   ├── runner.py      Runs any specialist agent: validates its answer and retries once
 │   ├── prompts.py     What every agent's prompts share: instructions, delimited data blocks
@@ -95,16 +94,17 @@ src/pulse/
 │   ├── writer/        agent.py and prompt.md
 │   └── judge/         agent.py and prompt.md
 ├── services/          Code the tools and the scheduler call
-│   ├── operations.py  Start, check, present, approve, withdraw and abandon: state change, save, email
-│   ├── mail.py        Emails to reviewers in the newsletter's email thread, and operator alerts
+│   ├── operations.py  Start, restore, check, present, approve, withdraw and abandon: state change,
+│   │                  save, email
+│   ├── outbox.py      Emails to reviewers in the newsletter's email thread, and operator alerts
 │   └── delivery.py    Sends an approved newsletter, moves its screened emails, recovers a partial send
-├── adapters/          Microsoft Graph mail, the AI gateway, the SQLite store, the
-│                      system clock, bearer token verification, and the newsletter and the
-│                      orchestrator's email replies in HTML and Markdown with their templates
+├── adapters/          Microsoft Graph mail through Microsoft's Graph SDK, the SQLite store, bearer
+│                      token verification, and the newsletter and the orchestrator's email
+│                      replies in HTML and Markdown with their templates
 ├── entrypoints/       The email channel, the LibreChat endpoint, the scheduler and the command line
 ├── config.py          Reading and validating config.yaml
-├── logging.py         The JSON log format
-└── main.py            Creates the adapters and connects them to the agents, services and entrypoints
+└── main.py            Configures logging, creates the gateway models and the adapters, and
+                       connects them to the agents, services and entrypoints
 
 tests/                 Mirrors src/pulse/; fakes/ holds the fake mailbox, fake Graph, controlled clock
                        and stand-in models
@@ -270,7 +270,7 @@ The conversation mailbox accepts mail only from members of the `reviewers` list,
 
 Each poll handles the inbox's messages in the order they arrived. Pulse counts each run it starts for a message, including one interrupted before it could fail. When a run fails, or its reply cannot be sent, the message stays in the inbox and the poll stops, so the message is retried at the next poll before any later one. A message that has used `chat.max_attempts` attempts is moved to `Rejected` instead, and an operator alert names its message ID.
 
-The chat endpoint speaks the OpenAI chat completions format at `POST /v1/chat/completions`. It is an OAuth 2.0 resource server: every request carries a bearer token, and Pulse verifies its RS256 signature with the key named by its `kid` in the key set at `auth.jwks`, and checks that its issuer is `auth.issuer`, its audience includes `auth.audience`, and it has not expired, against Pulse's clock. A request without a token that verifies gets HTTP 401. The caller is identified by the token's `oid` claim, and is a reviewer when its `roles` claim includes `auth.reviewer_role`. It answers streamed and non-streamed requests; a streamed response is a server-sent event stream whose content carries short progress notes saying in plain words what Pulse is doing, with the tool's name in brackets, such as "Checking the current newsletter (get_newsletter)", before the reply, which is sent whole. From each request, Pulse takes only the newest user message, joining its text parts, and gives it a new message ID; the history a client such as LibreChat sends is ignored, except that a request holding one user message starts a new chat. A caller without the reviewer role gets no orchestrator run and HTTP 403, with an OpenAI error body stating that the caller is not a reviewer. The orchestrator run is not tied to the connection, so a client that disconnects does not cancel it. A failed run gets HTTP 500 with an OpenAI error body, or, once a stream has started, an error event; the message is generic.
+The chat endpoint speaks the OpenAI chat completions format at `POST /v1/chat/completions`. It is an OAuth 2.0 resource server: every request carries a bearer token, and Pulse verifies its RS256 signature with the key named by its `kid` in the key set at `auth.jwks`, and checks that its issuer is `auth.issuer`, its audience includes `auth.audience`, and it has not expired and is already valid. A request without a token that verifies gets HTTP 401. The caller is identified by the token's `oid` claim, and is a reviewer when its `roles` claim includes `auth.reviewer_role`. It answers streamed and non-streamed requests; a streamed response is a server-sent event stream whose content carries short progress notes saying in plain words what Pulse is doing, with the tool's name in brackets, such as "Checking the current newsletter (get_newsletter)", before the reply, which is sent whole. From each request, Pulse takes only the newest user message, joining its text parts, and gives it a new message ID; the history a client such as LibreChat sends is ignored, except that a request holding one user message starts a new chat. A caller without the reviewer role gets no orchestrator run and HTTP 403, with an OpenAI error body stating that the caller is not a reviewer. The orchestrator run is not tied to the connection, so a client that disconnects does not cancel it. A failed run gets HTTP 500 with an OpenAI error body, or, once a stream has started, an error event; the message is generic.
 
 ## Specialist agents
 
@@ -454,7 +454,7 @@ Pulse deletes closed newsletters older than `retention_days`.
 
 ## Microsoft Graph integration
 
-Pulse authenticates as an Entra ID application using the OAuth 2.0 client credentials flow with a certificate. The file at `graph.certificate_path` holds the certificate and its private key; Pulse calculates the certificate thumbprint from it at start-up, passes it to MSAL (Microsoft Authentication Library) and logs it, so an operator can match it against the app registration. The app has no Entra ID permissions, and no Mail permissions in Entra ID. Its mail access is granted in Exchange Online through RBAC (role-based access control) for Applications, scoped to the two Pulse mailboxes:
+Pulse authenticates as an Entra ID application using the OAuth 2.0 client credentials flow with a certificate. The file at `graph.certificate_path` holds the certificate and its private key; Pulse signs in through azure-identity, Microsoft's credential library, and calculates the certificate thumbprint from the file at start-up and logs it, so an operator can match it against the app registration. The app has no Entra ID permissions, and no Mail permissions in Entra ID. Its mail access is granted in Exchange Online through RBAC (role-based access control) for Applications, scoped to the two Pulse mailboxes:
 
 | Exchange application role | Scope | Used for |
 | --- | --- | --- |
@@ -475,7 +475,7 @@ The scoping consists of an Exchange service principal for the app, a management 
 
 Pulse reaches each mailbox through one mailbox interface, with one instance for the submissions mailbox and one for the conversation mailbox. The interface has four operations: list the inbox, move a message to a named folder, send a new message and reply in a thread. Moving finds the folder, and creates it when it is not found. Sending and replying each return the sent message's immutable ID. A new message or a reply has an HTML or a plain-text body.
 
-Every request sends `Prefer: IdType="ImmutableId"`, so message IDs stay the same when messages move folders. List requests also send `Prefer: outlook.body-content-type="text"`, so bodies are returned as plain text. `uniqueBody` contains only the new content of a message, without quoted replies, and `internetMessageHeaders` supplies the headers used by the pre-filter. Pulse follows `@odata.nextLink` for paging and sorts results in code. On HTTP 429 or 503, Pulse waits for the `Retry-After` interval and retries, up to `graph.max_retries` times.
+Every request sends `Prefer: IdType="ImmutableId"`, so message IDs stay the same when messages move folders. List requests also send `Prefer: outlook.body-content-type="text"`, so bodies are returned as plain text. `uniqueBody` contains only the new content of a message, without quoted replies, and `internetMessageHeaders` supplies the headers used by the pre-filter. Pulse makes every request through Microsoft's Graph SDK, follows `@odata.nextLink` for paging and sorts results in code. On HTTP 429, 503 or 504, the SDK's retry handler waits for the `Retry-After` interval, or backs off when Graph gives none, and retries up to `graph.max_retries` times.
 
 ## Security
 
@@ -519,9 +519,9 @@ Deployment requirements, documented in the README and outside the codebase:
 | Delivery, `send_started` without `sent` | No resend. An operator alert asks for the conversation mailbox's Sent Items to be checked. |
 | Delivery, moves incomplete after a send | The next poll completes the moves before anything else. |
 | SIGTERM | Pulse finishes the current tool call or delivery step, saves state and exits. |
-| Graph HTTP 429 or 503 | Pulse waits for the `Retry-After` interval and retries, up to `graph.max_retries`. |
+| Graph HTTP 429, 503 or 504 | The Graph SDK waits for the `Retry-After` interval, or backs off, and retries up to `graph.max_retries`. |
 
-Logs are JSON objects on standard output, one per line, with `time`, `level` and `event` fields. Every orchestrator run is logged with its newsletter ID as `conversation_id`, and every tool call with its name, duration and outcome. Logs carry IDs, counts, durations and error types, never email content, reviewer messages or model output. Operator alerts are sent from the conversation mailbox to `operator_alerts`; if an alert cannot be sent, Pulse logs the error.
+Logs are JSON objects on standard output, one per line, with `time`, `level` and `event` fields. Every orchestrator run is logged with its newsletter ID as `conversation_id`, and every tool call with its name, duration and outcome. The fields Pulse writes carry IDs, counts, durations and outcomes, never email content, reviewer messages or model output. Exceptions are logged in full, with their message and traceback, so the logs are readable only by operators. Operator alerts are sent from the conversation mailbox to `operator_alerts`; if an alert cannot be sent, Pulse logs the error.
 
 ## Commands and packaging
 
@@ -626,7 +626,7 @@ state:
 retention_days: 90
 ```
 
-`send.day` takes `MON` to `SUN` and `send.time` a 24-hour `HH:MM` time; both are required when `send.mode` is `scheduled`, and neither is accepted when it is `on_approval`. Configuration fails to load if it has a key not shown above, if a count, interval, limit or port is not a positive integer, or if two sections share a category. With `schedule.draft_cron` unset, newsletters start only when a reviewer asks or an operator runs `pulse draft`. `reviewers` is the address of one distribution list. `auth.jwks` is the issuer's key set, as a URL or a file path; Pulse fetches a URL and caches it, and reads a file on every verification, so a rotated key takes effect without a restart.
+`send.day` takes `MON` to `SUN` and `send.time` a 24-hour `HH:MM` time; both are required when `send.mode` is `scheduled`, and neither is accepted when it is `on_approval`. Configuration fails to load if it has a key not shown above, if a count, interval, limit or port is not a positive integer, if `graph.max_retries` is above 10, the Graph SDK's limit, or if two sections share a category. With `schedule.draft_cron` unset, newsletters start only when a reviewer asks or an operator runs `pulse draft`. `reviewers` is the address of one distribution list. `auth.jwks` is the issuer's key set, as a URL or a file path; Pulse fetches a URL and caches it, and reads a file on every verification, so a rotated key takes effect without a restart.
 
 ## Development and testing
 
@@ -653,7 +653,7 @@ Automated tests run without a tenant or gateway:
 | Orchestrator | Runs from the start instruction and reviewer messages, history saving, loading and trimming, resuming after a failure, per-newsletter locking, run limits | The orchestrator's model replaced by a Pydantic AI stand-in that calls tools in an order set by the test |
 | Channels | Reviewer identification in both channels, automatic replies, replies in thread, attempt limits | Fake mailboxes and the chat endpoint's route |
 | Delivery | Send timing in both send modes, approval re-check, `send_started` handling, single send to `all_staff`, message moves and their recovery | A temporary store and fake mailboxes with a controlled clock |
-| Graph client | Requests, paging, threading replies, throttling, errors | Mocked HTTP responses, including injected errors |
+| Graph client | Requests, paging, threading replies, throttling, errors | The Graph SDK client over mocked HTTP responses, including injected errors |
 
 A synthetic corpus of staff emails is kept for manual runs against the dev tenant and gateway. It contains genuine updates for every section, duplicate reports of the same news, out-of-office replies, test emails, one-word messages, newsletters, unclear updates, updates that fit no category, external senders, labelled messages, sensitive and inappropriate content, messages with attachments, long reply chains, empty messages and a prompt-injection attempt.
 

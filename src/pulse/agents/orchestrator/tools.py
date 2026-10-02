@@ -1,4 +1,4 @@
-"""The orchestrator's tools: each checks its own preconditions and returns the reason it refuses."""
+"""The orchestrator's tools: Tools and the results they return."""
 
 import asyncio
 import functools
@@ -15,13 +15,7 @@ from pulse.agents.judge import agent as judge_agent
 from pulse.agents.runner import run_specialist
 from pulse.agents.writer import agent as writer_agent
 from pulse.entities.base import Entity
-from pulse.entities.content import (
-    JudgeOutput,
-    Version,
-    WriterOutput,
-    draft_changed,
-    require_draft,
-)
+from pulse.entities.content import JudgeOutput, WriterOutput, draft_changed
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import Refusal, SpecialistFailed
 from pulse.entities.extracts import (
@@ -34,7 +28,6 @@ from pulse.entities.extracts import (
     consolidation_input,
     items_up_to_date,
     make_consolidation,
-    restored,
     with_sources,
 )
 from pulse.entities.lifecycle import Newsletter, require_latest, require_open
@@ -45,6 +38,7 @@ from pulse.services.operations import (
     NoticeResult,
     Operations,
     PresentResult,
+    RestoreResult,
     StartResult,
 )
 
@@ -88,6 +82,8 @@ _CONSOLIDATED_FIELDS = {"item_id", "category", "source_message_ids"}
 
 
 class ExtractOutcome(Entity):
+    """One email's result from extract."""
+
     message_id: MessageId
     exclusion: ExclusionReason | None = None
     excluded_id: str | None = None
@@ -96,13 +92,13 @@ class ExtractOutcome(Entity):
 
 
 class ShowResult(Entity):
-    """The newsletter a run shows the reviewer: a version, or the working draft when None."""
+    """The newsletter show_draft shows: a version, or the working draft when None."""
 
     version: int | None
 
 
 class ExtractResult(Entity):
-    """Each email's outcome, with totals, so the orchestrator never has to count."""
+    """Each email's outcome from extract, with the totals included, excluded and failed."""
 
     outcomes: list[ExtractOutcome]
     included: int
@@ -137,6 +133,9 @@ def _reported[**P, T](tool: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[
 
 
 class Tools:
+    """The orchestrator's toolset. Each tool reads the store, runs a specialist agent or calls
+    Operations, and returns a refusal's reason as its result."""
+
     def __init__(
         self,
         operations: Operations,
@@ -156,7 +155,6 @@ class Tools:
         self._categories = categories
 
     def toolset(self) -> FunctionToolset[ReviewerMessage]:
-        # Add a tool by writing its method and listing it here.
         return FunctionToolset(
             [
                 self.start_newsletter,
@@ -202,7 +200,9 @@ class Tools:
             "items": len(consolidated.items) if consolidated else 0,
             "items_up_to_date": items_up_to_date(consolidated, records),
             "excluded_records": excluded,
-            "draft_changed": draft_changed(draft, await self._latest_version(newsletter)),
+            "draft_changed": draft_changed(
+                draft, await self._operations.latest_version(newsletter)
+            ),
         }
 
     @_reported
@@ -262,15 +262,11 @@ class Tools:
         )
 
     @_reported
-    async def restore(self, ctx: RunContext[ReviewerMessage], excluded_id: str) -> dict[str, str]:
+    async def restore(self, ctx: RunContext[ReviewerMessage], excluded_id: str) -> RestoreResult:
         """Include the named excluded record, only when a reviewer's feedback asks for it. The
         items are then out of date, so call consolidate next with every included record."""
-        newsletter_id = (await self._open()).newsletter_id
-        records = await self._store.list_extract_records(newsletter_id)
         # The caller comes from the run, never from the model.
-        record = restored(records, excluded_id, ctx.deps.author)
-        await self._store.save_restored(newsletter_id, record)
-        return {"excluded_id": excluded_id, "message_id": record.message_id}
+        return await self._operations.restore(excluded_id, ctx.deps.author)
 
     @_reported
     async def consolidate(self, message_ids: list[MessageId]) -> dict[str, Any]:
@@ -328,7 +324,9 @@ class Tools:
         await self._store.save_draft(newsletter_id, output)
         return output.model_dump(mode="json", include={"changes", "not_applied"}) | {
             "item_ids": output.content.item_ids,
-            "draft_changed": draft_changed(output, await self._latest_version(newsletter)),
+            "draft_changed": draft_changed(
+                output, await self._operations.latest_version(newsletter)
+            ),
         }
 
     @_reported
@@ -336,14 +334,15 @@ class Tools:
         """Return the latest newsletter's working draft, or, when a version is named, that
         presented version."""
         newsletter = await self._latest()
-        return (await self._draft_or_version(newsletter, version)).model_dump(mode="json")
+        draft = await self._operations.draft_or_version(newsletter, version)
+        return draft.model_dump(mode="json")
 
     @_reported
     async def show_draft(self, version: int | None = None) -> ShowResult:
         """Show the reviewer the latest newsletter's working draft, or, when a version is named,
         that presented version. Pulse shows the newsletter after your reply, so never write it
         out yourself."""
-        await self._draft_or_version(await self._latest(), version)
+        await self._operations.draft_or_version(await self._latest(), version)
         return ShowResult(version=version)
 
     @_reported
@@ -362,7 +361,7 @@ class Tools:
         judged and each unsupported claim."""
         newsletter = await self._open()
         newsletter_id = newsletter.newsletter_id
-        content = (await self._draft_or_version(newsletter, None)).content
+        content = (await self._operations.draft_or_version(newsletter, None)).content
         _, items, _ = await self._items(newsletter_id)
         feedback = await self._store.list_feedback(newsletter_id)
         output = await run_specialist(
@@ -410,20 +409,6 @@ class Tools:
         """Close the newsletter unsent, only when a reviewer explicitly asks, and email the
         reviewers that it was abandoned. Returns whether that email was sent."""
         return await self._operations.abandon(ctx.deps.author)
-
-    async def _draft_or_version(self, newsletter: Newsletter, version: int | None) -> WriterOutput:
-        """The newsletter's working draft, or the named version; refuse when there is none."""
-        newsletter_id = newsletter.newsletter_id
-        if version is None:
-            return require_draft(await self._store.get_draft(newsletter_id))
-        presented = await self._store.get_version(newsletter_id, version)
-        if presented is None:
-            raise Refusal(f"v{version} has not been presented")
-        return presented
-
-    async def _latest_version(self, newsletter: Newsletter) -> Version | None:
-        latest = newsletter.latest_version
-        return await self._store.get_version(newsletter.newsletter_id, latest) if latest else None
 
     async def _items(
         self, newsletter_id: str

@@ -1,4 +1,5 @@
-"""The writer: writes the newsletter's content from its items, or revises the working draft."""
+"""The writer agent, which writes or revises the newsletter's content: its definition, prompt and
+output checks."""
 
 from collections.abc import Collection, Mapping, Sequence
 

@@ -4,18 +4,18 @@ corpus, as seeded; the sent newsletter goes to the dev all-staff stand-in, and i
 to the Processed and Rejected folders, so reseed the corpus afterwards."""
 
 import asyncio
+import functools
+from datetime import UTC, datetime
 from pathlib import Path
 
-import httpx
 import pytest
 
-from pulse.adapters.clock import SystemClock
-from pulse.adapters.graph import GRAPH_URL
+from pulse.adapters.render import Renderer
 from pulse.adapters.store import SqliteStore
 from pulse.config import load_config
 from pulse.main import build_delivery, build_outbox
 from tests.emails import seedable_corpus_messages
-from tests.live import conversation_id, graph_mailbox, live_orchestrator
+from tests.live import conversation_id, graph_mailbox, live_graph, live_orchestrator
 from tests.messages import make_message
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
@@ -27,16 +27,19 @@ async def test_an_approved_newsletter_is_withdrawn_then_sent(tmp_path: Path) -> 
     corpus = sorted(m["subject"] for m in seedable_corpus_messages())
     store = SqliteStore(tmp_path / "pulse.db")
     await store.initialise()
-    clock = SystemClock()
+    clock = functools.partial(datetime.now, UTC)
     lock = asyncio.Lock()
-    async with httpx.AsyncClient(base_url=GRAPH_URL) as client:
+    async with live_graph(config) as client:
         submissions = graph_mailbox(config, client, config.mailboxes.submissions)
         conversation = graph_mailbox(config, client, config.mailboxes.conversation)
         inbox = sorted(email.subject for email in await submissions.list_inbox())
         assert inbox == corpus, "reset the dev inbox and seed the corpus once"
         orchestrator = live_orchestrator(config, store, submissions, conversation, clock, lock)
-        outbox = build_outbox(config, conversation, store)
-        delivery = build_delivery(config, store, submissions, conversation, outbox, clock, lock)
+        renderer = Renderer(config.timezone)
+        outbox = build_outbox(config, conversation, store, renderer)
+        delivery = build_delivery(
+            config, store, submissions, conversation, outbox, renderer, clock, lock
+        )
 
         async def say(message_id: str, text: str) -> str | None:
             reply = (await orchestrator.handle(make_message(message_id, text=text))).text
@@ -62,7 +65,7 @@ async def test_an_approved_newsletter_is_withdrawn_then_sent(tmp_path: Path) -> 
         # Every notice and version is in the one email thread.
         assert approved.thread_message_id is not None and sent.thread_message_id is not None
         thread = {
-            await conversation_id(config, client, config.mailboxes.conversation, message_id)
+            await conversation_id(client, config.mailboxes.conversation, message_id)
             for message_id in (approved.thread_message_id, sent.thread_message_id)
         }
         remaining = await submissions.list_inbox()

@@ -40,7 +40,7 @@ def _in_review(versions: int = 1) -> Newsletter:
 
 
 def _approved() -> Newsletter:
-    return approve(_in_review(), 1, REVIEWER, "approve v1", NOW, MONDAY_NINE, LONDON)
+    return approve(_in_review(), 1, REVIEWER, "approve v1", NOW, SEND_TIME)
 
 
 def _started() -> Newsletter:
@@ -93,22 +93,6 @@ def test_approve_records_approval_and_send_time() -> None:
     assert approved.approver == REVIEWER
     assert approved.approved_at == NOW
     assert approved.send_time == SEND_TIME
-
-
-def test_approve_on_approval_sends_at_approval_time() -> None:
-    rule = OnApproval(mode="on_approval")
-
-    approved = approve(_in_review(), 1, REVIEWER, "approve v1", NOW, rule, LONDON)
-
-    assert approved.send_time == NOW
-
-
-def test_approve_after_slot_sends_at_approval_time() -> None:
-    late = SEND_TIME + timedelta(hours=2)
-
-    approved = approve(_in_review(), 1, REVIEWER, "approve v1", late, MONDAY_NINE, LONDON)
-
-    assert approved.send_time == late
 
 
 def test_present_withdraws_approval_first() -> None:
@@ -220,7 +204,7 @@ def test_abandon_needs_a_reviewer() -> None:
     ],
 )
 def test_approval_message_accepted(message: str) -> None:
-    approved = approve(_in_review(2), 2, REVIEWER, message, NOW, MONDAY_NINE, LONDON)
+    approved = approve(_in_review(2), 2, REVIEWER, message, NOW, SEND_TIME)
 
     assert approved.approved_version == 2
 
@@ -241,17 +225,17 @@ def test_approval_message_accepted(message: str) -> None:
 )
 def test_approval_message_refused(message: str) -> None:
     with pytest.raises(Refusal):
-        approve(_in_review(2), 2, REVIEWER, message, NOW, MONDAY_NINE, LONDON)
+        approve(_in_review(2), 2, REVIEWER, message, NOW, SEND_TIME)
 
 
 def test_approve_needs_a_reviewer() -> None:
     with pytest.raises(Refusal):
-        approve(_in_review(), 1, None, "approve v1", NOW, MONDAY_NINE, LONDON)
+        approve(_in_review(), 1, None, "approve v1", NOW, SEND_TIME)
 
 
 def test_approve_needs_a_reviewer_message() -> None:
     with pytest.raises(Refusal):
-        approve(_in_review(), 1, REVIEWER, None, NOW, MONDAY_NINE, LONDON)
+        approve(_in_review(), 1, REVIEWER, None, NOW, SEND_TIME)
 
 
 @pytest.mark.parametrize("version", [1, 3])
@@ -259,20 +243,12 @@ def test_approve_needs_latest_version(version: int) -> None:
     message = f"approve v{version}"
 
     with pytest.raises(Refusal):
-        approve(_in_review(2), version, REVIEWER, message, NOW, MONDAY_NINE, LONDON)
+        approve(_in_review(2), version, REVIEWER, message, NOW, SEND_TIME)
 
 
 def test_approve_needs_a_presented_version() -> None:
     with pytest.raises(Refusal):
-        approve(
-            open_newsletter("n-1", OPENED),
-            1,
-            REVIEWER,
-            "approve v1",
-            NOW,
-            MONDAY_NINE,
-            LONDON,
-        )
+        approve(open_newsletter("n-1", OPENED), 1, REVIEWER, "approve v1", NOW, SEND_TIME)
 
 
 @pytest.mark.parametrize(
@@ -280,12 +256,12 @@ def test_approve_needs_a_presented_version() -> None:
 )
 def test_approve_needs_in_review(newsletter: Newsletter) -> None:
     with pytest.raises(Refusal):
-        approve(newsletter, 1, REVIEWER, "approve v1", NOW, MONDAY_NINE, LONDON)
+        approve(newsletter, 1, REVIEWER, "approve v1", NOW, SEND_TIME)
 
 
 def test_refusal_gives_a_reason() -> None:
     with pytest.raises(Refusal, match="v1"):
-        approve(_in_review(2), 1, REVIEWER, "approve v1", NOW, MONDAY_NINE, LONDON)
+        approve(_in_review(2), 1, REVIEWER, "approve v1", NOW, SEND_TIME)
 
 
 @pytest.mark.parametrize(

@@ -220,6 +220,14 @@ def test_counts_must_be_positive(tmp_path: Path, path: tuple[str, ...]) -> None:
         _load(tmp_path, data)
 
 
+def test_graph_retries_above_the_sdk_limit_are_rejected(tmp_path: Path) -> None:
+    data = _example()
+    data["graph"]["max_retries"] = 11
+
+    with pytest.raises(ConfigError):
+        _load(tmp_path, data)
+
+
 def test_duplicate_section_category_is_rejected(tmp_path: Path) -> None:
     data = _example()
     data["sections"].append(dict(data["sections"][0], title="Another title"))

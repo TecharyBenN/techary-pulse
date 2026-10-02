@@ -2,7 +2,7 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import MutableMapping
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +33,10 @@ from tests.fakes.models import (
 )
 from tests.messages import OPENED, make_message, make_newsletter
 from tests.operations import make_renderer
-from tests.tokens import NOW, REVIEWER_OID, REVIEWER_ROLE, make_token, make_verifier
+from tests.tokens import REVIEWER_OID, REVIEWER_ROLE, make_token, make_verifier
+
+# The time the chat endpoint's clock gives.
+NOW = datetime(2026, 9, 26, 10, 0, tzinfo=UTC)
 
 pytestmark = pytest.mark.anyio
 
@@ -69,7 +72,7 @@ class Recorder:
 def _app(orchestrator: Orchestrator) -> FastAPI:
     clock = ControlledClock(NOW)
     return create_app(
-        orchestrator, make_verifier(clock), REVIEWER_ROLE, clock, make_renderer().markdown
+        orchestrator, make_verifier().verify, REVIEWER_ROLE, clock, make_renderer().markdown
     )
 
 
@@ -189,7 +192,7 @@ async def test_reply_without_a_presented_version_has_no_newsletter(store: Sqlite
         f"Basic {TOKEN}",
         "Bearer not-a-token",
         f"Bearer {make_token(signed_by_other_key=True)}",
-        f"Bearer {make_token(exp=NOW - timedelta(seconds=1))}",
+        f"Bearer {make_token(exp=datetime.now(UTC) - timedelta(seconds=1))}",
         f"Bearer {make_token(aud='another-api')}",
     ],
     ids=[

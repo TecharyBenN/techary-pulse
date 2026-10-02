@@ -1,15 +1,14 @@
-"""The orchestrator's actions, each changing the newsletter's state and saving it, and the
-draft checks, which presenting a version also runs."""
+"""Operations: the newsletter actions that change the store, and the draft checks."""
 
 import uuid
 from collections.abc import Callable, Collection
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from pydantic import AwareDatetime
 
 from pulse.entities import lifecycle
 from pulse.entities.base import Entity
-from pulse.entities.clock import Clock
 from pulse.entities.content import (
     CheckFailure,
     Content,
@@ -21,6 +20,8 @@ from pulse.entities.content import (
     require_draft,
     version_of,
 )
+from pulse.entities.errors import Refusal
+from pulse.entities.extracts import restored
 from pulse.entities.lifecycle import (
     Newsletter,
     OnApproval,
@@ -32,20 +33,22 @@ from pulse.entities.lifecycle import (
     require_changeable,
     require_latest,
     require_open,
+    send_time,
     update,
 )
-from pulse.entities.mail import Body, InboundEmail, Mailbox, ScreenedEmail
+from pulse.entities.mail import Body, InboundEmail, Mailbox, MessageId, ScreenedEmail
 from pulse.entities.review import Review, build_review
 from pulse.entities.store import Store
-from pulse.services.mail import Outbox
+from pulse.services.outbox import Outbox
 
-# The subject prefix of the email that starts a newsletter's thread with its first version.
-DRAFT_PREFIX = "Draft:"
 _SEND_CANCELLED = "Send cancelled"
 _ABANDONED = "Abandoned"
 
 
 class StartResult(Entity):
+    """What start_newsletter did: the newsletter, whether it opened, and the emails added and
+    rejected."""
+
     newsletter_id: str
     opened: bool
     added: int
@@ -53,6 +56,8 @@ class StartResult(Entity):
 
 
 class PresentResult(Entity):
+    """The version present_draft emailed, and whether it resent it or withdrew an approval."""
+
     version: int
     # Whether the draft was unchanged, so the latest version was emailed again as it was.
     resent: bool = False
@@ -61,7 +66,16 @@ class PresentResult(Entity):
     notice_sent: bool | None = None
 
 
+class RestoreResult(Entity):
+    """The excluded record restore included."""
+
+    excluded_id: str
+    message_id: MessageId
+
+
 class ApproveResult(Entity):
+    """The approved version and its send time."""
+
     version: int
     # In the configured time zone, for the reply.
     send_time: AwareDatetime
@@ -74,14 +88,17 @@ class NoticeResult(Entity):
 
 
 class Operations:
+    """Starts, restores, presents, approves, withdraws and abandons a newsletter, and runs the
+    draft checks."""
+
     def __init__(
         self,
         store: Store,
         submissions_mailbox: Mailbox,
         outbox: Outbox,
         screen: Callable[[InboundEmail], ScreenedEmail],
-        render_review: Callable[[Version, Review], str],
-        clock: Clock,
+        render_review: Callable[[Version, Review, str | None], str],
+        clock: Callable[[], datetime],
         *,
         send_rule: OnApproval | Scheduled,
         timezone: ZoneInfo,
@@ -101,7 +118,7 @@ class Operations:
 
     async def start_newsletter(self) -> StartResult:
         """Open a newsletter with every pending email, or add those new to the open one."""
-        now = self._clock.now()
+        now = self._clock()
         newsletter = await self._store.get_open_newsletter()
         opened = newsletter is None
         known: set[str] = set()
@@ -121,11 +138,19 @@ class Operations:
             rejected=sum(1 for s in added if s.rejection is not None),
         )
 
+    async def restore(self, excluded_id: str, caller: str | None) -> RestoreResult:
+        """Include the named excluded record, recording the reviewer who asked."""
+        newsletter_id = require_open(await self._store.get_open_newsletter()).newsletter_id
+        records = await self._store.list_extract_records(newsletter_id)
+        record = restored(records, excluded_id, caller)
+        await self._store.save_restored(newsletter_id, record)
+        return RestoreResult(excluded_id=excluded_id, message_id=record.message_id)
+
     async def check(self) -> list[CheckFailure]:
         """Run the draft checks on the latest newsletter's working draft."""
-        newsletter_id = require_latest(await self._store.get_latest_newsletter()).newsletter_id
-        draft = await self._draft(newsletter_id)
-        return await self._check(newsletter_id, draft.content)
+        newsletter = require_latest(await self._store.get_latest_newsletter())
+        draft = await self.draft_or_version(newsletter, None)
+        return await self._check(newsletter.newsletter_id, draft.content)
 
     async def present_draft(self, email_reviewers: bool = True) -> PresentResult:
         """Save the working draft as the next version, with its check failures and the judge's
@@ -140,12 +165,8 @@ class Operations:
         """
         newsletter = require_open(await self._store.get_open_newsletter())
         newsletter_id = newsletter.newsletter_id
-        draft = await self._draft(newsletter_id)
-        latest = (
-            await self._store.get_version(newsletter_id, newsletter.latest_version)
-            if newsletter.latest_version
-            else None
-        )
+        draft = await self.draft_or_version(newsletter, None)
+        latest = await self.latest_version(newsletter)
         if latest is not None and not draft_changed(draft, latest):
             return await self._resend(newsletter, latest, email_reviewers)
         withdrawn = None
@@ -154,14 +175,14 @@ class Operations:
         version = version_of(
             draft,
             next_version(newsletter),
-            self._clock.now(),
+            self._clock(),
             await self._check(newsletter_id, draft.content),
             await self._store.get_verdicts(newsletter_id),
         )
         presented = present(newsletter)
         if email_reviewers:
-            body = await self._reviewer_email(newsletter, version)
-            sent_id = await self._outbox.to_reviewers(newsletter, body, DRAFT_PREFIX)
+            body = await self.reviewer_email(newsletter, version)
+            sent_id = await self._outbox.to_reviewers(newsletter, body)
             presented = presented.model_copy(update={"thread_message_id": sent_id})
         await self._store.save_version(presented, version)
         if withdrawn is None:
@@ -173,20 +194,11 @@ class Operations:
     async def approve(self, version: int, caller: str | None, message: str | None) -> ApproveResult:
         """Record the reviewer's approval of the named version and set its send time."""
         newsletter = require_open(await self._store.get_open_newsletter())
-        approved = lifecycle.approve(
-            newsletter,
-            version,
-            caller,
-            message,
-            self._clock.now(),
-            self._send_rule,
-            self._timezone,
-        )
+        now = self._clock()
+        send_at = send_time(self._send_rule, self._timezone, newsletter.opened_at, now)
+        approved = lifecycle.approve(newsletter, version, caller, message, now, send_at)
         await self._store.save_newsletter(approved)
-        assert approved.send_time is not None
-        return ApproveResult(
-            version=version, send_time=approved.send_time.astimezone(self._timezone)
-        )
+        return ApproveResult(version=version, send_time=send_at.astimezone(self._timezone))
 
     async def withdraw_approval(self, caller: str | None) -> NoticeResult:
         """Return the approved newsletter to review, and tell the reviewers the send is
@@ -198,7 +210,7 @@ class Operations:
     async def abandon(self, caller: str | None) -> NoticeResult:
         """Close the newsletter unsent, and tell the reviewers."""
         newsletter = require_open(await self._store.get_open_newsletter())
-        abandoned = lifecycle.abandon(newsletter, caller, self._clock.now())
+        abandoned = lifecycle.abandon(newsletter, caller, self._clock())
         await self._store.save_newsletter(abandoned)
         text = "This newsletter was abandoned and will not be sent. Its emails stay pending."
         _, sent = await self._outbox.notice(abandoned, _ABANDONED, text)
@@ -210,17 +222,31 @@ class Operations:
         """Email the latest version again as it was presented, changing nothing else."""
         require_changeable(newsletter)
         if email_reviewers:
-            await self._outbox.thread(
-                newsletter, await self._reviewer_email(newsletter, latest), DRAFT_PREFIX
-            )
+            await self._outbox.thread(newsletter, await self.reviewer_email(newsletter, latest))
         return PresentResult(version=latest.version, resent=True)
 
-    async def _reviewer_email(self, newsletter: Newsletter, version: Version) -> Body:
-        review = await self.review(newsletter.newsletter_id, version)
-        return Body(content=self._render_review(version, review), content_type="html")
+    async def reviewer_email(
+        self, newsletter: Newsletter, version: Version, reply: str | None = None
+    ) -> Body:
+        """The version's reviewer email, after the orchestrator's reply when there is one."""
+        review = await self._review(newsletter.newsletter_id, version)
+        return Body(content=self._render_review(version, review, reply), content_type="html")
 
-    async def review(self, newsletter_id: str, version: Version) -> Review:
-        """The review section of a version's reviewer email."""
+    async def latest_version(self, newsletter: Newsletter) -> Version | None:
+        latest = newsletter.latest_version
+        return await self._store.get_version(newsletter.newsletter_id, latest) if latest else None
+
+    async def draft_or_version(self, newsletter: Newsletter, version: int | None) -> WriterOutput:
+        """The working draft, or the named version; refuses when there is none."""
+        newsletter_id = newsletter.newsletter_id
+        if version is None:
+            return require_draft(await self._store.get_draft(newsletter_id))
+        presented = await self._store.get_version(newsletter_id, version)
+        if presented is None:
+            raise Refusal(f"v{version} has not been presented")
+        return presented
+
+    async def _review(self, newsletter_id: str, version: Version) -> Review:
         return build_review(
             version,
             await self._store.get_items(newsletter_id),
@@ -237,9 +263,6 @@ class Operations:
         version = approved.approved_version
         text = f"The approval of version {version} was withdrawn, so it will not be sent."
         return await self._outbox.notice(withdrawn, _SEND_CANCELLED, text)
-
-    async def _draft(self, newsletter_id: str) -> WriterOutput:
-        return require_draft(await self._store.get_draft(newsletter_id))
 
     async def _check(self, newsletter_id: str, content: Content) -> list[CheckFailure]:
         consolidation = await self._store.get_items(newsletter_id)

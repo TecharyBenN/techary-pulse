@@ -7,5 +7,5 @@ class ControlledClock:
     def __init__(self, time: datetime) -> None:
         self.time = time
 
-    def now(self) -> datetime:
+    def __call__(self) -> datetime:
         return self.time

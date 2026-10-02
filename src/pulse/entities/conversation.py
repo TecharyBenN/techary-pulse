@@ -1,5 +1,4 @@
-"""Reviewer messages: the input to every orchestrator run, the feedback it records, and the
-email channel's record of the messages it has seen."""
+"""Reviewer messages, and the email channel's record of the messages it has handled."""
 
 import itertools
 from collections.abc import Sequence
@@ -13,6 +12,8 @@ Channel = Literal["email", "librechat"]
 
 
 class ReviewerMessage(Entity):
+    """One message from a verified reviewer, through either channel."""
+
     message_id: str
     # The reviewer's Entra object ID, as the channel verified it.
     author: str

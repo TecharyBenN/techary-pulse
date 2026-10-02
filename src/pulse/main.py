@@ -1,19 +1,23 @@
-"""Creates the adapters and connects them to the agents, services and entrypoints."""
+"""The pulse command: reads the configuration, builds every component and runs them."""
 
+import argparse
 import asyncio
 import functools
 import logging
 import os
-from collections.abc import Sequence
-from datetime import timedelta
+import sys
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-import httpx
 import pydantic_ai
+from azure.identity.aio import CertificateCredential
 from pydantic_ai.models import Model
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from pythonjsonlogger.json import JsonFormatter
 
-from pulse.adapters.clock import SystemClock
-from pulse.adapters.gateway import gateway_model
-from pulse.adapters.graph import GRAPH_URL, CertificateCredential, GraphMailbox
+from pulse.adapters.graph import GraphMailbox, certificate_thumbprint, graph_client
 from pulse.adapters.render import Renderer
 from pulse.adapters.store import SqliteStore
 from pulse.adapters.tokens import JwtVerifier
@@ -25,18 +29,15 @@ from pulse.agents.orchestrator.run import Orchestrator, history_note
 from pulse.agents.orchestrator.tools import Tools
 from pulse.agents.writer.agent import build_writer
 from pulse.config import Config, ConfigError, load_config
-from pulse.entities.clock import Clock
 from pulse.entities.errors import PulseError
 from pulse.entities.mail import Mailbox, screen
 from pulse.entities.store import Store
 from pulse.entrypoints.chat import create_app, serve
-from pulse.entrypoints.cli import parse_args
 from pulse.entrypoints.email import EmailChannel
 from pulse.entrypoints.scheduler import poll
-from pulse.logging import configure_logging
 from pulse.services.delivery import Delivery
-from pulse.services.mail import Outbox
 from pulse.services.operations import Operations
+from pulse.services.outbox import Outbox
 
 _log = logging.getLogger(__name__)
 
@@ -50,34 +51,60 @@ def main(argv: Sequence[str] | None = None) -> None:
         config = load_config(args.config)
         asyncio.run(_serve(config))
     except PulseError as error:
-        _log.error("start_failed", extra={"error_type": type(error).__name__, "detail": str(error)})
+        _log.exception("start_failed")
         raise SystemExit(1) from error
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--config",
+        type=Path,
+        default=Path("config.yaml"),
+        help="path to config.yaml (default: ./config.yaml)",
+    )
+    parser = argparse.ArgumentParser(prog="pulse")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser(
+        "serve", parents=[common], help="run the chat endpoint and delivery until stopped"
+    )
+    return parser.parse_args(argv)
 
 
 async def _serve(config: Config) -> None:
     llm_key = _environment(config.llm.api_key_env)
     store = SqliteStore(config.state.db_path)
     await store.initialise()
-    clock = SystemClock()
+    clock = functools.partial(datetime.now, UTC)
+    renderer = Renderer(config.timezone)
     graph = config.graph
-    credential = CertificateCredential(graph.tenant_id, graph.client_id, graph.certificate_path)
-    _log.info("graph_certificate", extra={"thumbprint": credential.thumbprint})
-    async with httpx.AsyncClient(base_url=GRAPH_URL) as client:
+    _log.info(
+        "graph_certificate", extra={"thumbprint": certificate_thumbprint(graph.certificate_path)}
+    )
+    credential = CertificateCredential(
+        graph.tenant_id, graph.client_id, certificate_path=str(graph.certificate_path)
+    )
+    async with credential:
+        client = graph_client(credential)
         submissions, conversation = (
-            GraphMailbox(client, credential.token, address, graph.max_retries)
+            GraphMailbox(client, address, graph.max_retries)
             for address in (config.mailboxes.submissions, config.mailboxes.conversation)
         )
         # One run lock for orchestrator runs and delivery.
         lock = asyncio.Lock()
-        outbox = build_outbox(config, conversation, store)
-        operations = build_operations(config, store, submissions, outbox, clock)
+        outbox = build_outbox(config, conversation, store, renderer)
+        operations = build_operations(config, store, submissions, outbox, renderer, clock)
         orchestrator = build_orchestrator(config, store, operations, llm_key, lock)
-        delivery = build_delivery(config, store, submissions, conversation, outbox, clock, lock)
-        channel = build_email_channel(config, store, conversation, orchestrator, operations, outbox)
+        delivery = build_delivery(
+            config, store, submissions, conversation, outbox, renderer, clock, lock
+        )
+        channel = build_email_channel(
+            config, store, conversation, orchestrator, operations, outbox, renderer
+        )
         auth = config.auth
-        verifier = JwtVerifier(auth.issuer, auth.audience, auth.jwks, clock)
+        verifier = JwtVerifier(auth.issuer, auth.audience, auth.jwks)
         app = create_app(
-            orchestrator, verifier, auth.reviewer_role, clock, _renderer(config).markdown
+            orchestrator, verifier.verify, auth.reviewer_role, clock, renderer.markdown
         )
         stop = asyncio.Event()
         interval = timedelta(seconds=config.schedule.poll_interval_seconds)
@@ -92,11 +119,11 @@ async def _serve(config: Config) -> None:
             await polling
 
 
-def build_outbox(config: Config, conversation: Mailbox, store: Store) -> Outbox:
+def build_outbox(config: Config, conversation: Mailbox, store: Store, renderer: Renderer) -> Outbox:
     return Outbox(
         conversation,
         store,
-        _renderer(config).notice,
+        renderer.notice,
         reviewers=config.reviewers,
         operator_alerts=config.operator_alerts,
         subject_template=config.subject_template,
@@ -105,7 +132,12 @@ def build_outbox(config: Config, conversation: Mailbox, store: Store) -> Outbox:
 
 
 def build_operations(
-    config: Config, store: Store, submissions: Mailbox, outbox: Outbox, clock: Clock
+    config: Config,
+    store: Store,
+    submissions: Mailbox,
+    outbox: Outbox,
+    renderer: Renderer,
+    clock: Callable[[], datetime],
 ) -> Operations:
     screen_email = functools.partial(
         screen,
@@ -118,7 +150,7 @@ def build_operations(
         submissions,
         outbox,
         screen_email,
-        _renderer(config).reviewer_email,
+        renderer.reviewer_email,
         clock,
         send_rule=config.send,
         timezone=config.timezone,
@@ -130,8 +162,10 @@ def build_operations(
 def build_orchestrator(
     config: Config, store: Store, operations: Operations, llm_key: str, lock: asyncio.Lock
 ) -> Orchestrator:
+    provider = OpenAIProvider(base_url=config.llm.base_url, api_key=llm_key)
+
     def model(agent: str) -> Model:
-        return gateway_model(config.llm.base_url, llm_key, config.llm.models[agent])
+        return OpenAIChatModel(config.llm.models[agent], provider=provider)
 
     categories = config.categories
     tools = Tools(
@@ -164,7 +198,8 @@ def build_delivery(
     submissions: Mailbox,
     conversation: Mailbox,
     outbox: Outbox,
-    clock: Clock,
+    renderer: Renderer,
+    clock: Callable[[], datetime],
     lock: asyncio.Lock,
 ) -> Delivery:
     mailboxes = config.mailboxes
@@ -173,7 +208,7 @@ def build_delivery(
         conversation,
         submissions,
         outbox,
-        _renderer(config).newsletter,
+        renderer.newsletter,
         history_note,
         clock,
         lock,
@@ -193,16 +228,15 @@ def build_email_channel(
     orchestrator: Orchestrator,
     operations: Operations,
     outbox: Outbox,
+    renderer: Renderer,
 ) -> EmailChannel:
-    renderer = _renderer(config)
     mailboxes = config.mailboxes
     return EmailChannel(
         conversation,
         orchestrator,
         store,
         outbox,
-        operations.review,
-        renderer.reviewer_email,
+        operations.reviewer_email,
         renderer.newsletter,
         renderer.reply,
         max_attempts=config.chat.max_attempts,
@@ -211,8 +245,15 @@ def build_email_channel(
     )
 
 
-def _renderer(config: Config) -> Renderer:
-    return Renderer(config.timezone)
+def configure_logging() -> None:
+    """JSON objects, one per line, on standard output."""
+    handler = logging.StreamHandler(sys.stdout)
+    fields = {"levelname": "level", "message": "event"}
+    formatter = JsonFormatter(
+        "{levelname}{message}", style="{", rename_fields=fields, timestamp="time"
+    )
+    handler.setFormatter(formatter)
+    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
 
 
 def _environment(name: str) -> str:

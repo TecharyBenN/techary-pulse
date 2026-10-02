@@ -4,8 +4,9 @@ import os
 from pathlib import Path
 
 import pytest
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
 
-from pulse.adapters.gateway import gateway_model
 from pulse.agents.consolidator.agent import build_consolidator, consolidator_prompt, output_checks
 from pulse.agents.runner import run_specialist
 from pulse.config import load_config
@@ -17,9 +18,10 @@ pytestmark = [pytest.mark.live, pytest.mark.anyio]
 
 async def test_duplicate_reports_merge_into_single_items() -> None:
     config = load_config(Path("config.yaml"))
-    model = gateway_model(
-        config.llm.base_url, os.environ[config.llm.api_key_env], config.llm.models["consolidator"]
+    provider = OpenAIProvider(
+        base_url=config.llm.base_url, api_key=os.environ[config.llm.api_key_env]
     )
+    model = OpenAIChatModel(config.llm.models["consolidator"], provider=provider)
     extracted = [
         make_record(m["id"], ExtractorOutput.model_validate(m["extract"]), None, [])
         for m in corpus_messages()

@@ -19,11 +19,9 @@ from pulse.entities.mail import (
     header_value,
     is_automatic_reply,
     screen,
-    sender_names,
-    source_text,
     subject,
 )
-from tests.emails import make_email, make_screened_email
+from tests.emails import make_email
 from tests.fakes.graph import MAILBOX, FakeGraph
 from tests.fakes.mailbox import FakeMailbox
 
@@ -106,12 +104,8 @@ def _email(message_id: str, day: int, **changes: object) -> InboundEmail:
     return make_email(message_id, received=datetime(2026, 9, day, 15, 30, tzinfo=UTC), **changes)
 
 
-async def _token() -> str:
-    return "token-1"
-
-
 def _graph_mailbox(inbox: list[InboundEmail]) -> Mailbox:
-    return GraphMailbox(FakeGraph(inbox).client(), _token, MAILBOX, max_retries=2)
+    return GraphMailbox(FakeGraph(inbox).client(), MAILBOX, max_retries=2)
 
 
 @pytest.fixture(params=["fake", "graph"])
@@ -339,29 +333,6 @@ def test_unlabelled_message_is_allowed() -> None:
 )
 def test_automatic_replies(headers: dict[str, str], expected: str | None) -> None:
     assert _screen(_sender_email(headers=headers)) == expected
-
-
-def test_source_text_is_subject_and_body() -> None:
-    text = source_text(screen(_sender_email(), ["example.org"], [], []))
-
-    assert "Signed Northwind Retail today" in text
-    assert "22 September" in text
-
-
-def test_source_text_of_rejected_screened_email_is_subject_only() -> None:
-    text = source_text(screen(_sender_email("alex.morgan@example.com"), ["example.org"], [], []))
-
-    assert text == "Signed Northwind Retail today"
-
-
-def test_sender_names_are_each_sender_once_in_order() -> None:
-    emails = [
-        make_screened_email("m01", sender_name="Tom Evans"),
-        make_screened_email("m02"),
-        make_screened_email("m03", sender_name="Tom Evans"),
-    ]
-
-    assert sender_names(emails) == ["Tom Evans", "Priya Shah"]
 
 
 LONDON = ZoneInfo("Europe/London")

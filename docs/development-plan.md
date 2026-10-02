@@ -32,15 +32,15 @@ A phase with a live check is complete only when the check has passed against the
 | Concurrency | asyncio, one event loop | Pulse runs the HTTP server, polling, delivery and agent runs at once. One loop avoids sharing SQLite connections between threads and gives `SIGTERM` defined cancellation points. |
 | Validation and configuration | Pydantic, with PyYAML `safe_load` | One set of models validates configuration, agent output and HTTP requests. |
 | Agents | `pydantic-ai-slim[openai]`, pointed at the gateway's OpenAI-compatible endpoint | Typed output, function tools, `agent.iter` for saving each step, `ModelMessagesTypeAdapter` for history, and `FunctionModel` stand-ins for tests, with no dependency on the provider behind the gateway. |
-| HTTP server | FastAPI, run by Uvicorn inside `pulse serve` | Validates requests and responses against Pydantic models and supports streamed responses. Uvicorn runs on the same event loop as the rest of Pulse. |
+| HTTP server | FastAPI, run by Uvicorn inside `pulse serve`, with the `openai` package's response types | Validates requests and responses against Pydantic models and supports streamed responses. Uvicorn runs on the same event loop as the rest of Pulse. The `openai` types are the chat completions format as OpenAI publishes it. |
 | Store | Standard library `sqlite3`, through `asyncio.to_thread` | SQLite is what the design specifies, and it needs no extra dependency. |
-| Entra ID token | Microsoft Authentication Library (MSAL) for Python, through `asyncio.to_thread` | Maintained implementation of the certificate client assertion. |
+| Entra ID token | azure-identity's asynchronous `CertificateCredential` | Microsoft's maintained credential library, which the Graph SDK signs in with. |
 | Bearer token verification | PyJWT with its cryptography extra, through `asyncio.to_thread` | Maintained verification of signatures, issuer and audience, and fetching and caching of an issuer's key set; writing signature checks by hand is a security risk. |
-| Microsoft Graph calls | Direct REST calls through httpx's asynchronous client | Pulse uses a handful of operations, so a software development kit (SDK) would add more than it saves. |
+| Microsoft Graph calls | Microsoft Graph SDK for Python (`msgraph-sdk`), on Kiota's client factory | Microsoft maintains the requests, models, retries and paging. The client is built on Kiota's factory because `msgraph-core` 1.5.1's transport skips the SDK middleware, so throttled requests would not be retried. |
 | Rendering | Jinja2 with autoescaping on | Escapes model output and email-derived text by default. |
 | Email replies | `markdown-it-py` with its linkify extra, raw HTML off | Converts the orchestrator's Markdown replies to HTML for email, following CommonMark, and escapes any raw HTML in them; Python-Markdown cannot escape raw HTML. |
 | Scheduling | A cron library that supports IANA time zones, chosen in phase 10 | Computes the next start in `Europe/London` correctly across daylight saving changes. |
-| Logging | Standard library `logging` with a JSON formatter | Structured logs without another dependency. |
+| Logging | Standard library `logging` with python-json-logger | The established JSON formatter, which logs exceptions in full. |
 | Command line | `argparse` | Two commands do not need a framework. |
 | Container | `python:3.14-slim`, running as a non-root user | Small image with no build tools. |
 

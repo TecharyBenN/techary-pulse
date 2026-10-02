@@ -1,4 +1,5 @@
-"""The extractor: finds the facts, people, category and sensitivity in one screened email."""
+"""The extractor agent, which finds the facts, people, category and sensitivity in one screened
+email: its definition, prompt and output checks."""
 
 from collections.abc import Mapping
 

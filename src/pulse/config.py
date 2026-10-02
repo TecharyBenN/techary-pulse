@@ -1,12 +1,13 @@
-"""Reading and validating config.yaml."""
+"""Configuration: Config holds the validated contents of config.yaml, which load_config reads."""
 
 from pathlib import Path
-from typing import Any, Self
+from typing import Annotated, Any, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import (
     ConfigDict,
+    Field,
     PositiveInt,
     ValidationError,
     field_validator,
@@ -26,13 +27,18 @@ class ConfigError(PulseError):
 
 
 class GraphConfig(StrictEntity):
+    """The graph section: the Pulse app's sign-in and Graph retries."""
+
     tenant_id: str
     client_id: str
     certificate_path: Path
-    max_retries: PositiveInt
+    # The Graph SDK retries at most 10 times.
+    max_retries: Annotated[int, Field(gt=0, le=10)]
 
 
 class MailboxesConfig(StrictEntity):
+    """The mailboxes section: the two Pulse mailboxes and their folders."""
+
     submissions: str
     conversation: str
     processed_folder: str
@@ -40,21 +46,29 @@ class MailboxesConfig(StrictEntity):
 
 
 class ScheduleConfig(StrictEntity):
+    """The schedule section: the draft schedule and the poll interval."""
+
     draft_cron: str | None = None
     poll_interval_seconds: PositiveInt
 
 
 class OrchestratorConfig(StrictEntity):
+    """The orchestrator section: run limits."""
+
     max_tool_calls: PositiveInt
     max_run_minutes: PositiveInt
 
 
 class ChatConfig(StrictEntity):
+    """The chat section: the endpoint's port and the email channel's attempt limit."""
+
     port: PositiveInt
     max_attempts: PositiveInt
 
 
 class AuthConfig(StrictEntity):
+    """The auth section: how the chat endpoint verifies bearer tokens."""
+
     issuer: str
     audience: str
     # A URL, or a file path, holding the issuer's JSON Web Key Set.
@@ -63,16 +77,22 @@ class AuthConfig(StrictEntity):
 
 
 class LimitsConfig(StrictEntity):
+    """The limits section: the newsletter's word limit."""
+
     max_words: PositiveInt
 
 
 class SectionConfig(StrictEntity):
+    """One newsletter section: its category, title and definition."""
+
     category: str
     title: str
     definition: str
 
 
 class LlmConfig(StrictEntity):
+    """The llm section: the gateway and the model for each agent."""
+
     base_url: str
     api_key_env: str
     models: dict[str, str]
@@ -86,10 +106,14 @@ class LlmConfig(StrictEntity):
 
 
 class StateConfig(StrictEntity):
+    """The state section: where the store is kept."""
+
     db_path: Path
 
 
 class Config(StrictEntity):
+    """The validated contents of config.yaml."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     graph: GraphConfig

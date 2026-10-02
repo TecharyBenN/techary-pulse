@@ -1,4 +1,4 @@
-"""Runs any specialist agent: validates its answer and retries once, telling it what was wrong."""
+"""run_specialist runs a specialist agent, checks its output and retries once."""
 
 from collections.abc import Callable
 

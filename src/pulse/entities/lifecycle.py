@@ -22,10 +22,14 @@ _NO_APPROVAL = {"approved_version": None, "approver": None, "approved_at": None,
 
 
 class OnApproval(StrictEntity):
+    """Send rule: send when a version is approved."""
+
     mode: Literal["on_approval"]
 
 
 class Scheduled(StrictEntity):
+    """Send rule: send at the newsletter's weekly send slot."""
+
     mode: Literal["scheduled"]
     day: Weekday
     time: dt.time
@@ -43,6 +47,8 @@ SendRule = Annotated[OnApproval | Scheduled, Field(discriminator="mode")]
 
 
 class Newsletter(Entity):
+    """One newsletter's state, versions, approval and email thread."""
+
     newsletter_id: str
     state: State
     opened_at: AwareDatetime
@@ -122,8 +128,7 @@ def approve(
     caller: str | None,
     message: str | None,
     now: dt.datetime,
-    rule: OnApproval | Scheduled,
-    timezone: ZoneInfo,
+    send_at: dt.datetime,
 ) -> Newsletter:
     """The approval check; `caller` and `message` come from the run, never from the model.
 
@@ -142,7 +147,7 @@ def approve(
             "approved_version": version,
             "approver": caller,
             "approved_at": now,
-            "send_time": send_time(rule, timezone, newsletter.opened_at, now),
+            "send_time": send_at,
         }
     )
 

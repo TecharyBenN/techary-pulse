@@ -1,19 +1,26 @@
-"""The chat endpoint: OpenAI chat completions over HTTP, in front of the orchestrator."""
+"""The chat endpoint: create_app serves OpenAI chat completions in front of the orchestrator, and
+serve runs it."""
 
 import asyncio
+import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import datetime
 from typing import Annotated, Literal
 
 import uvicorn
 from fastapi import FastAPI, Header, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from openai.types.chat import ChatCompletion, ChatCompletionChunk, ChatCompletionMessage
+from openai.types.chat.chat_completion import Choice
+from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
+from openai.types.chat.chat_completion_chunk import ChoiceDelta
+from openai.types.shared import ErrorObject
 from pydantic import BaseModel, ValidationError
 
 from pulse.agents.orchestrator.run import Orchestrator, RunReply
-from pulse.entities.auth import Caller, TokenVerifier
-from pulse.entities.clock import Clock
+from pulse.entities.auth import Caller
 from pulse.entities.content import Content
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import InvalidToken, PulseError
@@ -48,78 +55,40 @@ class _ChatRequest(BaseModel):
     stream: bool = False
 
 
-class _AssistantMessage(BaseModel):
-    role: Literal["assistant"] = "assistant"
-    content: str
-
-
-class _Choice(BaseModel):
-    index: int = 0
-    message: _AssistantMessage
-    finish_reason: Literal["stop"] = "stop"
-
-
-class _ChatCompletion(BaseModel):
-    id: str
-    object: Literal["chat.completion"] = "chat.completion"
-    created: int
-    model: str
-    choices: list[_Choice]
-
-
-class _Delta(BaseModel):
-    role: Literal["assistant"] | None = None
-    content: str | None = None
-
-
-class _ChunkChoice(BaseModel):
-    index: int = 0
-    delta: _Delta
-    finish_reason: Literal["stop"] | None = None
-
-
-class _ChatCompletionChunk(BaseModel):
-    id: str
-    object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
-    created: int
-    model: str
-    choices: list[_ChunkChoice]
-
-
-class _ErrorDetail(BaseModel):
-    message: str
-    type: str
-
-
-class _ErrorBody(BaseModel):
-    error: _ErrorDetail
-
-
 class _Completion:
-    """The identity every part of one response shares."""
+    """The ID, creation time and model that every part of one response shares."""
 
-    def __init__(self, model: str, clock: Clock) -> None:
+    def __init__(self, model: str, created: datetime) -> None:
         self.id = f"chatcmpl-{uuid.uuid4().hex}"
-        self.created = int(clock.now().timestamp())
+        self.created = int(created.timestamp())
         self.model = model
 
-    def whole(self, content: str) -> _ChatCompletion:
-        choice = _Choice(message=_AssistantMessage(content=content))
-        return _ChatCompletion(id=self.id, created=self.created, model=self.model, choices=[choice])
+    def whole(self, content: str) -> ChatCompletion:
+        message = ChatCompletionMessage(role="assistant", content=content)
+        return ChatCompletion(
+            id=self.id,
+            object="chat.completion",
+            created=self.created,
+            model=self.model,
+            choices=[Choice(index=0, message=message, finish_reason="stop")],
+        )
 
-    def chunk(self, delta: _Delta, finish_reason: Literal["stop"] | None = None) -> str:
-        choice = _ChunkChoice(delta=delta, finish_reason=finish_reason)
-        chunk = _ChatCompletionChunk(
-            id=self.id, created=self.created, model=self.model, choices=[choice]
+    def chunk(self, delta: ChoiceDelta, finish_reason: Literal["stop"] | None = None) -> str:
+        chunk = ChatCompletionChunk(
+            id=self.id,
+            object="chat.completion.chunk",
+            created=self.created,
+            model=self.model,
+            choices=[ChunkChoice(index=0, delta=delta, finish_reason=finish_reason)],
         )
         return _event(chunk)
 
 
 def create_app(
     orchestrator: Orchestrator,
-    verifier: TokenVerifier,
+    verify: Callable[[str], Awaitable[Caller]],
     reviewer_role: str,
-    clock: Clock,
+    clock: Callable[[], datetime],
     render_markdown: Callable[[Content], str],
 ) -> FastAPI:
     """`render_markdown` renders the newsletter a run presented or showed, after the reply."""
@@ -132,7 +101,7 @@ def create_app(
         request: Request,
         authorization: Annotated[str | None, Header()] = None,
     ) -> Response:
-        caller = await _caller(authorization, verifier)
+        caller = await _caller(authorization, verify)
         if caller is None:
             return _error(401, "invalid_request_error", "A valid bearer token is required.")
         if reviewer_role not in caller.roles:
@@ -150,7 +119,7 @@ def create_app(
             author=caller.oid,
             channel="librechat",
             text=user_messages[-1].text(),
-            received=clock.now(),
+            received=clock(),
         )
         notes: asyncio.Queue[str | None] = asyncio.Queue()
         # Only the count of the client's messages is read, so a new chat can open with a recap.
@@ -167,7 +136,7 @@ def create_app(
 
         task.add_done_callback(finished)
 
-        completion = _Completion(chat.model, clock)
+        completion = _Completion(chat.model, message.received)
         if chat.stream:
             return StreamingResponse(
                 _stream(task, notes, completion, render_markdown), media_type="text/event-stream"
@@ -177,7 +146,7 @@ def create_app(
         except PulseError:
             return _error(500, "server_error", _RUN_FAILED)
         content = _content(reply, render_markdown)
-        return JSONResponse(completion.whole(content).model_dump(mode="json"))
+        return JSONResponse(completion.whole(content).model_dump(mode="json", exclude_none=True))
 
     return app
 
@@ -195,18 +164,17 @@ async def _stream(
     completion: _Completion,
     render_markdown: Callable[[Content], str],
 ) -> AsyncIterator[str]:
-    yield completion.chunk(_Delta(role="assistant"))
+    yield completion.chunk(ChoiceDelta(role="assistant"))
     while (note := await notes.get()) is not None:
-        yield completion.chunk(_Delta(content=f"{note}\n\n"))
+        yield completion.chunk(ChoiceDelta(content=f"{note}\n\n"))
     try:
         reply = task.result()
     except PulseError:
-        error = _ErrorBody(error=_ErrorDetail(message=_RUN_FAILED, type="server_error"))
-        yield _event(error)
+        yield f"data: {json.dumps(_error_body('server_error', _RUN_FAILED))}\n\n"
     else:
         if content := _content(reply, render_markdown):
-            yield completion.chunk(_Delta(content=content))
-        yield completion.chunk(_Delta(), finish_reason="stop")
+            yield completion.chunk(ChoiceDelta(content=content))
+        yield completion.chunk(ChoiceDelta(), finish_reason="stop")
     yield "data: [DONE]\n\n"
 
 
@@ -216,13 +184,15 @@ def _content(reply: RunReply, render_markdown: Callable[[Content], str]) -> str:
     return "\n\n".join(part for part in (reply.text, newsletter) if part)
 
 
-async def _caller(authorization: str | None, verifier: TokenVerifier) -> Caller | None:
+async def _caller(
+    authorization: str | None, verify: Callable[[str], Awaitable[Caller]]
+) -> Caller | None:
     """The caller of a request with a valid bearer token, or None."""
     scheme, _, token = (authorization or "").partition(" ")
     if scheme.casefold() != "bearer" or not token:
         return None
     try:
-        return await verifier.verify(token)
+        return await verify(token)
     except InvalidToken as error:
         # The reason says why without repeating the token, so a misconfigured issuer shows here.
         _log.info("token_rejected", extra={"reason": str(error)})
@@ -230,8 +200,13 @@ async def _caller(authorization: str | None, verifier: TokenVerifier) -> Caller 
 
 
 def _error(status: int, kind: str, message: str) -> JSONResponse:
-    body = _ErrorBody(error=_ErrorDetail(message=message, type=kind))
-    return JSONResponse(body.model_dump(mode="json"), status_code=status)
+    return JSONResponse(_error_body(kind, message), status_code=status)
+
+
+def _error_body(kind: str, message: str) -> dict[str, object]:
+    """An OpenAI error response body."""
+    error = ErrorObject(message=message, type=kind)
+    return {"error": error.model_dump(mode="json", exclude_none=True)}
 
 
 def _event(model: BaseModel) -> str:

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from pulse.entrypoints.cli import parse_args
+from pulse.main import parse_args
 
 
 def test_serve_reads_config_yaml_by_default() -> None:

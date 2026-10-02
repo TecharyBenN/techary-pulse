@@ -3,11 +3,9 @@
 import re
 from pathlib import Path
 
-import httpx
 import pytest
 from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, ToolReturnPart
 
-from pulse.adapters.graph import GRAPH_URL
 from pulse.adapters.store import SqliteStore
 from pulse.config import load_config
 from tests.emails import (
@@ -17,7 +15,7 @@ from tests.emails import (
     stored_outcomes,
 )
 from tests.fakes.mailbox import FakeMailbox
-from tests.live import conversation_id, graph_mailbox, live_orchestrator
+from tests.live import conversation_id, graph_mailbox, live_graph, live_orchestrator
 from tests.messages import make_message, make_newsletter
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
@@ -48,7 +46,7 @@ async def test_the_corpus_is_extracted_and_consolidated(tmp_path: Path) -> None:
     # A temporary store, so the check never depends on or changes ./state.
     store = SqliteStore(tmp_path / "pulse.db")
     await store.initialise()
-    async with httpx.AsyncClient(base_url=GRAPH_URL) as client:
+    async with live_graph(config) as client:
         mailbox = graph_mailbox(config, client, config.mailboxes.submissions)
         inbox = sorted(email.subject for email in await mailbox.list_inbox())
         assert inbox == sorted(corpus), "reset the dev inbox and seed the corpus once"
@@ -87,7 +85,7 @@ async def test_version_1_and_a_revised_version_2_reach_the_reviewers(tmp_path: P
     config = load_config(Path("config.yaml"))
     store = SqliteStore(tmp_path / "pulse.db")
     await store.initialise()
-    async with httpx.AsyncClient(base_url=GRAPH_URL) as client:
+    async with live_graph(config) as client:
         orchestrator = live_orchestrator(
             config,
             store,
@@ -106,7 +104,7 @@ async def test_version_1_and_a_revised_version_2_reach_the_reviewers(tmp_path: P
         # Version 2 is a reply in version 1's thread.
         conversation = config.mailboxes.conversation
         thread = [
-            await conversation_id(config, client, conversation, message_id)
+            await conversation_id(client, conversation, message_id)
             for message_id in (opened.thread_message_id, newsletter.thread_message_id)
         ]
 
@@ -133,7 +131,7 @@ async def test_a_failing_check_is_fixed_or_listed_in_the_version(tmp_path: Path)
     config = load_config(Path("config.yaml"))
     store = SqliteStore(tmp_path / "pulse.db")
     await store.initialise()
-    async with httpx.AsyncClient(base_url=GRAPH_URL) as client:
+    async with live_graph(config) as client:
         orchestrator = live_orchestrator(
             config,
             store,

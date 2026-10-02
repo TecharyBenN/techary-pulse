@@ -7,8 +7,10 @@ from typing import Any
 from urllib.parse import unquote
 
 import httpx
+from azure.core.credentials import AccessToken
+from msgraph.graph_service_client import GraphServiceClient
 
-from pulse.adapters.graph import GRAPH_URL
+from pulse.adapters.graph import graph_client
 from pulse.entities.mail import InboundEmail
 
 MAILBOX = "pulse@example.org"
@@ -28,6 +30,22 @@ def graph_message(email: InboundEmail) -> dict[str, Any]:
     }
 
 
+class _Credential:
+    """Gives every request the same access token."""
+
+    async def get_token(self, *scopes: str, **kwargs: object) -> AccessToken:
+        return AccessToken("token-1", 2**31)
+
+    async def close(self) -> None:
+        pass
+
+    async def __aenter__(self) -> _Credential:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+
 class FakeGraph:
     """Holds one mailbox's inbox and folders, and records every request."""
 
@@ -39,16 +57,21 @@ class FakeGraph:
         self.sent_ids: list[str] = []
         self.drafts: dict[str, dict[str, Any]] = {}
         self.requests: list[httpx.Request] = []
-        # Status codes to answer with, in order, before handling requests normally.
-        self.failures: list[httpx.Response] = []
+        # Responses to answer with, or errors to raise, in order, before handling requests.
+        self.failures: list[httpx.Response | httpx.HTTPError] = []
 
-    def client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(transport=httpx.MockTransport(self.handle), base_url=GRAPH_URL)
+    def client(self) -> GraphServiceClient:
+        """A Graph SDK client, with its standard middleware, that sends requests here."""
+        transport = httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
+        return graph_client(_Credential(), transport)
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if self.failures:
-            return self.failures.pop(0)
+            failure = self.failures.pop(0)
+            if isinstance(failure, httpx.HTTPError):
+                raise failure
+            return failure
         path = unquote(request.url.path.removeprefix("/v1.0"))
         prefix = f"/users/{MAILBOX}"
         if not path.startswith(prefix):
@@ -75,6 +98,8 @@ class FakeGraph:
             self.drafts[draft_id] = body
             return httpx.Response(201, json={"id": draft_id})
         if match := re.fullmatch(r"/messages/([^/]+)/(move|createReplyAll|send)", path):
+            # The SDK writes the move's destinationId as DestinationId; Graph ignores the case.
+            body = {key[0].lower() + key[1:]: value for key, value in body.items()}
             return self._message_action(match.group(1), match.group(2), body)
         if method == "PATCH" and (match := re.fullmatch(r"/messages/([^/]+)", path)):
             self.drafts[match.group(1)] |= body

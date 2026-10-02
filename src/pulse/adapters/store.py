@@ -1,4 +1,4 @@
-"""The SQLite store."""
+"""The SQLite store: SqliteStore implements Store."""
 
 import asyncio
 import os
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
 
 class SqliteStore:
-    """Each operation opens its own connection in a worker thread and runs one transaction."""
+    """Pulse's state in one SQLite file; each operation runs in its own transaction."""
 
     def __init__(self, path: Path) -> None:
         self._path = path

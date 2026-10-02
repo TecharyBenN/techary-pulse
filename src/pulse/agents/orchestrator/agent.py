@@ -1,4 +1,4 @@
-"""The orchestrator agent, its instructions and its user prompt."""
+"""The orchestrator agent: its definition and user prompt."""
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model

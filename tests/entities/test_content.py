@@ -11,6 +11,7 @@ from pulse.entities.content import (
     draft_changed,
     item_sources,
     require_draft,
+    source_text,
     version_of,
 )
 from pulse.entities.errors import Refusal
@@ -358,3 +359,15 @@ def test_require_draft_refuses_when_there_is_no_working_draft() -> None:
     assert require_draft(make_draft()) == make_draft()
     with pytest.raises(Refusal, match="there is no working draft"):
         require_draft(None)
+
+
+def test_source_text_is_subject_and_body() -> None:
+    text = source_text(_source("Priya Shah", "Signed Northwind Retail", "On 22 September."))
+
+    assert text == "Signed Northwind Retail\nOn 22 September."
+
+
+def test_source_text_of_rejected_screened_email_is_subject_only() -> None:
+    email = make_email(sender_address="alex.morgan@example.com", subject="Signed Northwind Retail")
+
+    assert source_text(screen(email, ["example.org"], [], [])) == "Signed Northwind Retail"

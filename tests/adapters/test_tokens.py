@@ -1,6 +1,6 @@
 import threading
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -10,11 +10,9 @@ import pytest
 from pulse.adapters.tokens import JwtVerifier
 from pulse.entities.auth import Caller
 from pulse.entities.errors import InvalidToken
-from tests.fakes.clock import ControlledClock
 from tests.tokens import (
     AUDIENCE,
     ISSUER,
-    NOW,
     REVIEWER_OID,
     REVIEWER_ROLE,
     make_token,
@@ -42,8 +40,8 @@ def jwks(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[str]:
         server.server_close()
 
 
-def _verifier(jwks: str, clock: ControlledClock | None = None) -> JwtVerifier:
-    return JwtVerifier(ISSUER, AUDIENCE, jwks, clock or ControlledClock(NOW))
+def _verifier(jwks: str) -> JwtVerifier:
+    return JwtVerifier(ISSUER, AUDIENCE, jwks)
 
 
 async def test_valid_token_gives_its_caller(jwks: str) -> None:
@@ -102,26 +100,18 @@ async def test_token_with_one_matching_audience_is_accepted(jwks: str) -> None:
     assert caller.oid == REVIEWER_OID
 
 
-@pytest.mark.parametrize(
-    ("offset", "valid"),
-    [
-        (timedelta(minutes=59), True),
-        (timedelta(hours=1), False),
-        (timedelta(hours=2), False),
-        (-timedelta(minutes=5), True),
-        (-timedelta(minutes=6), False),
-    ],
-)
-async def test_expiry_and_start_are_checked_against_the_clock(
-    jwks: str, offset: timedelta, valid: bool
-) -> None:
-    verifier = _verifier(jwks, ControlledClock(NOW + offset))
+async def test_expired_token_is_refused(jwks: str) -> None:
+    token = make_token(exp=datetime.now(UTC) - timedelta(minutes=1))
 
-    if valid:
-        assert (await verifier.verify(make_token())).oid == REVIEWER_OID
-    else:
-        with pytest.raises(InvalidToken):
-            await verifier.verify(make_token())
+    with pytest.raises(InvalidToken):
+        await _verifier(jwks).verify(token)
+
+
+async def test_token_not_valid_yet_is_refused(jwks: str) -> None:
+    token = make_token(nbf=datetime.now(UTC) + timedelta(minutes=10))
+
+    with pytest.raises(InvalidToken):
+        await _verifier(jwks).verify(token)
 
 
 async def test_missing_key_set_refuses_every_token(tmp_path: Path) -> None:

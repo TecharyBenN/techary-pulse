@@ -6,7 +6,7 @@ import pytest
 from pulse.adapters.store import SqliteStore
 from pulse.entities.errors import MailboxError
 from pulse.entities.mail import Body
-from pulse.services.mail import Outbox
+from pulse.services.outbox import Outbox
 from tests.fakes.mailbox import FakeMailbox
 from tests.messages import make_newsletter
 from tests.operations import OPERATORS, REVIEWERS, make_outbox
@@ -86,15 +86,46 @@ async def test_a_threaded_email_that_fails_raises_and_changes_nothing(
     assert await store.get_latest_newsletter() == make_newsletter()
 
 
-async def test_a_reply_to_a_message_goes_to_the_reviewers_only(
+async def test_a_reply_before_the_thread_exists_goes_to_the_reviewers_message(
     outbox: Outbox, mailbox: FakeMailbox, store: SqliteStore
 ) -> None:
-    assert await outbox.reply_to_message("c01", BODY) == "reply-1"
+    await outbox.reply(make_newsletter(), "c01", BODY, presents_version=False)
 
     [reply] = mailbox.replies
     assert (reply.message_id, reply.to, reply.body) == ("c01", (REVIEWERS,), BODY)
     # Outside the newsletter's thread, so the thread is unchanged.
     assert await store.get_latest_newsletter() == make_newsletter()
+
+
+async def test_a_reply_with_no_newsletter_goes_to_the_reviewers_message(
+    outbox: Outbox, mailbox: FakeMailbox
+) -> None:
+    await outbox.reply(None, "c01", BODY, presents_version=True)
+
+    [reply] = mailbox.replies
+    assert reply.message_id == "c01"
+
+
+async def test_a_reply_presenting_a_version_starts_the_thread(
+    outbox: Outbox, mailbox: FakeMailbox, store: SqliteStore
+) -> None:
+    await outbox.reply(make_newsletter(), "c01", BODY, presents_version=True)
+
+    [sent] = mailbox.sent
+    assert sent.subject.startswith("Draft: ")
+    latest = await store.get_latest_newsletter()
+    assert latest is not None and latest.thread_message_id == "sent-1"
+
+
+async def test_a_reply_goes_to_the_latest_message_once_the_thread_exists(
+    outbox: Outbox, mailbox: FakeMailbox
+) -> None:
+    threaded = make_newsletter().model_copy(update={"thread_message_id": "t-9"})
+
+    await outbox.reply(threaded, "c01", BODY, presents_version=False)
+
+    [reply] = mailbox.replies
+    assert reply.message_id == "t-9"
 
 
 async def test_a_notice_replies_in_the_thread_and_becomes_its_latest_message(
@@ -132,7 +163,8 @@ async def test_a_failed_notice_is_logged_and_changes_nothing(
     assert await store.get_latest_newsletter() == make_newsletter()
 
     [record] = [r for r in caplog.records if r.getMessage() == "notice_failed"]
-    assert (vars(record)["conversation_id"], vars(record)["error_type"]) == ("n-1", "MailboxError")
+    assert vars(record)["conversation_id"] == "n-1"
+    assert record.exc_info is not None and record.exc_info[0] is MailboxError
 
 
 async def test_an_alert_goes_to_the_operators_in_plain_text(
@@ -157,5 +189,4 @@ async def test_a_failed_alert_is_logged(
     await outbox.alert("send not started", "Newsletter n-1 was not sent.")
 
     [record] = [r for r in caplog.records if r.getMessage() == "alert_failed"]
-    assert vars(record)["error_type"] == "MailboxError"
-    assert "n-1 was not sent" not in caplog.text
+    assert record.exc_info is not None and record.exc_info[0] is MailboxError

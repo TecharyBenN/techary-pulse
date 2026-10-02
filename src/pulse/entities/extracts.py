@@ -1,8 +1,7 @@
-"""Content the specialist agents derive from screened emails: extract records and the
-exclusion rules, and the items consolidated from them."""
+"""Extract records and the exclusion rules, and the items consolidated from them."""
 
 import re
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from typing import Literal
 
 from pydantic import AwareDatetime
@@ -10,7 +9,7 @@ from pydantic import AwareDatetime
 from pulse.entities.base import StrictEntity
 from pulse.entities.errors import Refusal
 from pulse.entities.lifecycle import require_reviewer
-from pulse.entities.mail import MessageId, ScreenedEmail, sender_names
+from pulse.entities.mail import MessageId, ScreenedEmail
 
 SensitivityType = Literal["commercial", "personal", "unannounced", "inappropriate"]
 ExclusionReason = Literal["sensitivity", "no_category"]
@@ -19,6 +18,8 @@ _EXCLUDED_ID = re.compile(r"excluded-([0-9]+)")
 
 
 class Sensitivity(StrictEntity):
+    """A sensitivity flag the extractor raised, with its evidence."""
+
     type: SensitivityType
     evidence: str
 
@@ -110,6 +111,8 @@ class ConsolidatorItem(StrictEntity):
 
 
 class ConsolidatorOutput(StrictEntity):
+    """The consolidator's items and headline."""
+
     headline: str
     items: list[ConsolidatorItem]
 
@@ -179,6 +182,11 @@ def items_up_to_date(consolidation: Consolidation | None, records: Sequence[Extr
     included = {record.message_id for record in records if record.exclusion is None}
     items = consolidation.items if consolidation else []
     return {message_id for item in items for message_id in item.source_message_ids} == included
+
+
+def sender_names(emails: Iterable[ScreenedEmail]) -> list[str]:
+    """Each sender's name once, in the order of the emails."""
+    return list(dict.fromkeys(email.sender_name for email in emails))
 
 
 def with_sources(items: Sequence[Item], emails: Sequence[ScreenedEmail]) -> list[SourcedItem]:

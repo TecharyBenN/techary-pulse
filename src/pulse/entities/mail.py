@@ -1,5 +1,4 @@
-"""Email in Pulse: its stages, the mailbox interface, the rules that apply to any email,
-and the pre-filter."""
+"""Email: its types, the Mailbox interface, the pre-filter and the email channel's header checks."""
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -46,11 +45,15 @@ class InboundEmail(Email):
 
 
 class Body(Entity):
+    """An email body, in HTML or plain text."""
+
     content: str
     content_type: Literal["html", "text"]
 
 
 class OutboundEmail(Entity):
+    """A new email for a Mailbox to send."""
+
     to: list[str]
     subject: str
     body: Body
@@ -68,8 +71,7 @@ class ScreenedEmail(Email):
 
 
 class Mailbox(Protocol):
-    """A Pulse mailbox; main creates one for the submissions mailbox and one for the
-    conversation mailbox."""
+    """A Pulse mailbox: the submissions mailbox or the conversation mailbox."""
 
     async def list_inbox(self) -> list[InboundEmail]:
         """Every inbox message, sorted by received time, then message ID."""
@@ -158,16 +160,6 @@ def subject(template: str, opened_at: datetime, timezone: ZoneInfo, prefix: str 
     """`subject_template` with `{date}` as the date the newsletter was opened, after `prefix`."""
     text = template.replace("{date}", display_date(opened_at, timezone))
     return f"{prefix} {text}" if prefix else text
-
-
-def source_text(email: ScreenedEmail) -> str:
-    """The text names and numbers in a draft are checked against."""
-    return "\n".join(part for part in (email.subject, email.body) if part)
-
-
-def sender_names(emails: Iterable[ScreenedEmail]) -> list[str]:
-    """Each sender's name once, in the order of the emails."""
-    return list(dict.fromkeys(email.sender_name for email in emails))
 
 
 def _rejection(

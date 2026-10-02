@@ -17,6 +17,7 @@ from pulse.entities.extracts import (
     make_consolidation,
     make_record,
     restored,
+    sender_names,
     with_sources,
 )
 from tests.emails import (
@@ -248,3 +249,13 @@ def test_restored_record_is_included_in_the_items() -> None:
 
     assert not items_up_to_date(_stored(make_item(source_message_ids=["m01"])), [INCLUDED, record])
     assert consolidation_input([INCLUDED, record], ["m01", "m03"]) == [INCLUDED, record]
+
+
+def test_sender_names_are_each_sender_once_in_order() -> None:
+    emails = [
+        make_screened_email("m01", sender_name="Tom Evans"),
+        make_screened_email("m02"),
+        make_screened_email("m03", sender_name="Tom Evans"),
+    ]
+
+    assert sender_names(emails) == ["Tom Evans", "Priya Shah"]

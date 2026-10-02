@@ -1,5 +1,4 @@
-"""The store interface: newsletters, screened emails, extract records, items, drafts, versions,
-feedback, history and handled messages."""
+"""The Store interface, through which Pulse reads and writes its state."""
 
 from collections.abc import Sequence
 from typing import Protocol
@@ -23,6 +22,9 @@ class HistoryRow(Entity):
 
 
 class Store(Protocol):
+    """Pulse's state: newsletters, screened emails, extract records, items, drafts, versions,
+    feedback, history and handled messages."""
+
     async def get_open_newsletter(self) -> Newsletter | None:
         """The newsletter that is neither sent nor abandoned, if there is one."""
         ...

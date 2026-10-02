@@ -1,5 +1,5 @@
-"""What every agent's prompts share: instructions read from the agent's folder, untrusted data
-in delimited blocks, reviewer feedback and the configured categories."""
+"""Prompt parts every agent uses: instructions, delimited data blocks, feedback and the configured
+categories."""
 
 import json
 from collections.abc import Mapping, Sequence

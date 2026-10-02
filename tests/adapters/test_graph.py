@@ -1,7 +1,5 @@
 import datetime as dt
-import json
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
@@ -9,8 +7,9 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from kiota_http.middleware.retry_handler import RetryHandler
 
-from pulse.adapters.graph import CertificateCredential, GraphMailbox
+from pulse.adapters.graph import GraphMailbox, certificate_thumbprint
 from pulse.entities.errors import MailboxError
 from pulse.entities.mail import Body, OutboundEmail
 from tests.emails import make_email
@@ -19,12 +18,14 @@ from tests.fakes.graph import MAILBOX, FakeGraph
 pytestmark = pytest.mark.anyio
 
 
-async def _token() -> str:
-    return "token-1"
+@pytest.fixture(autouse=True)
+def no_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SDK retries without waiting between attempts."""
+    monkeypatch.setattr(RetryHandler, "get_delay_time", lambda *args, **kwargs: 0)
 
 
 def _mailbox(graph: FakeGraph, max_retries: int = 2) -> GraphMailbox:
-    return GraphMailbox(graph.client(), _token, MAILBOX, max_retries)
+    return GraphMailbox(graph.client(), MAILBOX, max_retries)
 
 
 def _throttled(status: int = 429) -> httpx.Response:
@@ -128,18 +129,16 @@ async def test_other_errors_fail_without_retrying() -> None:
 
 
 async def test_connection_errors_fail() -> None:
-    def refuse(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("refused")
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(refuse), base_url="https://graph")
+    graph = FakeGraph()
+    graph.failures = [httpx.ConnectError("refused")]
 
     with pytest.raises(MailboxError, match="ConnectError"):
-        await GraphMailbox(client, _token, MAILBOX, 2).list_inbox()
+        await _mailbox(graph).list_inbox()
 
 
 async def test_unexpected_response_fails() -> None:
     graph = FakeGraph()
-    graph.failures = [httpx.Response(200, json={"unexpected": True})]
+    graph.failures = [httpx.Response(200, json={"value": [{"subject": "No sender or ID"}]})]
 
     with pytest.raises(MailboxError):
         await _mailbox(graph).list_inbox()
@@ -183,8 +182,9 @@ async def test_send_creates_the_message_then_sends_it_and_returns_its_id() -> No
     assert sent_id == "draft-1"
     assert graph.sent == [
         {
+            "@odata.type": "#microsoft.graph.message",
             "subject": "Pulse",
-            "body": {"contentType": "HTML", "content": "<p>Hi</p>"},
+            "body": {"contentType": "html", "content": "<p>Hi</p>"},
             "toRecipients": [{"emailAddress": {"address": "all-staff@example.org"}}],
             "replyTo": [{"emailAddress": {"address": MAILBOX}}],
         }
@@ -217,10 +217,11 @@ async def test_reply_goes_in_thread_to_the_named_recipients_only() -> None:
     [reply] = graph.sent
     # The subject is not changed, so Exchange keeps the reply in the thread.
     assert reply == {
+        "@odata.type": "#microsoft.graph.message",
         "replyTo": "m01",
         "toRecipients": [{"emailAddress": {"address": "reviewers@example.org"}}],
         "ccRecipients": [],
-        "body": {"contentType": "Text", "content": "Version 2 is ready."},
+        "body": {"contentType": "text", "content": "Version 2 is ready."},
     }
 
 
@@ -233,7 +234,7 @@ async def test_reply_to_a_sent_message_can_be_html() -> None:
 
     await mailbox.reply(sent_id, [MAILBOX], _html("<p>v2</p>"))
 
-    assert graph.sent[1]["body"] == {"contentType": "HTML", "content": "<p>v2</p>"}
+    assert graph.sent[1]["body"] == {"contentType": "html", "content": "<p>v2</p>"}
 
 
 def _html(content: str) -> Body:
@@ -265,77 +266,14 @@ def _certificate(path: Path) -> str:
     return certificate.fingerprint(hashes.SHA1()).hex().upper()
 
 
-class _Response:
-    def __init__(self, body: dict[str, Any]) -> None:
-        self.status_code = 200
-        self.text = json.dumps(body)
-        self.headers: dict[str, str] = {}
-
-    def raise_for_status(self) -> None:
-        """Every stub response succeeds."""
-
-
-class _EntraStub:
-    """Stands in for MSAL's HTTP client: the tenant's metadata, then the token response.
-
-    MSAL reads the tenant's OpenID configuration, and after an error its instance metadata, so
-    every GET answers with both.
-    """
-
-    def __init__(self, token: dict[str, Any]) -> None:
-        self.token = token
-        self.posts: list[dict[str, Any]] = []
-
-    def get(self, url: str, **kwargs: Any) -> _Response:
-        base = "https://login.microsoftonline.com/tenant-1"
-        return _Response(
-            {
-                "token_endpoint": f"{base}/oauth2/v2.0/token",
-                "authorization_endpoint": f"{base}/oauth2/v2.0/authorize",
-                "issuer": f"{base}/v2.0",
-                "metadata": [],
-            }
-        )
-
-    def post(self, url: str, **kwargs: Any) -> _Response:
-        self.posts.append(kwargs.get("data", {}))
-        return _Response(self.token)
-
-    def close(self) -> None:
-        """Nothing to close."""
-
-
-def test_credential_calculates_the_thumbprint(tmp_path: Path) -> None:
+def test_thumbprint_is_the_certificates_sha1_fingerprint(tmp_path: Path) -> None:
     expected = _certificate(tmp_path / "pulse.pem")
 
-    credential = CertificateCredential("tenant-1", "client-1", tmp_path / "pulse.pem")
-
-    assert credential.thumbprint == expected
+    assert certificate_thumbprint(tmp_path / "pulse.pem") == expected
 
 
 def test_unreadable_certificate_fails(tmp_path: Path) -> None:
     (tmp_path / "pulse.pem").write_text("not a certificate")
 
     with pytest.raises(MailboxError, match="certificate"):
-        CertificateCredential("tenant-1", "client-1", tmp_path / "pulse.pem")
-
-
-async def test_credential_signs_in_with_a_client_assertion(tmp_path: Path) -> None:
-    _certificate(tmp_path / "pulse.pem")
-    stub = _EntraStub({"access_token": "token-9", "token_type": "Bearer", "expires_in": 3600})
-    credential = CertificateCredential("tenant-1", "client-1", tmp_path / "pulse.pem", stub)
-
-    assert await credential.token() == "token-9"
-    [post] = stub.posts
-    assert post["scope"] == "https://graph.microsoft.com/.default"
-    assert "client_assertion" in post
-
-
-async def test_failed_sign_in_raises_without_the_description(tmp_path: Path) -> None:
-    _certificate(tmp_path / "pulse.pem")
-    stub = _EntraStub({"error": "invalid_client", "error_description": "private detail"})
-    credential = CertificateCredential("tenant-1", "client-1", tmp_path / "pulse.pem", stub)
-
-    with pytest.raises(MailboxError, match="invalid_client") as failed:
-        await credential.token()
-    assert "private detail" not in str(failed.value)
+        certificate_thumbprint(tmp_path / "pulse.pem")

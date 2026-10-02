@@ -1,4 +1,5 @@
-"""The consolidator: merges extract records that report the same news and writes the headline."""
+"""The consolidator agent, which merges extract records that report the same news and writes the
+headline: its definition, prompt and output checks."""
 
 from collections import Counter
 from collections.abc import Mapping, Sequence

@@ -340,7 +340,7 @@ async def test_logs_the_run_and_each_tool_call(
     assert "Private reply text." not in caplog.text
 
 
-async def test_logs_a_failed_run_with_its_error_type(
+async def test_logs_a_failed_run_with_its_error(
     store: SqliteStore, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO)
@@ -349,7 +349,8 @@ async def test_logs_a_failed_run_with_its_error_type(
         await make_orchestrator(store, responses(gateway_error())).handle(make_message())
 
     run = _logged(caplog, "orchestrator_run")
-    assert (run["outcome"], run["error_type"]) == ("failed", "ModelHTTPError")
+    assert run["outcome"] == "failed"
+    assert run["exc_info"][0].__name__ == "ModelHTTPError"  # type: ignore[index]
 
 
 async def test_exchange_that_opens_a_newsletter_becomes_its_history(

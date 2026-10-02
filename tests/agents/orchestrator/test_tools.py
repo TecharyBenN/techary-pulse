@@ -27,7 +27,7 @@ from pulse.agents.writer.agent import build_writer
 from pulse.entities.content import Entry, JudgeOutput
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.lifecycle import start_send
-from pulse.services.operations import ApproveResult, NoticeResult
+from pulse.services.operations import ApproveResult, NoticeResult, RestoreResult
 from tests.emails import (
     CORPUS_ITEM_SOURCES,
     CORPUS_OUTCOMES,
@@ -645,7 +645,7 @@ async def test_restore_includes_the_record_for_the_reviewer(store: SqliteStore) 
 
     result = await tools.restore(_run_for(make_message()), excluded_id)
 
-    assert result == {"excluded_id": excluded_id, "message_id": "m02"}
+    assert result == RestoreResult(excluded_id=excluded_id, message_id="m02")
     records = {r.message_id: r for r in await store.list_extract_records(newsletter_id)}
     assert (records["m02"].exclusion, records["m02"].restored_by) == (None, REVIEWER)
     # The restored record is not in the items until consolidate runs again.

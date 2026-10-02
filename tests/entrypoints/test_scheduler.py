@@ -47,9 +47,9 @@ async def test_a_failed_job_is_logged_and_the_others_still_run(
 
     assert delivered == 2
     records = [r for r in caplog.records if r.getMessage() == "poll_failed"]
-    assert [(vars(r)["job"], vars(r)["error_type"]) for r in records] == [
-        ("email", "MailboxError"),
-        ("email", "MailboxError"),
+    assert [(vars(r)["job"], r.exc_info and r.exc_info[0]) for r in records] == [
+        ("email", MailboxError),
+        ("email", MailboxError),
     ]
 
 

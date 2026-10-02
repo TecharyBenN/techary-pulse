@@ -1,4 +1,4 @@
-"""Newsletter content, the working draft and its versions, and the draft checks."""
+"""Newsletter content, the working draft, versions and the draft checks."""
 
 import re
 from collections import Counter
@@ -11,8 +11,8 @@ from pydantic import AwareDatetime, PositiveInt
 
 from pulse.entities.base import Entity, StrictEntity
 from pulse.entities.errors import Refusal
-from pulse.entities.extracts import Item
-from pulse.entities.mail import ScreenedEmail, sender_names, source_text
+from pulse.entities.extracts import Item, sender_names
+from pulse.entities.mail import ScreenedEmail
 
 CheckName = Literal[
     "word_count", "dashes", "digits", "people", "sentences", "senders", "items", "categories"
@@ -25,20 +25,24 @@ _MAX_SENTENCES = 2
 
 
 class Entry(StrictEntity):
+    """One entry in a section: its text, its item and the people it names."""
+
     item_id: str
     text: str
     people: list[str]
 
 
 class Section(StrictEntity):
+    """A titled section of entries in one category."""
+
     category: str
     title: str
     entries: list[Entry]
 
 
 class Content(StrictEntity):
-    """What a working draft or version holds, and what is rendered and sent, as the writer
-    structured it."""
+    """The headline, intro and sections a working draft or version holds, as the writer structured
+    them."""
 
     headline_title: str
     headline: str
@@ -52,6 +56,8 @@ class Content(StrictEntity):
 
 
 class NotApplied(StrictEntity):
+    """Feedback the writer did not apply, and why."""
+
     feedback: str
     reason: str
 
@@ -75,10 +81,14 @@ class Verdict(StrictEntity):
 
 
 class JudgeOutput(StrictEntity):
+    """The judge's verdicts on the intro and each entry."""
+
     verdicts: list[Verdict]
 
 
 class CheckFailure(Entity):
+    """One failed draft check: the check, where it failed and the detail."""
+
     check: CheckName
     # "headline_title", "headline", "intro", an item ID, a category, or None for the whole draft.
     target: str | None
@@ -133,6 +143,11 @@ def item_sources(
         for item_id in dict.fromkeys(content.item_ids)
         if item_id in by_id
     }
+
+
+def source_text(email: ScreenedEmail) -> str:
+    """The text names and numbers in a draft are checked against."""
+    return "\n".join(part for part in (email.subject, email.body) if part)
 
 
 def draft_changed(draft: WriterOutput | None, latest: Version | None) -> bool:
@@ -273,7 +288,6 @@ def _categories(context: _Context) -> Iterator[CheckFailure]:
             )
 
 
-# Add a check by writing its function and listing it here.
 _CHECKS: tuple[Callable[[_Context], Iterator[CheckFailure]], ...] = (
     _word_count,
     _dashes,

@@ -1,5 +1,4 @@
-"""The email channel: reviewer messages in the conversation mailbox, each passed to the
-orchestrator, with its reply in the newsletter's email thread."""
+"""The email channel: EmailChannel answers reviewer emails in the conversation mailbox."""
 
 import functools
 import logging
@@ -11,23 +10,23 @@ from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import PulseError
 from pulse.entities.lifecycle import Newsletter
 from pulse.entities.mail import Body, InboundEmail, Mailbox, channel_rejection
-from pulse.entities.review import Review
 from pulse.entities.store import Store
-from pulse.services.mail import Outbox
-from pulse.services.operations import DRAFT_PREFIX
+from pulse.services.outbox import Outbox
 
 _log = logging.getLogger(__name__)
 
 
 class EmailChannel:
+    """Passes each reviewer email to the orchestrator and sends its reply in the newsletter's
+    thread."""
+
     def __init__(
         self,
         conversation_mailbox: Mailbox,
         orchestrator: Orchestrator,
         store: Store,
         outbox: Outbox,
-        review: Callable[[str, Version], Awaitable[Review]],
-        render_reviewer_email: Callable[[Version, Review, str | None], str],
+        reviewer_email: Callable[[Newsletter, Version, str | None], Awaitable[Body]],
         render_newsletter: Callable[[Content, str | None], str],
         render_reply: Callable[[str], str],
         *,
@@ -35,14 +34,13 @@ class EmailChannel:
         processed_folder: str,
         rejected_folder: str,
     ) -> None:
-        """`review` builds a version's review section; the render functions take the
-        orchestrator's reply in Markdown, which they show before any newsletter."""
+        """`reviewer_email` and the render functions take the orchestrator's reply in Markdown,
+        which they show before any newsletter."""
         self._mailbox = conversation_mailbox
         self._orchestrator = orchestrator
         self._store = store
         self._outbox = outbox
-        self._review = review
-        self._render_reviewer_email = render_reviewer_email
+        self._reviewer_email = reviewer_email
         self._render_newsletter = render_newsletter
         self._render_reply = render_reply
         self._max_attempts = max_attempts
@@ -61,7 +59,6 @@ class EmailChannel:
         message_id = email.message_id
         seen = await self._store.get_handled_message(message_id)
         if seen is not None and seen.handled:
-            # Its run completed and its reply was sent, so it needs only moving.
             await self._move(email, self._processed, "processed")
             return True
         if reason := channel_rejection(email.headers):
@@ -82,9 +79,8 @@ class EmailChannel:
         )
         try:
             await self._orchestrator.handle(message, on_reply=functools.partial(self._reply, email))
-        except PulseError as error:
-            fields = {"message_id": message_id, "attempts": attempts}
-            _log.info("email_failed", extra=fields | {"error_type": type(error).__name__})
+        except PulseError:
+            _log.exception("email_failed", extra={"message_id": message_id, "attempts": attempts})
             if attempts < self._max_attempts:
                 return False
             await self._give_up(email, attempts)
@@ -99,24 +95,20 @@ class EmailChannel:
         if reply.text is None and reply.newsletter is None:
             return
         newsletter = await self._store.get_latest_newsletter()
-        body = Body(content=await self._body(reply, newsletter), content_type="html")
-        # Only a presented version starts a thread; any other reply before one exists goes to
-        # the reviewer's own message.
-        if newsletter is not None and (
-            newsletter.thread_message_id is not None or reply.version is not None
-        ):
-            await self._outbox.thread(newsletter, body, DRAFT_PREFIX)
-        else:
-            await self._outbox.reply_to_message(email.message_id, body)
+        body = await self._body(reply, newsletter)
+        await self._outbox.reply(
+            newsletter, email.message_id, body, presents_version=reply.version is not None
+        )
 
-    async def _body(self, reply: RunReply, newsletter: Newsletter | None) -> str:
+    async def _body(self, reply: RunReply, newsletter: Newsletter | None) -> Body:
         """The reply, then the presented version's reviewer email or the newsletter shown."""
         if reply.version is not None and newsletter is not None:
-            review = await self._review(newsletter.newsletter_id, reply.version)
-            return self._render_reviewer_email(reply.version, review, reply.text)
+            return await self._reviewer_email(newsletter, reply.version, reply.text)
         if reply.newsletter is not None:
-            return self._render_newsletter(reply.newsletter, reply.text)
-        return self._render_reply(reply.text or "")
+            html = self._render_newsletter(reply.newsletter, reply.text)
+        else:
+            html = self._render_reply(reply.text or "")
+        return Body(content=html, content_type="html")
 
     async def _give_up(self, email: InboundEmail, attempts: int) -> None:
         await self._move(email, self._rejected, "max_attempts")

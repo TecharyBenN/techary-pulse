@@ -1,5 +1,4 @@
-"""Pulse's own emails from the conversation mailbox: to the reviewers in the newsletter's email
-thread, and alerts to the operators."""
+"""Outbox: the emails Pulse sends from the conversation mailbox to the reviewers and operators."""
 
 import logging
 from collections.abc import Callable, Sequence
@@ -10,10 +9,15 @@ from pulse.entities.lifecycle import Newsletter
 from pulse.entities.mail import Body, Mailbox, MessageId, OutboundEmail, subject
 from pulse.entities.store import Store
 
+# The subject prefix of the email that starts a newsletter's thread with its first version.
+DRAFT_PREFIX = "Draft:"
+
 _log = logging.getLogger(__name__)
 
 
 class Outbox:
+    """Sends reviewer emails in the newsletter's email thread, notices and operator alerts."""
+
     def __init__(
         self,
         conversation_mailbox: Mailbox,
@@ -33,7 +37,9 @@ class Outbox:
         self._subject_template = subject_template
         self._timezone = timezone
 
-    async def to_reviewers(self, newsletter: Newsletter, body: Body, prefix: str) -> MessageId:
+    async def to_reviewers(
+        self, newsletter: Newsletter, body: Body, prefix: str = DRAFT_PREFIX
+    ) -> MessageId:
         """Reply to the latest message in the newsletter's email thread, or start the thread
         with the subject after `prefix`."""
         if newsletter.thread_message_id is not None:
@@ -48,7 +54,9 @@ class Outbox:
         )
         return await self._mailbox.send(email)
 
-    async def thread(self, newsletter: Newsletter, body: Body, prefix: str) -> Newsletter:
+    async def thread(
+        self, newsletter: Newsletter, body: Body, prefix: str = DRAFT_PREFIX
+    ) -> Newsletter:
         """Email the reviewers in the newsletter's thread, as `to_reviewers` does, and save the
         email as the thread's latest message. Return the newsletter as saved."""
         sent_id = await self.to_reviewers(newsletter, body, prefix)
@@ -56,9 +64,21 @@ class Outbox:
         await self._store.save_newsletter(threaded)
         return threaded
 
-    async def reply_to_message(self, message_id: MessageId, body: Body) -> MessageId:
-        """Reply to a reviewer's message outside any newsletter thread, to the reviewers only."""
-        return await self._mailbox.reply(message_id, [self._reviewers], body)
+    async def reply(
+        self,
+        newsletter: Newsletter | None,
+        message_id: MessageId,
+        body: Body,
+        presents_version: bool,
+    ) -> None:
+        """Answer a reviewer's email in the newsletter's thread. Before the thread exists, only a
+        presented version starts it; any other reply goes to the reviewer's own message."""
+        if newsletter is not None and (
+            newsletter.thread_message_id is not None or presents_version
+        ):
+            await self.thread(newsletter, body)
+        else:
+            await self._mailbox.reply(message_id, [self._reviewers], body)
 
     async def notice(
         self, newsletter: Newsletter, title: str, text: str
@@ -69,14 +89,8 @@ class Outbox:
         body = Body(content=self._render_notice(title, text), content_type="html")
         try:
             return await self.thread(newsletter, body, f"{title}:"), True
-        except MailboxError as error:
-            _log.error(
-                "notice_failed",
-                extra={
-                    "conversation_id": newsletter.newsletter_id,
-                    "error_type": type(error).__name__,
-                },
-            )
+        except MailboxError:
+            _log.exception("notice_failed", extra={"conversation_id": newsletter.newsletter_id})
             return newsletter, False
 
     async def alert(self, summary: str, text: str) -> None:
@@ -89,5 +103,5 @@ class Outbox:
         )
         try:
             await self._mailbox.send(email)
-        except MailboxError as error:
-            _log.error("alert_failed", extra={"error_type": type(error).__name__})
+        except MailboxError:
+            _log.exception("alert_failed")

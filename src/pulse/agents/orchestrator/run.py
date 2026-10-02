@@ -1,4 +1,5 @@
-"""The entry point for every channel: one reviewer message in, the reply or no reply out."""
+"""Orchestrator runs: Orchestrator answers each reviewer message, saving every step to the
+newsletter's history."""
 
 import asyncio
 import dataclasses
@@ -40,8 +41,7 @@ _log = logging.getLogger(__name__)
 
 
 class RunReply(Entity):
-    """The reply, or None when the message needs none, and the newsletter the run presented or
-    showed, so the channel can show it in its own format."""
+    """What a run returns to the channel: the reply, and the newsletter it presented or showed."""
 
     text: str | None
     newsletter: Content | None
@@ -172,7 +172,7 @@ class _History:
 
 
 class Orchestrator:
-    """Runs the orchestrator for each reviewer message, one run at a time, in arrival order."""
+    """Runs the orchestrator agent for one message at a time, resuming any unfinished run."""
 
     def __init__(
         self,
@@ -221,8 +221,10 @@ class Orchestrator:
                     reply = await self._converse(message, history, on_progress, new_chat)
             except (AgentRunError, TimeoutError, PulseError) as error:
                 fields["conversation_id"] = history.newsletter_id
-                fields |= {"outcome": "failed", "error_type": type(error).__name__}
-                _log.info("orchestrator_run", extra=fields | {"duration_ms": _ms_since(started)})
+                fields["outcome"] = "failed"
+                _log.exception(
+                    "orchestrator_run", extra=fields | {"duration_ms": _ms_since(started)}
+                )
                 raise RunFailed("the orchestrator run did not complete") from error
             no_reply = reply.strip() == NO_REPLY
             fields["conversation_id"] = history.newsletter_id

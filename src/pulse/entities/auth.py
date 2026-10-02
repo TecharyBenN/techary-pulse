@@ -1,6 +1,4 @@
-"""Callers of Pulse's API and the interface that verifies their bearer tokens."""
-
-from typing import Protocol
+"""Callers of the chat endpoint, as their verified bearer tokens identify them."""
 
 from pulse.entities.base import Entity
 
@@ -11,9 +9,3 @@ class Caller(Entity):
     # The Entra object ID, which stays the same for a person across applications.
     oid: str
     roles: list[str]
-
-
-class TokenVerifier(Protocol):
-    async def verify(self, token: str) -> Caller:
-        """Return the token's caller; raise InvalidToken when it does not verify."""
-        ...

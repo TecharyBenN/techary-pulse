@@ -1,16 +1,17 @@
 """Operations, delivery and the renderer, configured as main configures them, for tests."""
 
 import asyncio
+from collections.abc import Callable
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from pulse.adapters.render import Renderer
 from pulse.agents.orchestrator.run import history_note
-from pulse.entities.clock import Clock
 from pulse.entities.lifecycle import OnApproval, Scheduled
 from pulse.entities.store import Store
 from pulse.services.delivery import Delivery
-from pulse.services.mail import Outbox
 from pulse.services.operations import Operations
+from pulse.services.outbox import Outbox
 from tests.emails import screen_email
 from tests.fakes.clock import ControlledClock
 from tests.fakes.mailbox import FakeMailbox
@@ -47,7 +48,7 @@ def make_operations(
     store: Store,
     submissions: FakeMailbox | None = None,
     conversation: FakeMailbox | None = None,
-    clock: Clock | None = None,
+    clock: Callable[[], datetime] | None = None,
     send_rule: OnApproval | Scheduled = ON_APPROVAL,
 ) -> Operations:
     return Operations(
@@ -68,7 +69,7 @@ def make_delivery(
     store: Store,
     submissions: FakeMailbox,
     conversation: FakeMailbox,
-    clock: Clock,
+    clock: Callable[[], datetime],
     lock: asyncio.Lock,
 ) -> Delivery:
     return Delivery(
