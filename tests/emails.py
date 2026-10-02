@@ -151,9 +151,9 @@ def corpus_consolidation() -> ConsolidatorOutput:
 
 
 def seedable_corpus_messages() -> list[dict[str, Any]]:
-    """The corpus messages that can be placed in the dev inbox: the others need headers Graph
-    will not set, so only the unit tests cover them."""
-    return [m for m in corpus_messages() if "headers" not in m]
+    """The corpus messages placed in the dev inbox for live tests. The others need headers Graph
+    will not set, or are marked `seed: false`, so only the unit tests cover them."""
+    return [m for m in corpus_messages() if "headers" not in m and m.get("seed", True)]
 
 
 async def stored_outcomes(store: Store, newsletter_id: str) -> dict[str, str]:

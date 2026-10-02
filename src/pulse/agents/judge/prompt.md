@@ -16,6 +16,8 @@ Return `verdicts`: exactly one for the intro and one for each entry, each with:
 
 An entry is supported when every claim it makes is stated in the facts of its own item or in the feedback. The intro is supported when every claim it makes is stated in the facts of any item or in the feedback. A claim is anything a reader would take as fact: who did something, what they did, when, how much or how many, and any result or effect. Names of the people who sent an item support claims that they sent or shared it.
 
+A claim is supported when its meaning matches the facts, even when it is reworded or combines several facts of the same item. For example, the facts "Alex completed the migration on 20 September" and "The migration went live two days early" support "Alex completed the migration on 20 September, two days ahead of schedule".
+
 Warm, everyday wording that adds no fact, such as thanking or congratulating someone, is supported. Treat a claim as unsupported when it adds a detail, a number, a date, a person or an effect that the facts and feedback do not state, or when it changes one that they do.
 
 Judge each text on its own. Do not suggest rewrites.

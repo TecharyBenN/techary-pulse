@@ -1,6 +1,7 @@
 # Synthetic emails covering every case in the design's testing section. Fictional people and
 # companies only. `extract` is the response the extractor stand-in returns for that email;
-# emails the pre-filter rejects have none. The consolidator, writer and judge responses follow.
+# emails the pre-filter rejects have none. `seed: false` keeps an email out of the dev inbox.
+# The consolidator, writer and judge responses follow.
 
 messages:
   - id: m01
@@ -76,6 +77,8 @@ messages:
     extract: {category: null, exclusion_reason: "A newsletter, not staff news.", summary: A newsletter., facts: [], people: [], sensitivity: []}
   - id: m11
     case: unclear submission
+    # Exchange's junk filter moves this one out of the dev inbox.
+    seed: false
     sender_name: Ben Carter
     sender_address: ben.carter@example.org
     subject: Good news

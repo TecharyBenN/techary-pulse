@@ -4,7 +4,13 @@ import re
 from pathlib import Path
 
 import pytest
-from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 from pulse.adapters.store import SqliteStore
 from pulse.config import load_config
@@ -32,7 +38,16 @@ async def test_a_reviewer_message_gets_a_reply(tmp_path: Path) -> None:
 
     print(reply)
     assert reply
-    assert len(await store.load_history("n-1")) == 2
+    steps = [
+        step
+        for row in await store.load_history("n-1")
+        for step in ModelMessagesTypeAdapter.validate_json(row.data)
+    ]
+    # The run is saved from the reviewer's message to the final reply, with any tool steps between.
+    assert isinstance(steps[0], ModelRequest)
+    assert any(isinstance(part, UserPromptPart) for part in steps[0].parts)
+    assert isinstance(steps[-1], ModelResponse) and not steps[-1].tool_calls
+    assert steps[-1].text == reply
 
 
 # Graph's immutable message IDs, which reviewers should never see.
