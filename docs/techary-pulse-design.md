@@ -213,7 +213,7 @@ The orchestrator's rules are set with `instructions`, which Pydantic AI sends wi
 | `get_draft` | Read | Returns the working draft, or a named version. |
 | `show_draft` | Read | Shows the reviewer the working draft, or a named version: the channel shows it after the reply, rendered by code, as when a version is presented. |
 | `get_items` | Read | Returns the headline, the current items with the sender names and received times of their source emails, and the excluded records. |
-| `present_draft` | Action | Saves the working draft as the next version with its check results and the judge's latest verdicts, and emails its reviewer email to `reviewers` in the newsletter's email thread, withdrawing any approval as described in [versions and approval](#versions-and-approval). When the working draft is unchanged since the latest version, it emails that version's reviewer email again instead, as described there. |
+| `present_draft` | Action | Saves the working draft as the next version with its check results and the judge's latest verdicts, and emails its reviewer email to `reviewers` in the newsletter's email thread, withdrawing any approval as described in [versions and approval](#versions-and-approval). When the working draft is unchanged since the latest version, it emails that version's reviewer email again instead, as described there. Returns the version number and how many of its entries are flagged. |
 | `approve` | Action | Records approval of a named version and sets the send time. |
 | `withdraw_approval` | Action | Returns an approved newsletter to `in_review`. |
 | `abandon` | Action | Closes the newsletter unsent and emails the reviewers that it was abandoned. |
@@ -247,6 +247,7 @@ The orchestrator's instructions apply these rules:
 - abandon a newsletter only when a reviewer explicitly asks to abandon or scrap it;
 - when Pulse asks for a recap, start the reply with a short recap of where the newsletter stands;
 - report feedback that could not be applied, with the reason;
+- when a presented version has flagged entries, tell the reviewer how many are flagged for review, and that approving the version approves them;
 - when a reviewer asks to see the newsletter, call `show_draft`, and never write the newsletter out in the reply;
 - when a reviewer asks for the draft to be emailed again and it has not changed, call `present_draft`, which resends the latest version; never change the draft just to resend it;
 - say a change was made only when a tool result shows it;
@@ -278,7 +279,7 @@ Each specialist agent is a Pydantic AI agent whose instructions are part of its 
 
 | Agent | Called by | Input | Model tier |
 | --- | --- | --- | --- |
-| `extractor` | `extract`, once per screened email | Sender name and address from `from`, subject, received time and `uniqueBody` | Small |
+| `extractor` | `extract`, once per screened email | Sender name and address from `from`, subject, received time, `uniqueBody` and the whole body | Small |
 | `consolidator` | `consolidate` | Included extract records, and the configured categories | Mid |
 | `writer` | `write` | Consolidated items with sender names and received dates, excluded records, all feedback, the orchestrator's instruction and, when revising, the working draft | Mid |
 | `judge` | `judge` | Working draft, items and all feedback | Mid |
@@ -313,9 +314,9 @@ Pulse sends every model call to `llm.base_url` in the OpenAI-compatible chat com
 | --- | --- |
 | `category` | The configured section category that the news stated in the email fits; `null` when it fits none, including emails that state no news, such as automatic replies, test emails, newsletters and vague messages |
 | `exclusion_reason` | `null` when `category` is set; otherwise one short sentence for the reviewers saying why the email fits no category |
-| `sensitivity.type` | `commercial` (deal values, margins, pricing, revenue), `personal` (health, family, performance, HR matters; a birthday is newsletter content, not personal), `unannounced` (confidential, draft or not yet announced) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
+| `sensitivity.type` | `commercial` (any pricing, deal value, margin or revenue figure, including a partner's or supplier's), `personal_private` (health, family matters, performance or HR issues about a person; a celebration such as a new baby or a wedding is `personal_named`), `personal_named` (a named person who is the subject of the news because they are congratulated, recognised, thanked or welcomed, or have a birthday or another celebration; people credited for doing the work the news reports are not flagged), `unannounced` (confidential, draft or not yet announced) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
 
-The extractor states only facts in the message, writing the sender's name where the message says I or we, so each fact names who it is about. Code attaches the email's message ID to the extractor's output, making it the email's extract record, and excludes every record that has no category or carries a sensitivity flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. Restoring a record includes it: `restore` clears its exclusion outcome, keeps its excluded ID and records the reviewer who restored it, and the record then becomes an item like any other included record. Extracting an email again replaces its extract record, which keeps its excluded ID while it stays excluded, and stays included if it was restored. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries any sensitivity flag, and `no_category`, when `category` is `null`. The extractor's output checks require exactly one of `category` and `exclusion_reason`, and the category to be configured.
+The extractor states only facts in the message, writing the sender's name where the sender's own text says I or we, so each fact names who it is about. The news is what the sender puts forward: when the sender forwards a message for staff to know about, the facts come from the forwarded message and name who it is from; when the sender replies to an earlier conversation, the facts come from the sender's own text, and the earlier messages are ignored unless that text points to them as the news. Code attaches the email's message ID to the extractor's output, making it the email's extract record, and excludes every record that has no category or carries a `personal_private`, `unannounced` or `inappropriate` flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. Restoring a record includes it: `restore` clears its exclusion outcome, keeps its excluded ID and records the reviewer who restored it, and the record then becomes an item like any other included record. Extracting an email again replaces its extract record, which keeps its excluded ID while it stays excluded, and stays included if it was restored. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries a `personal_private`, `unannounced` or `inappropriate` flag, and `no_category`, when `category` is `null`. A record whose only flags are `commercial` or `personal_named` is included and keeps its flags, which mark its entries as described in [flagged entries](#flagged-entries). The extractor's output checks require exactly one of `category` and `exclusion_reason`, and the category to be configured.
 
 ### Consolidate
 
@@ -378,7 +379,7 @@ The judge returns, for the intro and each entry, whether its text is supported b
 
 ## Draft checks
 
-Code checks a draft for these conditions. A source message's text is its subject and body. A word is any run of characters between whitespace. A name or digit sequence matches when it appears anywhere in the text it is checked against, ignoring case.
+Code checks a draft for these conditions. A source message's text is its subject and whole body, including any message it forwards or quotes. A word is any run of characters between whitespace. A name or digit sequence matches when it appears anywhere in the text it is checked against, ignoring case.
 
 - the newsletter's visible text, including titles and the headline but not the review section, is at most `max_words` words;
 - no em dashes or en dashes appear;
@@ -393,20 +394,27 @@ Each check verifies an entry against its item. Each failure names the check, whe
 
 The checks run through `check` and again in `present_draft`. A version can be presented with failures; its reviewer email lists them first. The review section names where each failure or unsupported claim is as reviewers see the newsletter: an entry by its text, a section by its title, and the headline title, headline, intro or whole newsletter by name.
 
+## Flagged entries
+
+Code flags an entry for the reviewers when a source record of its item carries any sensitivity flag. An included record carries only `commercial` or `personal_named` flags, unless a reviewer restored it, when it keeps the flags it was excluded for. Each flag gives the flag's type and the record's evidence, and an entry can carry more than one. Code works out the flags from the items and extract records, never from the writer's output. `present_draft` saves each version's flags with the version, so they stay as presented when the items change later, and `show_draft` works out the working draft's flags when it shows it.
+
+The reviewer email and the chat endpoint's newsletter show the label `FLAGGED` beside each flagged entry. The reasons follow the newsletter: in the reviewer email, the review section's flagged for review list gives each flagged entry's text with its flags' types and evidence, and the chat endpoint appends the same list after the newsletter. A reviewer asks for a flagged entry to be changed or removed through feedback; approving a version approves its flagged entries. The newsletter delivery sends to `all_staff` carries no labels and no list.
+
 ## Reviewer email
 
-Version 1's reviewer email is a new message with the subject `subject_template` prefixed with `Draft:`, and starts the newsletter's email thread. `{date}` is the date the newsletter was opened, in `timezone`. Each later version's reviewer email is a reply to the latest message in the thread, addressed to `reviewers` only, and keeps the thread's subject, prefixed with `RE:`, because Exchange starts a new conversation when a reply's subject changes. Every email Pulse sends to `reviewers` after the first is a reply in the thread, and each one Pulse sends becomes the thread's latest message. An email channel reply also goes to the thread's latest message, wherever the reviewer's message arrived, so each newsletter keeps one thread. Before the thread exists, a reply carrying a presented version starts it, and any other reply goes to the reviewer's own message, addressed to `reviewers` only, without becoming the thread's latest message. The email starts with the version number, then contains the rendered newsletter followed by a review section listing, in order:
+Version 1's reviewer email is a new message with the subject `subject_template` prefixed with `Draft:`, and starts the newsletter's email thread. `{date}` is the date the newsletter was opened, in `timezone`. Each later version's reviewer email is a reply to the latest message in the thread, addressed to `reviewers` only, and keeps the thread's subject, prefixed with `RE:`, because Exchange starts a new conversation when a reply's subject changes. Every email Pulse sends to `reviewers` after the first is a reply in the thread, and each one Pulse sends becomes the thread's latest message. An email channel reply also goes to the thread's latest message, wherever the reviewer's message arrived, so each newsletter keeps one thread. Before the thread exists, a reply carrying a presented version starts it, and any other reply goes to the reviewer's own message, addressed to `reviewers` only, without becoming the thread's latest message. The email starts with the version number, then contains the rendered newsletter, with `FLAGGED` beside each flagged entry, followed by a review section listing, in order:
 
 1. check failures;
 2. the judge's unsupported claims, or a note that the version was not judged;
-3. for version 2 onwards, the changes and any feedback not applied;
-4. restored records;
-5. emails excluded for sensitivity, with sender, subject, sensitivity type and evidence;
-6. other excluded emails, with sender, subject and the extractor's exclusion reason;
-7. emails that passed the pre-filter but were not extracted, with sender and subject;
-8. rejected emails, by subject line only;
-9. included and excluded emails with attachments, whose attachment content is not included;
-10. the source map, linking each item to its source emails by sender, subject and received date.
+3. flagged for review: each flagged entry's text, with its flags' types and evidence;
+4. for version 2 onwards, the changes and any feedback not applied;
+5. restored records;
+6. emails excluded for sensitivity, with sender, subject, sensitivity type and evidence, so reviewers can see what was blocked and why;
+7. other excluded emails, with sender, subject and the extractor's exclusion reason;
+8. emails that passed the pre-filter but were not extracted, with sender and subject;
+9. rejected emails, by subject line only;
+10. included and excluded emails with attachments, whose attachment content is not included;
+11. the source map, linking each item to its source emails by sender, subject and received date.
 
 Notices to `reviewers` are replies in the newsletter's email thread, keeping its subject, and start with `Send cancelled`, `Abandoned` or `Sent`. A notice for a newsletter with no email thread, such as one abandoned before its first version, starts the thread, with the subject `subject_template` prefixed with `Send cancelled:`, `Abandoned:` or `Sent:`.
 
@@ -421,7 +429,7 @@ To send, delivery:
 
 1. checks that the approved version is the latest presented version; if it is not, it does not send, and sends an operator alert;
 2. records `send_started`;
-3. renders the approved version without the review section, with the subject built from `subject_template`;
+3. renders the approved version without the review section or its `FLAGGED` labels, with the subject built from `subject_template`;
 4. sends it from the conversation mailbox to `all_staff`, with `replyTo` set to the submissions mailbox, so staff replies arrive as pending emails;
 5. marks the newsletter `sent`;
 6. appends a note to the conversation history that the newsletter was sent, as a request holding one line from Pulse, tagged `delivery` in place of a message ID, so the orchestrator knows of the send when the conversation continues;
@@ -441,11 +449,11 @@ The store is a SQLite database at `state.db_path`, on the mounted volume. Every 
 | Table | Contents |
 | --- | --- |
 | `newsletters` | Newsletter ID, state, time opened, time last updated, latest version, approved version, approver, approval time, send time, `send_started`, sent time, closed time, and the message ID of the latest message in its email thread |
-| `screened_emails` | Each newsletter's screened emails: message ID, sender name and address, subject, received time, attachment flag, pre-filter outcome and reason, and whether the message has been moved; the body for emails that passed the pre-filter |
+| `screened_emails` | Each newsletter's screened emails: message ID, sender name and address, subject, received time, attachment flag, pre-filter outcome and reason, and whether the message has been moved; `uniqueBody` and the whole body for emails that passed the pre-filter |
 | `extract_records` | Each screened email's extract record and exclusion outcome, with the ID given to an excluded record and the reviewer who restored it |
 | `items` | Each newsletter's current consolidated items and headline |
 | `drafts` | Each newsletter's working draft, and the judge's latest verdicts on it |
-| `versions` | Each presented version's content, changes, feedback not applied, judge verdicts, check results and creation time |
+| `versions` | Each presented version's content, changes, feedback not applied, judge verdicts, check results, entry flags and creation time |
 | `feedback` | Each reviewer message: message ID, newsletter, reviewer, channel, text and received time |
 | `messages` | Each orchestrator run's model requests, responses and tool results, serialised, in order, by newsletter, each with the ID of the message whose run produced it, and delivery's note tagged `delivery` |
 | `handled_messages` | IDs of conversation mailbox messages seen, each with its attempt count and whether it has been handled |
@@ -466,7 +474,7 @@ The scoping consists of an Exchange service principal for the app, a management 
 | Operation | Request |
 | --- | --- |
 | Get token | `POST https://login.microsoftonline.com/{tenant-id}/oauth2/v2.0/token`, scope `https://graph.microsoft.com/.default`, signed client assertion |
-| List inbox | `GET /users/{mailbox}/mailFolders/inbox/messages?$select=id,from,sender,subject,receivedDateTime,uniqueBody,internetMessageHeaders,hasAttachments&$top=50` |
+| List inbox | `GET /users/{mailbox}/mailFolders/inbox/messages?$select=id,from,sender,subject,receivedDateTime,uniqueBody,body,internetMessageHeaders,hasAttachments&$top=50` |
 | Find folder | `GET /users/{mailbox}/mailFolders?$filter=displayName eq '<folder>'` |
 | Create folder | `POST /users/{mailbox}/mailFolders`, when the folder is not found |
 | Move | `POST /users/{mailbox}/messages/{id}/move`, body `{"destinationId": "<folder-id>"}` |
@@ -475,7 +483,7 @@ The scoping consists of an Exchange service principal for the app, a management 
 
 Pulse reaches each mailbox through one mailbox interface, with one instance for the submissions mailbox and one for the conversation mailbox. The interface has four operations: list the inbox, move a message to a named folder, send a new message and reply in a thread. Moving finds the folder, and creates it when it is not found. Sending and replying each return the sent message's immutable ID. A new message or a reply has an HTML or a plain-text body.
 
-Every request sends `Prefer: IdType="ImmutableId"`, so message IDs stay the same when messages move folders. List requests also send `Prefer: outlook.body-content-type="text"`, so bodies are returned as plain text. `uniqueBody` contains only the new content of a message, without quoted replies, and `internetMessageHeaders` supplies the headers used by the pre-filter. Pulse makes every request through Microsoft's Graph SDK, follows `@odata.nextLink` for paging and sorts results in code. On HTTP 429, 503 or 504, the SDK's retry handler waits for the `Retry-After` interval, or backs off when Graph gives none, and retries up to `graph.max_retries` times.
+Every request sends `Prefer: IdType="ImmutableId"`, so message IDs stay the same when messages move folders. List requests also send `Prefer: outlook.body-content-type="text"`, so bodies are returned as plain text. `uniqueBody` contains only the new content of a message, without quoted replies or forwarded messages, and `body` contains the whole message. The email channel takes a reviewer's message from `uniqueBody`. A screened email keeps both, and the extractor receives both. `internetMessageHeaders` supplies the headers used by the pre-filter. Pulse makes every request through Microsoft's Graph SDK, follows `@odata.nextLink` for paging and sorts results in code. On HTTP 429, 503 or 504, the SDK's retry handler waits for the `Retry-After` interval, or backs off when Graph gives none, and retries up to `graph.max_retries` times.
 
 ## Security
 
@@ -491,7 +499,7 @@ Within Pulse:
 - staff emails and reviewer messages never enter agent instructions or system prompts;
 - the orchestrator's tools are those listed in [tools](#tools), and each enforces its own checks in code;
 - the pre-filter rejects senders outside `allowed_sender_domains`, and outside `allowed_senders` when that list is not empty, and messages whose sensitivity label is not allowed;
-- the extractor flags sensitive and inappropriate content, and code excludes every flagged record unless a verified reviewer restores it;
+- the extractor flags sensitive and inappropriate content; code excludes every record flagged `personal_private`, `unannounced` or `inappropriate` unless a verified reviewer restores it, and flags every entry drawn from a record with any sensitivity flag, so reviewers see each one before approving; the newsletter sent to `all_staff` carries no flags;
 - drafts use only extracted facts and reviewer feedback, and the draft checks verify names and numbers against them;
 - rendering escapes all model output and email-derived text, in HTML and in Markdown; the orchestrator's email replies are converted from Markdown with any raw HTML in them escaped, and links to script, file or data addresses are left as text;
 - the chat endpoint accepts only requests whose bearer token verifies against the configured issuer, audience and key set, and trusts no identity a client states in any other way.
@@ -609,6 +617,9 @@ sections:
   - category: shout_out
     title: "Shout-outs"
     definition: "A named colleague is being thanked or recognised for their work."
+  - category: company_notices
+    title: "Company notices"
+    definition: "Information staff should be aware of, such as a change announced by a partner or supplier, a policy or process update, or general interest news."
 
 llm:
   base_url: http://localhost:3000
@@ -648,7 +659,7 @@ Automated tests run without a tenant or gateway:
 
 | Layer | Scope | Method |
 | --- | --- | --- |
-| Entities | Pre-filter, exclusion rules, draft checks, send time, approval checks, state changes | Plain function calls |
+| Entities | Pre-filter, exclusion rules, entry flags, draft checks, send time, approval checks, state changes | Plain function calls |
 | Tools | Each tool's effect and every refusal | A temporary store and fake mailboxes, with specialist agents' models replaced by Pydantic AI stand-ins returning output set by the test |
 | Orchestrator | Runs from the start instruction and reviewer messages, history saving, loading and trimming, resuming after a failure, per-newsletter locking, run limits | The orchestrator's model replaced by a Pydantic AI stand-in that calls tools in an order set by the test |
 | Channels | Reviewer identification in both channels, automatic replies, replies in thread, attempt limits | Fake mailboxes and the chat endpoint's route |
@@ -667,6 +678,7 @@ A synthetic corpus of staff emails is kept for manual runs against the dev tenan
 | Conversation mailbox | The shared mailbox named by `mailboxes.conversation`, used for all reviewer communication and the newsletter send. |
 | Delivery | Scheduled code that sends an approved newsletter and moves its screened emails. |
 | Extract record | The facts, people, category and sensitivity flags the extractor finds in one screened email. |
+| Flagged entry | An entry code marks for the reviewers because its item draws on a record with a sensitivity flag, such as a price or a person being congratulated. Flags appear in reviewer emails and the chat endpoint, never in the newsletter sent to all staff. |
 | HITL | Human in the loop: a person who reviews output before it takes effect. |
 | Immutable ID | Graph message ID that stays the same when a message moves folders. |
 | Item | One piece of news, merged by the consolidator from the extract records that report it. |
@@ -680,7 +692,7 @@ A synthetic corpus of staff emails is kept for manual runs against the dev tenan
 | Prompt injection | Text in an input that attempts to override a model's instructions. |
 | RBAC for Applications | Exchange Online feature that limits an application's mail permissions to specific mailboxes. |
 | Reviewers list | The distribution list whose members review newsletters. Drafts and notices are sent to it, and the conversation mailbox accepts mail only from its members. |
-| Screened email | A pending email after the pre-filter, as Pulse stores it: its pre-filter outcome, and its body only when it passed. |
+| Screened email | A pending email after the pre-filter, as Pulse stores it: its pre-filter outcome, and its `uniqueBody` and whole body only when it passed. |
 | Sensitivity label | Microsoft Purview classification applied to a message, carried in its `msip_labels` header and identified by its label ID. |
 | Specialist agent | An agent that performs one language task, has no tools, and is called by the orchestrator through a tool. |
 | Start instruction | The fixed message, posted by the scheduler and by `pulse draft`, that asks the orchestrator to draft a newsletter. |

@@ -8,7 +8,7 @@ This plan sets out how the Techary Pulse minimum viable solution (MVS) is built:
 
 ## Approach
 
-Pulse is built from a clean start. Phase 1 models the entities and rules the design specifies. Phase 2 builds the orchestrator, its entry point and the HTTP adapter, so the agent can be talked to from then on. Phases 4 to 11 are vertical slices: each adds one capability from the design end to end, through every layer it needs, and adds only the code that capability needs.
+Pulse is built from a clean start. Phase 1 models the entities and rules the design specifies. Phase 2 builds the orchestrator, its entry point and the HTTP adapter, so the agent can be talked to from then on. Phases 4 to 12 are vertical slices: each adds one capability from the design end to end, through every layer it needs, and adds only the code that capability needs.
 
 Each phase:
 
@@ -59,8 +59,9 @@ A phase with a live check is complete only when the check has passed against the
 | 8. Approve, send, withdraw and abandon | `approve`, delivery, `withdraw_approval`, `abandon` |
 | 9. Email channel | Reviewer conversations by email |
 | 10. Scheduler | The start instruction on a schedule, `pulse draft` |
-| 11. Recovery and retention | The remaining failure handling, retention |
-| 12. Production pilot | Deployment and the first real newsletter |
+| 11. Forwarded emails and sensitivity flags | Forwarded content for the extractor, the narrowed exclusion rules, flagged entries |
+| 12. Recovery and retention | The remaining failure handling, retention |
+| 13. Production pilot | Deployment and the first real newsletter |
 
 ### Phase 0: clean start
 
@@ -200,13 +201,33 @@ Scope: choosing the cron library, posting the start instruction on `schedule.dra
 
 Exit criteria: tests cover the schedule and the skip with a controlled clock; live check: `pulse draft` sends version 1 to the test user, who continues the conversation by email.
 
-### Phase 11: recovery and retention
+### Phase 11: forwarded emails and sensitivity flags
+
+Scope:
+
+- listing the inbox with Graph's `body` as well as `uniqueBody`, and the screened email keeping both when it passes the pre-filter, with the `screened_emails` table to match;
+- the extractor receiving both, and its instructions for forwarded and quoted messages as the design's extract section states them;
+- the draft checks matching names and digit sequences against a source message's whole body;
+- the extractor's sensitivity type definitions as the design states them, including any pricing as `commercial`, and `personal` split into `personal_private` and `personal_named`;
+- the exclusion rules: exclude only records flagged `personal_private`, `unannounced` or `inappropriate`, or with no category, and include records whose only flags are `commercial` or `personal_named`;
+- the `company_notices` section in the example configurations;
+- flagged entries as the design's flagged entries section states them: working them out from the items and extract records, saving them with each version, and returning the count from `present_draft`;
+- rendering `FLAGGED` beside flagged entries, and the flagged for review list after the newsletter, in the reviewer email and the chat endpoint's Markdown, and neither in the newsletter delivery sends, with golden files for each;
+- the orchestrator instructions for reporting flagged entries;
+- the synthetic corpus updated to the new rules, with a forwarded email, a pricing email, a shout-out, a birthday, a new joiner's welcome, a celebration such as a new baby, an email that credits people for their work without making them its subject, and a private personal email.
+
+Exit criteria:
+
+- tests cover forwarded and quoted bodies through listing, screening, extraction input and the draft checks; every exclusion outcome and the included `commercial` and `personal_named` cases; the flag rule; flags kept with a version; and rendering with and without flags;
+- live check: the test user forwards an email announcing a supplier's price change to the dev submissions mailbox; asking for a newsletter drafts it with `FLAGGED` beside its entry and its reason in the flagged for review list; a shout-out entry is flagged; a seeded private personal email is listed as excluded with its reason; and the approved version reaches the test distribution list with no flags.
+
+### Phase 12: recovery and retention
 
 Scope: every row of the design's failure table not yet covered, including delivery with `send_started` but not `sent`, incomplete moves, a `present_draft` retried after its email was sent but its version not saved, and `SIGTERM`; and deleting closed newsletters older than `retention_days`.
 
 Exit criteria: crash-recovery tests inject a failure at each step boundary and assert the outcome in the failure table.
 
-### Phase 12: production pilot
+### Phase 13: production pilot
 
 Scope: the deployment requirements in the production tenant, including the Pulse app registration's reviewer role and the conversation mailbox's sender restriction, the production configuration with Entra ID as the issuer, the container deployed on the Pulse server, and LibreChat connected through the production gateway, passing each user's Entra ID token.
 
