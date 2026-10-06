@@ -24,7 +24,8 @@ def graph_message(email: InboundEmail) -> dict[str, Any]:
         "from": {"emailAddress": {"name": email.sender_name, "address": email.sender_address}},
         "subject": email.subject,
         "receivedDateTime": email.received.isoformat().replace("+00:00", "Z"),
-        "uniqueBody": {"contentType": "text", "content": email.body},
+        "uniqueBody": {"contentType": "text", "content": email.unique_body},
+        "body": {"contentType": "text", "content": email.body},
         "internetMessageHeaders": [{"name": k, "value": v} for k, v in email.headers.items()],
         "hasAttachments": email.has_attachments,
     }

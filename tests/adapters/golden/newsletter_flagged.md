@@ -12,7 +12,14 @@ Priya Shah and Tom Evans signed Northwind Retail on 22 September.
 
 ## Shout-outs
 
-Dan Wood thanks Sam Patel for covering the service desk.
+Dan Wood thanks Sam Patel for covering the service desk. **Named person**
 
 \- Dan Wood
+
+---
+
+## Flagged for review
+
+- Dan Wood thanks Sam Patel for covering the service desk.
+  - Named person: thanks Sam Patel by name
 

@@ -6,10 +6,20 @@ from pydantic_ai.models.function import AgentInfo
 
 from pulse.adapters.store import SqliteStore
 from pulse.entities.content import Version, version_of
+from pulse.entities.extracts import Sensitivity
 from pulse.entities.lifecycle import Newsletter, present
 from pulse.entities.mail import InboundEmail
 from pulse.entrypoints.email import EmailChannel
-from tests.emails import make_draft, make_email
+from tests.emails import (
+    ENTRY,
+    NO_NOTES,
+    make_consolidation,
+    make_draft,
+    make_email,
+    make_item,
+    make_output,
+    screen_email,
+)
 from tests.fakes.mailbox import FakeMailbox
 from tests.fakes.models import (
     ModelFunction,
@@ -82,7 +92,7 @@ async def _newsletter(store: SqliteStore) -> Newsletter:
 
 async def _version_1(store: SqliteStore, newsletter: Newsletter) -> Version:
     """Store version 1, which the stand-in present_draft presents."""
-    version = version_of(make_draft(), 1, OPENED, [], None)
+    version = version_of(make_draft(), 1, OPENED, [], None, NO_NOTES)
     await store.save_version(present(newsletter), version)
     return version
 
@@ -142,6 +152,18 @@ async def test_the_message_is_recorded_as_email_feedback_from_its_sender(
     )
 
 
+async def test_only_the_reviewers_new_text_is_feedback(store: SqliteStore) -> None:
+    await store.save_start(THREADED, [])
+    # The whole body quotes the reviewer email, which holds staff subjects and evidence.
+    quoted = "Please shorten the intro.\n\nFrom: Pulse\nExcluded for sensitivity: Board pack"
+    email = _email(unique_body="Please shorten the intro.", body=quoted)
+
+    await _channel(store, FakeMailbox([email]), reply_with("Noted.")).poll()
+
+    [feedback] = await store.list_feedback("n-1")
+    assert feedback.text == "Please shorten the intro."
+
+
 async def test_a_presented_version_comes_in_one_reply_with_its_reviewer_email(
     store: SqliteStore,
 ) -> None:
@@ -186,6 +208,25 @@ async def test_a_shown_draft_comes_after_the_reply(store: SqliteStore) -> None:
     content = reply.body.content
     assert content.index("Here is the draft.") < content.index(make_draft().content.intro)
     assert "Version" not in content
+
+
+async def test_a_shown_draft_shows_its_flags(store: SqliteStore) -> None:
+    await store.save_start(THREADED, [screen_email(make_email("m01"))])
+    flag = Sensitivity(kind="financial", withheld=False, evidence="mentions a contract value")
+    await store.save_extract("n-1", "m01", make_output(sensitivity=[flag]))
+    await store.save_items("n-1", make_consolidation(make_item(source_message_ids=["m01"])))
+    await store.save_draft("n-1", make_draft())
+    conversation = FakeMailbox([_email()])
+    model = responses(show_call(), text_response("Here is the draft."))
+
+    await _channel(store, conversation, model).poll()
+
+    [reply] = conversation.replies
+    content = reply.body.content
+    assert "Financial</span>" in content
+    assert "- Priya Shah" in content
+    assert content.index("Flagged for review") > content.index(ENTRY)
+    assert "Financial: mentions a contract value" in content
 
 
 async def test_no_reply_sends_nothing_and_the_message_is_processed(store: SqliteStore) -> None:

@@ -15,7 +15,8 @@ from starlette.requests import ClientDisconnect
 
 from pulse.adapters.store import SqliteStore
 from pulse.agents.orchestrator.run import Orchestrator
-from pulse.entities.content import version_of
+from pulse.entities.content import EntryNotes, version_of
+from pulse.entities.extracts import Sensitivity
 from pulse.entities.lifecycle import present
 from pulse.entrypoints.chat import NOT_A_REVIEWER, PATH, create_app
 from tests.emails import make_draft
@@ -149,10 +150,16 @@ async def test_streamed_reply_follows_the_progress_notes(store: SqliteStore) -> 
 
 
 async def _presented(store: SqliteStore) -> str:
-    """Store version 1, which the stand-in present_draft presents; return its Markdown."""
-    draft = make_draft()
-    await store.save_version(present(make_newsletter()), version_of(draft, 1, OPENED, [], None))
-    return make_renderer().markdown(draft.content)
+    """Store version 1, with its entry flagged, which the stand-in present_draft presents;
+    return its Markdown."""
+    flag = Sensitivity(kind="financial", withheld=False, evidence="mentions a contract value")
+    notes = EntryNotes(credits={"item-1": ["Priya Shah"]}, flags={"item-1": [flag]})
+    version = version_of(make_draft(), 1, OPENED, [], None, notes)
+    await store.save_version(present(make_newsletter()), version)
+    markdown = make_renderer().markdown(version.content, notes)
+    assert "**Financial**" in markdown and "mentions a contract value" in markdown
+    assert "\\- Priya Shah" in markdown
+    return markdown
 
 
 @pytest.mark.parametrize("stream", [False, True])

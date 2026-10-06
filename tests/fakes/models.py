@@ -45,7 +45,7 @@ class Tools:
 
     def present_draft(self) -> PresentResult:
         """Stands in for the real tool, presenting version 1, which the test stores."""
-        return PresentResult(version=1)
+        return PresentResult(version=1, flagged=0)
 
     def show_draft(self) -> ShowResult:
         """Stands in for the real tool, showing the working draft, which the test stores."""

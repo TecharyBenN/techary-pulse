@@ -80,7 +80,7 @@ Pulse follows the ports and adapters pattern. Source code dependencies point inw
 ```text
 src/pulse/
 ├── entities/          Rules and data: email, its stages and the pre-filter, extract records,
-│                      the exclusion rules and items, drafts, versions and the draft checks,
+│                      the exclusion rules and items, drafts, versions, entry flags, credit lines and the draft checks,
 │                      the review section, the newsletter lifecycle, the specialist agents'
 │                      output types, which entities extend, Pulse's exception types, and the
 │                      interfaces the other layers implement: the mailbox and the store
@@ -203,17 +203,17 @@ The orchestrator's rules are set with `instructions`, which Pydantic AI sends wi
 | --- | --- | --- |
 | `start_newsletter` | Action | Opens a newsletter with the pending emails, or adds those that have arrived since to the open one, and applies the pre-filter to them. |
 | `list_screened_emails` | Read | Returns each screened email's message ID, sender name, received time, attachment flag, pre-filter outcome, and extract record if one exists. Never returns subjects or bodies. |
-| `extract` | Specialist | Runs the extractor on the named screened emails, in parallel, and stores each extract record with its exclusion outcome. Returns each email's outcome and the totals included, excluded by reason, and failed. |
+| `extract` | Specialist | Runs the extractor, in parallel, on every screened email of the open newsletter that passed the pre-filter and has no extract record yet, and stores each extract record with its exclusion outcome. It takes no arguments, so the orchestrator never copies message IDs it could get wrong. An email whose extraction failed still has no record, so calling `extract` again retries it. Returns each email's outcome and the totals included, excluded by reason, and failed. |
 | `restore` | Action | Includes a named excluded record, recording the reviewer who asked. The items are then out of date until `consolidate` runs. |
-| `consolidate` | Specialist | Runs the consolidator on the named extract records and stores the resulting items and headline, replacing any earlier ones. Returns the headline, the item count and each item's ID, category and sources. |
+| `consolidate` | Specialist | Runs the consolidator on every included extract record and stores the resulting items and headline, replacing any earlier ones. Returns the headline, the item count and each item's ID, category and sources. |
 | `write` | Specialist | Runs the writer on the items, the excluded records, all feedback, the orchestrator's instruction and, when revising, the working draft, and stores the result as the working draft. A call is a revision whenever a working draft exists. Returns the included IDs, the changes, the feedback not applied and whether the working draft has changed since the latest version. |
-| `judge` | Specialist | Runs the judge on the working draft and stores its verdicts. |
+| `judge` | Specialist | Runs the judge on the working draft's intro and on each of its entries, in parallel, and stores its verdicts. |
 | `check` | Read | Runs the code checks in [draft checks](#draft-checks) on the working draft and returns every failure. |
 | `get_newsletter` | Read | Returns a summary of the latest newsletter: state, versions presented, item and excluded record counts, whether the items are up to date (built from exactly the included records), whether the working draft has changed since the latest version, approved version, send time and sent time. |
 | `get_draft` | Read | Returns the working draft, or a named version. |
 | `show_draft` | Read | Shows the reviewer the working draft, or a named version: the channel shows it after the reply, rendered by code, as when a version is presented. |
 | `get_items` | Read | Returns the headline, the current items with the sender names and received times of their source emails, and the excluded records. |
-| `present_draft` | Action | Saves the working draft as the next version with its check results and the judge's latest verdicts, and emails its reviewer email to `reviewers` in the newsletter's email thread, withdrawing any approval as described in [versions and approval](#versions-and-approval). When the working draft is unchanged since the latest version, it emails that version's reviewer email again instead, as described there. Returns the version number and how many of its entries are flagged. |
+| `present_draft` | Action | Saves the working draft as the next version with its check results, the judge's latest verdicts, its entry flags and its credit lines, and emails its reviewer email to `reviewers` in the newsletter's email thread, withdrawing any approval as described in [versions and approval](#versions-and-approval). When the working draft is unchanged since the latest version, it emails that version's reviewer email again instead, as described there. Returns the version number and how many of its entries are flagged. |
 | `approve` | Action | Records approval of a named version and sets the send time. |
 | `withdraw_approval` | Action | Returns an approved newsletter to `in_review`. |
 | `abandon` | Action | Closes the newsletter unsent and emails the reviewers that it was abandoned. |
@@ -227,7 +227,8 @@ Every tool checks its preconditions in code, records its effect in the store as 
 - `restore` refuses an ID that names no excluded record in the open newsletter.
 - `start_newsletter`, `present_draft`, `withdraw_approval` and `abandon` refuse once `send_started` is recorded.
 - `present_draft` refuses when there is no working draft.
-- `extract` refuses emails the pre-filter rejected, and `consolidate` refuses excluded records, emails with no extract record, and a call naming no records.
+- `write` refuses a fourth call in one run, so the draft is presented before it is revised again; the orchestrator's instructions allow one revision to fix checks and claims, and code allows two.
+- `consolidate` refuses when the newsletter has no included extract records.
 
 ### Behaviour
 
@@ -238,7 +239,7 @@ The orchestrator's instructions apply these rules:
 - treat a message that asks for changes as feedback, even if it also mentions approval: revise the draft, present the new version and ask the reviewer to confirm approval of it;
 - when a message asks for any change to an approved newsletter, call `withdraw_approval` first, then ask for clarification or revise, so the old version is not sent while the change is in progress;
 - once a new newsletter opens, treat feedback given earlier in the conversation as belonging to the previous newsletter;
-- fix a failing check or unsupported claim with the smallest change that corrects it, such as revising only the affected entries;
+- fix a failing check or unsupported claim with the smallest change that corrects it, such as rewording only the affected entries, and never by removing an entry or item; make one such revision, then present the version with any problem that remains;
 - accept a check failure that cannot be corrected without losing content; the review section lists it;
 - approve only the latest presented version, and name the version approved in the reply;
 - when a reviewer wants to approve, ask them to reply with `approve v{version}` as the first line of their message, unless their message already starts with it;
@@ -282,7 +283,7 @@ Each specialist agent is a Pydantic AI agent whose instructions are part of its 
 | `extractor` | `extract`, once per screened email | Sender name and address from `from`, subject, received time, `uniqueBody` and the whole body | Small |
 | `consolidator` | `consolidate` | Included extract records, and the configured categories | Mid |
 | `writer` | `write` | Consolidated items with sender names and received dates, excluded records, all feedback, the orchestrator's instruction and, when revising, the working draft | Mid |
-| `judge` | `judge` | Working draft, items and all feedback | Mid |
+| `judge` | `judge`, once for the intro and once per entry | One entry and its item, or the intro and every item, with all feedback | Mid |
 
 The extractor is the only agent that reads message subjects and bodies. Extract records are derived from them, so every agent that receives an extract record, including the orchestrator, treats it as untrusted data. The code checks on each tool limit what a malicious record could cause: approval needs the reviewer's own words, and restoring, withdrawing or abandoning needs a reviewer as the caller.
 
@@ -305,7 +306,7 @@ Pulse sends every model call to `llm.base_url` in the OpenAI-compatible chat com
   ],
   "people": ["Priya Shah", "Tom Evans"],
   "sensitivity": [
-    {"type": "commercial", "evidence": "mentions annual contract value"}
+    {"kind": "named_person", "withheld": false, "evidence": "credits Priya Shah and Tom Evans for the signing"}
   ]
 }
 ```
@@ -314,9 +315,11 @@ Pulse sends every model call to `llm.base_url` in the OpenAI-compatible chat com
 | --- | --- |
 | `category` | The configured section category that the news stated in the email fits; `null` when it fits none, including emails that state no news, such as automatic replies, test emails, newsletters and vague messages |
 | `exclusion_reason` | `null` when `category` is set; otherwise one short sentence for the reviewers saying why the email fits no category |
-| `sensitivity.type` | `commercial` (any pricing, deal value, margin or revenue figure, including a partner's or supplier's), `personal_private` (health, family matters, performance or HR issues about a person; a celebration such as a new baby or a wedding is `personal_named`), `personal_named` (a named person who is the subject of the news because they are congratulated, recognised, thanked or welcomed, or have a birthday or another celebration; people credited for doing the work the news reports are not flagged), `unannounced` (confidential, draft or not yet announced) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
+| `sensitivity.kind` | What the flagged content is: `named_person` (a named person is congratulated, recognised, thanked, welcomed or credited, or has a birthday), `personal_information` (details of a person's private life, such as a new baby, a wedding, health, family matters, or performance or HR issues), `financial` (any pricing, deal value, margin, revenue, profit, budget or cash figure or situation, including a partner's or supplier's), `confidential` (news not yet public, or content marked confidential or draft, including a partner's or supplier's email marked for its partners only; the standard confidentiality footer an organisation adds to every email is not flagged) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
+| `sensitivity.withheld` | `true` when the content must not reach all staff unless a reviewer decides otherwise, such as health, HR or performance matters, financial difficulty, budget shortfalls or possible redundancies, unannounced internal changes, and inappropriate content; `false` when it is fine to share once a reviewer has seen it, such as a welcome, a thank-you, a birthday, a new baby, a supplier's price change, a partner's announcement marked for partners only, or profits shared as good news. The kind never decides it: the same kind can be either |
+| `sensitivity.evidence` | One short phrase saying what triggered the flag, without quoting the email |
 
-The extractor states only facts in the message, writing the sender's name where the sender's own text says I or we, so each fact names who it is about. The news is what the sender puts forward: when the sender forwards a message for staff to know about, the facts come from the forwarded message and name who it is from; when the sender replies to an earlier conversation, the facts come from the sender's own text, and the earlier messages are ignored unless that text points to them as the news. Code attaches the email's message ID to the extractor's output, making it the email's extract record, and excludes every record that has no category or carries a `personal_private`, `unannounced` or `inappropriate` flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. Restoring a record includes it: `restore` clears its exclusion outcome, keeps its excluded ID and records the reviewer who restored it, and the record then becomes an item like any other included record. Extracting an email again replaces its extract record, which keeps its excluded ID while it stays excluded, and stays included if it was restored. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries a `personal_private`, `unannounced` or `inappropriate` flag, and `no_category`, when `category` is `null`. A record whose only flags are `commercial` or `personal_named` is included and keeps its flags, which mark its entries as described in [flagged entries](#flagged-entries). The extractor's output checks require exactly one of `category` and `exclusion_reason`, and the category to be configured.
+The extractor states only facts in the message, writing the sender's name where the sender's own text says I or we, so each fact names who it is about. The record's `people` lists everyone the facts name, and only them: someone who only sends, forwards or signs the email is not part of the news, and is credited through the credit line instead. The news is what the sender puts forward: when the sender forwards a message for staff to know about, the facts come from the forwarded message and name the organisation it is from, not the person who signed it; when the sender replies to an earlier conversation, the facts come from the sender's own text, and the earlier messages are ignored unless that text points to them as the news. An email that adds a fact to other news, such as a follow-up giving a figure for an earlier update, takes the category of that news. Code attaches the email's message ID to the extractor's output, making it the email's extract record, and excludes every record that has no category or carries a withheld flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. Restoring a record includes it: `restore` clears its exclusion outcome, keeps its excluded ID and records the reviewer who restored it, and the record then becomes an item like any other included record. Each screened email is extracted once. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries a withheld flag, and `no_category`, when `category` is `null`. A record with no withheld flag is included and keeps its flags, which mark its entries as described in [flagged entries](#flagged-entries). The extractor judges whether each flag is withheld; code only applies that judgement. The extractor's output checks require exactly one of `category` and `exclusion_reason`, and the category to be configured.
 
 ### Consolidate
 
@@ -356,18 +359,19 @@ The consolidator merges records describing the same news and writes the headline
   },
   "changes": ["Shortened the headline"],
   "not_applied": [
-    {"feedback": "Add the contract value", "reason": "The item is excluded for commercial sensitivity"}
+    {"feedback": "Add the contract value", "reason": "The contract value is not in the item's facts"}
   ]
 }
 ```
 
-The writer returns the complete content (the headline title, the headline, the intro, the sections with their titles, in order, and the included item IDs), a list of changes and any feedback it did not apply; the changes and feedback not applied are empty for a first draft. When revising, it can remove items, including by received date, and rename or reorder sections and the headline title. It receives the excluded records only to explain feedback it cannot apply, and never includes them. Its output checks require every item ID to be a known item, and every entry's item to be in `item_ids`.
+The writer returns the complete content (the headline title, the headline, the intro, the sections with their titles, in order, and the included item IDs), a list of changes and any feedback it did not apply; the changes and feedback not applied are empty for a first draft. When revising, it can remove items, including by received date, but only when reviewer feedback asks for it, never to fix a check or an unsupported claim, and rename or reorder sections and the headline title. It receives the excluded records only to explain feedback it cannot apply, and never includes them. Its output checks require every item ID to be a known item, every entry's item to be in `item_ids`, and every name in an entry's `people` to appear in its text; the retry for a name the text does not use tells the writer to remove it from `people`, never to add it to the text.
 
-The writer's instructions give `headline_title`, and the configured sections with their titles in configuration order, as the defaults it uses unless the orchestrator's instruction or feedback asks otherwise. Code renders the content as the writer returns it: the headline under its headline title, then the intro, then each section under its title, in the order given, omitting sections with no entries. It renders the newsletter in HTML for email and in Markdown for the chat endpoint. The draft has no subject: code builds it from `subject_template`. The writer's instructions apply these rules:
+The writer's instructions give `headline_title`, and the configured sections with their titles in configuration order, as the defaults it uses unless the orchestrator's instruction or feedback asks otherwise. Code renders the content as the writer returns it: the headline under its headline title, then the intro, then each section under its title, in the order given, omitting sections with no entries. Under each entry, code adds its credit line: `- ` followed by the sender names of the item's source emails, each once, such as `- Ben Nicholls`, `- Priya Shah and Tom Evans` or `- Priya Shah, Tom Evans and Aisha Khan`. The writer never writes credit lines, and every rendering carries them, including the newsletter sent to all staff. `present_draft` saves each version's credit lines with the version, so they stay as presented when the items change later. Code renders the newsletter in HTML for email and in Markdown for the chat endpoint. The draft has no subject: code builds it from `subject_template`. The writer's instructions apply these rules:
 
 - each entry is one or two sentences;
-- each entry names every sender of its item, and lists every person it names in `people`;
-- entries use only the facts of their item and facts stated in reviewer feedback;
+- each entry tells the news itself, as a newsletter does, and never reports the email it came in, such as who sent it or who sends wishes to whom: "Happy birthday to Dan Wood", never "Lucy Grey sends birthday wishes to Dan Wood";
+- each entry lists every person it names in `people`;
+- entries use only the facts of their item and facts stated in reviewer feedback, and keep every detail a reader needs to understand what is happening, to whom, when and how much;
 - the newsletter is under `max_words` words;
 - language is everyday, genuine and people-focused, with no jargon or hype words;
 - the tone is warm and professional, celebrating people by name;
@@ -375,18 +379,21 @@ The writer's instructions give `headline_title`, and the configured sections wit
 
 ### Judge
 
-The judge returns, for the intro and each entry, whether its text is supported by the facts of the items and the feedback, and the unsupported claim when it is not. Each verdict has a `target`, which is `intro` or the entry's item ID, `supported`, and `claim`, which is `null` when the text is supported. Its output checks require exactly one verdict for the intro and for each entry, no other targets, and a claim exactly when the text is not supported. The verdicts are stored with the working draft, and a new working draft has none until the judge runs on it, so a version presented without them is not judged.
+The judge checks facts, one text per call: the intro against the facts of every item, or one entry against the facts of its own item, each with the feedback. It does not judge the newsletter's coherence as a whole.
+
+A text is supported when it keeps to the spirit of its facts: it may reword, shorten and simplify them, and leave out detail. It is unsupported when it adds information the facts and feedback do not state, such as a fact, number, date, person or effect, or when it contradicts a fact, such as by stating a different number, date or name. The judge does not judge what a text leaves out: the writer keeps the details a reader needs, and the reviewers decide whether an entry says enough.
+
+It returns `claims`: each separate claim the text makes, `claim`, with `source`, the fact or feedback that states it, quoted, or `null` when nothing states it or a fact contradicts it. Warm wording that states no fact, such as thanks or a greeting, is not a claim. Matching each claim to a source, rather than giving one verdict on the whole text, keeps the judge to what the text says. Code builds each verdict from the claims: the text is supported when every claim has a source, and its unsupported claims are those without one; code also adds the verdict's `target`, which is `intro` or the entry's item ID. If any call gives no valid response, the tool fails and stores nothing. The verdicts are stored with the working draft, and a new working draft has none until the judge runs on it, so a version presented without them is not judged.
 
 ## Draft checks
 
 Code checks a draft for these conditions. A source message's text is its subject and whole body, including any message it forwards or quotes. A word is any run of characters between whitespace. A name or digit sequence matches when it appears anywhere in the text it is checked against, ignoring case.
 
-- the newsletter's visible text, including titles and the headline but not the review section, is at most `max_words` words;
+- the newsletter's visible text, including titles and the headline but not the credit lines or the review section, is at most `max_words` words;
 - no em dashes or en dashes appear;
 - every digit sequence in an entry appears in a source message of its item or in the newsletter's feedback, and every digit sequence in the intro appears in any item's source messages or the feedback; numbers written as words are not checked;
-- every name in an entry's `people` appears, ignoring case, in the entry's text, and in a source message of its item, the item's sender names or the feedback;
+- every name in an entry's `people` appears, ignoring case, in a source message of its item, the item's sender names or the feedback; the writer's output checks already ensure it appears in the entry's text;
 - every entry is at most two sentences, where a sentence ends at `.`, `!` or `?` followed by a space or the end of the text;
-- every entry names every sender of its item;
 - every entry references an included item, and every included item appears exactly once;
 - only configured categories appear.
 
@@ -396,20 +403,20 @@ The checks run through `check` and again in `present_draft`. A version can be pr
 
 ## Flagged entries
 
-Code flags an entry for the reviewers when a source record of its item carries any sensitivity flag. An included record carries only `commercial` or `personal_named` flags, unless a reviewer restored it, when it keeps the flags it was excluded for. Each flag gives the flag's type and the record's evidence, and an entry can carry more than one. Code works out the flags from the items and extract records, never from the writer's output. `present_draft` saves each version's flags with the version, so they stay as presented when the items change later, and `show_draft` works out the working draft's flags when it shows it.
+Code flags an entry for the reviewers when a source record of its item carries any sensitivity flag. An included record carries no withheld flag, unless a reviewer restored it, when it keeps the withheld flags it was excluded for. Each flag gives its kind and the record's evidence, and an entry can carry more than one. Code works out the flags from the items and extract records, never from the writer's output. `present_draft` saves each version's flags with the version, so they stay as presented when the items change later, and `show_draft` works out the working draft's flags when it shows it.
 
-The reviewer email and the chat endpoint's newsletter show the label `FLAGGED` beside each flagged entry. The reasons follow the newsletter: in the reviewer email, the review section's flagged for review list gives each flagged entry's text with its flags' types and evidence, and the chat endpoint appends the same list after the newsletter. A reviewer asks for a flagged entry to be changed or removed through feedback; approving a version approves its flagged entries. The newsletter delivery sends to `all_staff` carries no labels and no list.
+Every newsletter shown to reviewers labels each flagged entry, in plain text, with each kind its flags carry, once: `Named person`, `Personal information`, `Financial`, `Confidential` or `Inappropriate`. A withheld flag on a restored record is labelled `Restored:` and its kind, such as `Restored: personal information`, so it stands out. The labels appear in the reviewer email, the chat endpoint's newsletter and the email channel's reply when a run shows the newsletter. The reasons follow the newsletter: in the reviewer email, the review section's flagged for review list gives each flagged entry's text with its flags' kinds and evidence, and the chat endpoint and the email channel's reply append the same list after the newsletter. A reviewer asks for a flagged entry to be changed or removed through feedback; approving a version approves its flagged entries. The newsletter delivery sends to `all_staff` carries its credit lines, but no labels and no list.
 
 ## Reviewer email
 
-Version 1's reviewer email is a new message with the subject `subject_template` prefixed with `Draft:`, and starts the newsletter's email thread. `{date}` is the date the newsletter was opened, in `timezone`. Each later version's reviewer email is a reply to the latest message in the thread, addressed to `reviewers` only, and keeps the thread's subject, prefixed with `RE:`, because Exchange starts a new conversation when a reply's subject changes. Every email Pulse sends to `reviewers` after the first is a reply in the thread, and each one Pulse sends becomes the thread's latest message. An email channel reply also goes to the thread's latest message, wherever the reviewer's message arrived, so each newsletter keeps one thread. Before the thread exists, a reply carrying a presented version starts it, and any other reply goes to the reviewer's own message, addressed to `reviewers` only, without becoming the thread's latest message. The email starts with the version number, then contains the rendered newsletter, with `FLAGGED` beside each flagged entry, followed by a review section listing, in order:
+Version 1's reviewer email is a new message with the subject `subject_template` prefixed with `Draft:`, and starts the newsletter's email thread. `{date}` is the date the newsletter was opened, in `timezone`. Each later version's reviewer email is a reply to the latest message in the thread, addressed to `reviewers` only, and keeps the thread's subject, prefixed with `RE:`, because Exchange starts a new conversation when a reply's subject changes. Every email Pulse sends to `reviewers` after the first is a reply in the thread, and each one Pulse sends becomes the thread's latest message. An email channel reply also goes to the thread's latest message, wherever the reviewer's message arrived, so each newsletter keeps one thread. Before the thread exists, a reply carrying a presented version starts it, and any other reply goes to the reviewer's own message, addressed to `reviewers` only, without becoming the thread's latest message. The email starts with the version number, then contains the rendered newsletter, with its labels beside each flagged entry, followed by a review section listing, in order:
 
 1. check failures;
 2. the judge's unsupported claims, or a note that the version was not judged;
-3. flagged for review: each flagged entry's text, with its flags' types and evidence;
+3. flagged for review: each flagged entry's text, with its flags' kinds and evidence;
 4. for version 2 onwards, the changes and any feedback not applied;
 5. restored records;
-6. emails excluded for sensitivity, with sender, subject, sensitivity type and evidence, so reviewers can see what was blocked and why;
+6. emails excluded for sensitivity, with sender, subject, and each flag's kind, whether it is withheld, and its evidence, so reviewers can see what was blocked and why;
 7. other excluded emails, with sender, subject and the extractor's exclusion reason;
 8. emails that passed the pre-filter but were not extracted, with sender and subject;
 9. rejected emails, by subject line only;
@@ -429,7 +436,7 @@ To send, delivery:
 
 1. checks that the approved version is the latest presented version; if it is not, it does not send, and sends an operator alert;
 2. records `send_started`;
-3. renders the approved version without the review section or its `FLAGGED` labels, with the subject built from `subject_template`;
+3. renders the approved version with its credit lines, but without the review section or its labels, with the subject built from `subject_template`;
 4. sends it from the conversation mailbox to `all_staff`, with `replyTo` set to the submissions mailbox, so staff replies arrive as pending emails;
 5. marks the newsletter `sent`;
 6. appends a note to the conversation history that the newsletter was sent, as a request holding one line from Pulse, tagged `delivery` in place of a message ID, so the orchestrator knows of the send when the conversation continues;
@@ -453,7 +460,7 @@ The store is a SQLite database at `state.db_path`, on the mounted volume. Every 
 | `extract_records` | Each screened email's extract record and exclusion outcome, with the ID given to an excluded record and the reviewer who restored it |
 | `items` | Each newsletter's current consolidated items and headline |
 | `drafts` | Each newsletter's working draft, and the judge's latest verdicts on it |
-| `versions` | Each presented version's content, changes, feedback not applied, judge verdicts, check results, entry flags and creation time |
+| `versions` | Each presented version's content, changes, feedback not applied, judge verdicts, check results, entry flags, credit lines and creation time |
 | `feedback` | Each reviewer message: message ID, newsletter, reviewer, channel, text and received time |
 | `messages` | Each orchestrator run's model requests, responses and tool results, serialised, in order, by newsletter, each with the ID of the message whose run produced it, and delivery's note tagged `delivery` |
 | `handled_messages` | IDs of conversation mailbox messages seen, each with its attempt count and whether it has been handled |
@@ -499,7 +506,7 @@ Within Pulse:
 - staff emails and reviewer messages never enter agent instructions or system prompts;
 - the orchestrator's tools are those listed in [tools](#tools), and each enforces its own checks in code;
 - the pre-filter rejects senders outside `allowed_sender_domains`, and outside `allowed_senders` when that list is not empty, and messages whose sensitivity label is not allowed;
-- the extractor flags sensitive and inappropriate content; code excludes every record flagged `personal_private`, `unannounced` or `inappropriate` unless a verified reviewer restores it, and flags every entry drawn from a record with any sensitivity flag, so reviewers see each one before approving; the newsletter sent to `all_staff` carries no flags;
+- the extractor flags sensitive and inappropriate content and judges whether each flag is withheld; code excludes every record with a withheld flag unless a verified reviewer restores it, and flags every entry drawn from a record with any sensitivity flag, so reviewers see each one before approving; the newsletter sent to `all_staff` carries no flags;
 - drafts use only extracted facts and reviewer feedback, and the draft checks verify names and numbers against them;
 - rendering escapes all model output and email-derived text, in HTML and in Markdown; the orchestrator's email replies are converted from Markdown with any raw HTML in them escaped, and links to script, file or data addresses are left as text;
 - the chat endpoint accepts only requests whose bearer token verifies against the configured issuer, audience and key set, and trusts no identity a client states in any other way.
@@ -613,7 +620,7 @@ sections:
     definition: "A project, service or milestone has been delivered, launched or completed for a customer."
   - category: team_news
     title: "Team news and new joiners"
-    definition: "Someone has joined, moved role, gained a qualification or has a birthday, or a team has reached a milestone or held an event."
+    definition: "Someone has joined, moved role, gained a qualification, or has a birthday or another celebration such as a new baby or a wedding, or a team has reached a milestone or held an event."
   - category: shout_out
     title: "Shout-outs"
     definition: "A named colleague is being thanked or recognised for their work."
@@ -666,7 +673,7 @@ Automated tests run without a tenant or gateway:
 | Delivery | Send timing in both send modes, approval re-check, `send_started` handling, single send to `all_staff`, message moves and their recovery | A temporary store and fake mailboxes with a controlled clock |
 | Graph client | Requests, paging, threading replies, throttling, errors | The Graph SDK client over mocked HTTP responses, including injected errors |
 
-A synthetic corpus of staff emails is kept for manual runs against the dev tenant and gateway. It contains genuine updates for every section, duplicate reports of the same news, out-of-office replies, test emails, one-word messages, newsletters, unclear updates, updates that fit no category, external senders, labelled messages, sensitive and inappropriate content, messages with attachments, long reply chains, empty messages and a prompt-injection attempt.
+A synthetic corpus of staff emails is kept for manual runs against the dev tenant and gateway. It contains genuine updates for every section, duplicate reports of the same news, out-of-office replies, test emails, one-word messages, newsletters, unclear updates, updates that fit no category, external senders, labelled messages, forwarded emails, pricing, birthdays, new joiners' welcomes, celebrations such as a new baby, people credited for their work, private personal matters, sensitive and inappropriate content, messages with attachments, long reply chains, empty messages and a prompt-injection attempt.
 
 ## Glossary
 
@@ -676,9 +683,10 @@ A synthetic corpus of staff emails is kept for manual runs against the dev tenan
 | All-staff list | Distribution list that receives the approved newsletter. |
 | Content | The headline title, headline, intro, sections with their titles, and included items that a working draft or version holds, and that is rendered and sent. |
 | Conversation mailbox | The shared mailbox named by `mailboxes.conversation`, used for all reviewer communication and the newsletter send. |
+| Credit line | The line code adds under each entry naming who shared its news, such as `- Ben Nicholls`. It appears in every rendering, including the newsletter sent to all staff. |
 | Delivery | Scheduled code that sends an approved newsletter and moves its screened emails. |
 | Extract record | The facts, people, category and sensitivity flags the extractor finds in one screened email. |
-| Flagged entry | An entry code marks for the reviewers because its item draws on a record with a sensitivity flag, such as a price or a person being congratulated. Flags appear in reviewer emails and the chat endpoint, never in the newsletter sent to all staff. |
+| Flagged entry | An entry code labels for the reviewers with the kinds of its sensitivity flags, because its item draws on a record with a sensitivity flag, such as a price or a person being congratulated. Labels appear wherever reviewers see the newsletter, by email or in the chat endpoint, never in the newsletter sent to all staff. |
 | HITL | Human in the loop: a person who reviews output before it takes effect. |
 | Immutable ID | Graph message ID that stays the same when a message moves folders. |
 | Item | One piece of news, merged by the consolidator from the extract records that report it. |
@@ -699,4 +707,5 @@ A synthetic corpus of staff emails is kept for manual runs against the dev tenan
 | Store | SQLite database holding newsletters, screened emails, drafts, versions, feedback and conversation history. |
 | Submissions mailbox | The shared mailbox named by `mailboxes.submissions`, where staff send updates. |
 | Version | A draft presented to the reviewers, numbered from 1 within its newsletter. |
+| Withheld flag | A sensitivity flag the extractor judges must not reach all staff unless a reviewer decides otherwise. A record carrying one is excluded until a reviewer restores it. |
 | Working draft | The draft the orchestrator is working on, not yet presented to the reviewers. |

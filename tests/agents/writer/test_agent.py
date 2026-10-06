@@ -116,3 +116,22 @@ def test_entry_outside_item_ids_is_a_problem() -> None:
     assert output_checks(draft.model_copy(update={"content": content}), ["item-1"]) == [
         "the entry for item-1 is not in item_ids"
     ]
+
+
+def test_a_person_listed_but_not_named_in_the_text_is_a_problem() -> None:
+    entry = Entry(
+        item_id="item-1",
+        text="Palo Alto Networks is raising prices from 3 October.",
+        people=["Ben Nicholls", "jeff mattan"],
+    )
+
+    assert output_checks(make_draft(entry), ["item-1"]) == [
+        "remove Ben Nicholls from the people of the item-1 entry: its text does not name them",
+        "remove jeff mattan from the people of the item-1 entry: its text does not name them",
+    ]
+
+
+def test_people_match_the_text_ignoring_case() -> None:
+    entry = Entry(item_id="item-1", text="Thanks to sam patel.", people=["Sam Patel"])
+
+    assert output_checks(make_draft(entry), ["item-1"]) == []

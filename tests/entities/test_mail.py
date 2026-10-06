@@ -203,8 +203,21 @@ def test_screened_email_is_the_email_with_its_outcome() -> None:
     )
 
 
-def test_passing_screened_email_keeps_its_fields_and_body() -> None:
-    screened = screen(_sender_email(), ["example.org"], [], [])
+FORWARDED = (
+    "Sharing this for everyone who orders laptops.\n\n"
+    "From: Litware <updates@example.com>\nSubject: Price changes\n\nPrices rise by 5 percent."
+)
+
+
+def test_passing_screened_email_keeps_its_fields_and_both_bodies() -> None:
+    email = make_email(
+        sender_address="priya.shah@example.org",
+        has_attachments=True,
+        unique_body="Sharing this for everyone who orders laptops.",
+        body=FORWARDED,
+    )
+
+    screened = screen(email, ["example.org"], [], [])
 
     assert screened.rejection is None
     assert screened.message_id == "m01"
@@ -213,7 +226,8 @@ def test_passing_screened_email_keeps_its_fields_and_body() -> None:
     assert screened.subject == "Signed Northwind Retail today"
     assert screened.received == datetime(2026, 9, 22, 15, 30, tzinfo=UTC)
     assert screened.has_attachments
-    assert screened.body == "Tom Evans and I signed Northwind Retail on 22 September."
+    assert screened.unique_body == "Sharing this for everyone who orders laptops."
+    assert screened.body == FORWARDED
 
 
 def test_screened_email_starts_unmoved() -> None:
@@ -235,11 +249,11 @@ def test_destination(address: str, extracted: bool, expected: str | None) -> Non
     assert destination(email, extracted) == expected
 
 
-def test_rejected_screened_email_drops_its_body() -> None:
+def test_rejected_screened_email_drops_both_bodies() -> None:
     screened = screen(_sender_email("alex.morgan@example.com"), ["example.org"], [], [])
 
     assert screened.rejection == "sender_domain"
-    assert screened.body is None
+    assert (screened.unique_body, screened.body) == (None, None)
     assert screened.subject == "Signed Northwind Retail today"
 
 

@@ -5,7 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from pulse.agents.orchestrator.run import Orchestrator, RunReply
-from pulse.entities.content import Content, Version
+from pulse.entities.content import Content, EntryCredits, EntryFlags, Version
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import PulseError
 from pulse.entities.lifecycle import Newsletter
@@ -27,7 +27,7 @@ class EmailChannel:
         store: Store,
         outbox: Outbox,
         reviewer_email: Callable[[Newsletter, Version, str | None], Awaitable[Body]],
-        render_newsletter: Callable[[Content, str | None], str],
+        render_newsletter: Callable[[Content, EntryCredits, str | None, EntryFlags], str],
         render_reply: Callable[[str], str],
         *,
         max_attempts: int,
@@ -74,7 +74,8 @@ class EmailChannel:
             # Exchange authenticated the sender, and accepts mail only from the reviewers list.
             author=email.sender_address,
             channel="email",
-            text=email.body,
+            # The new text only, so the quoted reviewer email never becomes feedback.
+            text=email.unique_body,
             received=email.received,
         )
         try:
@@ -105,7 +106,8 @@ class EmailChannel:
         if reply.version is not None and newsletter is not None:
             return await self._reviewer_email(newsletter, reply.version, reply.text)
         if reply.newsletter is not None:
-            html = self._render_newsletter(reply.newsletter, reply.text)
+            notes = reply.notes
+            html = self._render_newsletter(reply.newsletter, notes.credits, reply.text, notes.flags)
         else:
             html = self._render_reply(reply.text or "")
         return Body(content=html, content_type="html")

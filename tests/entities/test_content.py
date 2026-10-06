@@ -5,25 +5,35 @@ import pytest
 
 from pulse.entities.content import (
     CheckFailure,
+    Claim,
     Content,
     Entry,
+    EntryNotes,
+    FlaggedEntry,
+    Verdict,
     check_content,
     draft_changed,
+    entry_credits,
+    entry_flags,
+    flagged_entries,
     item_sources,
     require_draft,
     source_text,
     version_of,
 )
 from pulse.entities.errors import Refusal
+from pulse.entities.extracts import Sensitivity, restored
 from pulse.entities.mail import ScreenedEmail, screen
 from tests.emails import (
     make_draft,
     make_email,
+    make_extract_record,
     make_item,
     make_screened_email,
 )
 
 SECTION_TITLES = {"customer_win": "Customer wins", "shout_out": "Shout-outs"}
+NOTES = EntryNotes(credits={}, flags={})
 
 
 def _source(sender_name: str, subject: str, body: str) -> ScreenedEmail:
@@ -201,10 +211,9 @@ def test_intro_digit_not_in_sources_fails() -> None:
     assert _checks(_check(_content(intro="Big news for 2027."))) == [("digits", "intro")]
 
 
-def test_name_missing_from_entry_text_fails() -> None:
-    failures = _check(_entry_one("Priya Shah signed a deal.", ["Priya Shah", "Tom Evans"]))
-
-    assert _checks(failures) == [("people", "item-1")]
+def test_name_missing_from_entry_text_is_left_to_the_writer() -> None:
+    # The writer's output checks ensure every name in people is in the text.
+    assert _check(_entry_one("Priya Shah signed a deal.", ["Priya Shah", "Tom Evans"])) == []
 
 
 def test_name_not_in_sources_fails() -> None:
@@ -255,22 +264,16 @@ def test_three_sentences_fail(text: str) -> None:
     assert _checks(_check(_entry_one(text))) == [("sentences", "item-1")]
 
 
-def test_entry_missing_a_sender_fails() -> None:
+def test_an_entry_need_not_name_its_sender() -> None:
+    # The credit line names who shared the news, so the entry tells the news itself.
     content = _content(
         entries=[
-            ("customer_win", "item-1", "Priya Shah signed Northwind Retail.", []),
-            ("shout_out", "item-2", "Thanks to Sam Patel.", []),
+            ("customer_win", "item-1", "Northwind Retail signed on 22 September.", []),
+            ("shout_out", "item-2", "Thanks to Sam Patel.", ["Sam Patel"]),
         ]
     )
 
-    failures = _check(content)
-
-    assert _checks(failures) == [("senders", "item-2")]
-    assert "Dan Wood" in failures[0].detail
-
-
-def test_sender_matches_ignoring_case() -> None:
-    assert _check(_entry_one("priya shah signed Northwind Retail.")) == []
+    assert _check(content) == []
 
 
 def test_entry_for_item_not_included_fails() -> None:
@@ -346,7 +349,7 @@ def test_item_sources_maps_each_included_item_to_its_emails() -> None:
 
 def test_draft_changed_compares_the_content_with_the_latest_version() -> None:
     draft = make_draft()
-    latest = version_of(draft, 1, datetime(2026, 9, 26, 9, 0, tzinfo=UTC), [], None)
+    latest = version_of(draft, 1, datetime(2026, 9, 26, 9, 0, tzinfo=UTC), [], None, NOTES)
     revised = make_draft(Entry(item_id="item-1", text="Shorter.", people=[]))
 
     assert draft_changed(None, None) is False
@@ -371,3 +374,131 @@ def test_source_text_of_rejected_screened_email_is_subject_only() -> None:
     email = make_email(sender_address="alex.morgan@example.com", subject="Signed Northwind Retail")
 
     assert source_text(screen(email, ["example.org"], [], [])) == "Signed Northwind Retail"
+
+
+def test_names_and_digits_in_a_forwarded_message_are_in_the_sources() -> None:
+    email = make_email(
+        sender_name="Ben Carter",
+        subject="FW: Price changes",
+        unique_body="Sharing this for everyone who orders laptops.",
+        body="Sharing this for everyone who orders laptops.\n\n"
+        "From: Jo King, Litware\nLaptop prices rise by 5 percent on 1 November.",
+    )
+    sources = {"item-1": [screen(email, ["example.org"], [], [])]}
+    content = _content(
+        entries=[
+            (
+                "customer_win",
+                "item-1",
+                "Ben Carter shares that Jo King at Litware is raising prices by 5 percent.",
+                ["Ben Carter", "Jo King"],
+            )
+        ],
+        item_ids=["item-1"],
+        intro="Prices change on 1 November.",
+    )
+
+    assert _check(content, sources=sources) == []
+
+
+COMMERCIAL = Sensitivity(kind="financial", withheld=False, evidence="a supplier's prices")
+NAMED = Sensitivity(kind="named_person", withheld=False, evidence="thanks a colleague by name")
+PRIVATE = Sensitivity(
+    kind="personal_information", withheld=True, evidence="mentions a colleague's health"
+)
+FLAG_RECORDS = [
+    make_extract_record("m01", sensitivity=[COMMERCIAL]),
+    make_extract_record("m02"),
+    make_extract_record("m03", sensitivity=[NAMED]),
+    make_extract_record("m04"),
+]
+FLAG_ITEMS = [
+    make_item("item-1", source_message_ids=["m01", "m02", "m03"]),
+    make_item("item-2", source_message_ids=["m04"]),
+]
+
+
+def test_an_entry_carries_every_flag_of_its_items_source_records() -> None:
+    flags = entry_flags(_content(), FLAG_ITEMS, FLAG_RECORDS)
+
+    # The unflagged entry is left out.
+    assert flags == {"item-1": [COMMERCIAL, NAMED]}
+
+
+def test_a_restored_record_keeps_the_flags_it_was_excluded_for() -> None:
+    record = restored(
+        [make_extract_record("m04", sensitivity=[PRIVATE])], "excluded-1", "reviewer-oid"
+    )
+
+    flags = entry_flags(_content(), FLAG_ITEMS, [*FLAG_RECORDS[:3], record])
+
+    assert flags["item-2"] == [PRIVATE]
+
+
+def test_flags_come_from_the_records_not_the_entry() -> None:
+    records = [make_extract_record(m) for m in ("m01", "m02", "m03")]
+
+    flags = entry_flags(_content(), FLAG_ITEMS, [*records, FLAG_RECORDS[3]])
+
+    assert flags == {}
+
+
+def test_an_entry_naming_no_item_has_no_flags() -> None:
+    content = _content(entries=[("customer_win", "item-9", "Unknown.", [])], item_ids=["item-9"])
+
+    assert entry_flags(content, FLAG_ITEMS, FLAG_RECORDS) == {}
+
+
+def test_flagged_entries_list_each_flagged_entry_in_newsletter_order() -> None:
+    content = _content(
+        entries=[
+            ("customer_win", "item-2", "Unflagged.", []),
+            ("customer_win", "item-1", "First.", []),
+            ("shout_out", "item-1", "Second, sharing the item.", []),
+        ]
+    )
+    flags = entry_flags(content, FLAG_ITEMS, FLAG_RECORDS)
+
+    assert flagged_entries(content, flags) == [
+        FlaggedEntry(text="First.", flags=[COMMERCIAL, NAMED]),
+        FlaggedEntry(text="Second, sharing the item.", flags=[COMMERCIAL, NAMED]),
+    ]
+
+
+def test_each_included_item_is_credited_to_its_senders_once_each() -> None:
+    emails = [
+        make_screened_email("m01", sender_name="Priya Shah"),
+        make_screened_email("m02", sender_name="Tom Evans"),
+        make_screened_email("m03", sender_name="Priya Shah"),
+    ]
+    items = [make_item("item-1", source_message_ids=["m01", "m02", "m03"])]
+
+    assert entry_credits(_content(item_ids=["item-1"]), items, emails) == {
+        "item-1": ["Priya Shah", "Tom Evans"]
+    }
+
+
+def test_a_version_keeps_the_notes_it_was_presented_with() -> None:
+    notes = EntryNotes(credits={"item-1": ["Priya Shah"]}, flags={"item-1": [COMMERCIAL]})
+
+    version = version_of(make_draft(), 1, datetime(2026, 9, 26, 9, 0, tzinfo=UTC), [], None, notes)
+
+    assert version.notes == notes
+
+
+def test_a_verdict_is_supported_exactly_when_every_claim_has_a_source() -> None:
+    sourced = Claim(claim="Signed Northwind Retail", source="Signed Northwind Retail today")
+    unsourced = Claim(claim="Signed two customers", source=None)
+
+    assert Verdict(target="item-1", claims=[sourced]).supported
+    assert not Verdict(target="item-1", claims=[sourced, unsourced]).supported
+    assert Verdict(target="item-1", claims=[sourced, unsourced]).unsupported() == [
+        "Signed two customers"
+    ]
+
+
+def test_a_text_with_no_claims_is_supported() -> None:
+    # Warm wording such as a greeting states no fact, so it makes no claim.
+    verdict = Verdict(target="item-1", claims=[])
+
+    assert verdict.supported and verdict.unsupported() == []

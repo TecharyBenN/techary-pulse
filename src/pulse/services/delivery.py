@@ -6,7 +6,7 @@ from collections.abc import Callable
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from pulse.entities.content import Content
+from pulse.entities.content import Content, EntryCredits
 from pulse.entities.errors import Refusal, StoreError
 from pulse.entities.lifecycle import Newsletter, is_due, mark_sent, start_send
 from pulse.entities.mail import (
@@ -33,7 +33,7 @@ class Delivery:
         conversation_mailbox: Mailbox,
         submissions_mailbox: Mailbox,
         outbox: Outbox,
-        render_newsletter: Callable[[Content], str],
+        render_newsletter: Callable[[Content, EntryCredits], str],
         history_note: Callable[[str], bytes],
         clock: Callable[[], datetime],
         lock: asyncio.Lock,
@@ -93,7 +93,11 @@ class Delivery:
         email = OutboundEmail(
             to=[self._all_staff],
             subject=subject(self._subject_template, started.opened_at, self._timezone),
-            body=Body(content=self._render_newsletter(version.content), content_type="html"),
+            # Credit lines, but no flags: those are for the reviewers.
+            body=Body(
+                content=self._render_newsletter(version.content, version.notes.credits),
+                content_type="html",
+            ),
             # Staff replies arrive as pending emails for the next newsletter.
             reply_to=self._reply_to,
         )

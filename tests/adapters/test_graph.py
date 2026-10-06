@@ -52,7 +52,8 @@ async def test_listing_asks_for_plain_text_and_the_fields_pulse_reads() -> None:
     [request] = graph.requests
     assert 'outlook.body-content-type="text"' in request.headers["Prefer"]
     assert request.url.params["$select"] == (
-        "id,from,sender,subject,receivedDateTime,uniqueBody,internetMessageHeaders,hasAttachments"
+        "id,from,sender,subject,receivedDateTime,uniqueBody,body,internetMessageHeaders,"
+        "hasAttachments"
     )
     assert request.url.params["$top"] == "50"
 
@@ -71,22 +72,37 @@ async def test_listing_follows_every_page() -> None:
 
 async def test_listing_reads_headers_and_tolerates_missing_parts() -> None:
     graph = FakeGraph([make_email("m01")])
-    graph.inbox[0] |= {"subject": None, "internetMessageHeaders": None, "uniqueBody": None}
+    graph.inbox[0] |= {
+        "subject": None,
+        "internetMessageHeaders": None,
+        "uniqueBody": None,
+        "body": None,
+    }
 
     [email] = await _mailbox(graph).list_inbox()
 
-    assert (email.subject, email.headers, email.body) == ("", {}, "")
+    assert (email.subject, email.headers, email.unique_body, email.body) == ("", {}, "", "")
 
 
 async def test_listing_tolerates_parts_graph_leaves_out() -> None:
     # Graph omits these fields, rather than sending null, for a message that has none.
     graph = FakeGraph([make_email("m01")])
-    for field in ("subject", "internetMessageHeaders", "uniqueBody"):
+    for field in ("subject", "internetMessageHeaders", "uniqueBody", "body"):
         del graph.inbox[0][field]
 
     [email] = await _mailbox(graph).list_inbox()
 
-    assert (email.subject, email.headers, email.body) == ("", {}, "")
+    assert (email.subject, email.headers, email.unique_body, email.body) == ("", {}, "", "")
+
+
+async def test_listing_reads_the_new_content_and_the_whole_message() -> None:
+    forwarded = make_email(
+        "m01", unique_body="Sharing this.", body="Sharing this.\n\nFrom: Litware\nPrices rise."
+    )
+
+    [email] = await _mailbox(FakeGraph([forwarded])).list_inbox()
+
+    assert (email.unique_body, email.body) == (forwarded.unique_body, forwarded.body)
 
 
 async def test_listing_keeps_the_first_of_repeated_headers() -> None:

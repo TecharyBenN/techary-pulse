@@ -12,10 +12,14 @@ from pulse.entities.base import Entity
 from pulse.entities.content import (
     CheckFailure,
     Content,
+    EntryNotes,
     Version,
     WriterOutput,
     check_content,
     draft_changed,
+    entry_credits,
+    entry_flags,
+    flagged_entries,
     item_sources,
     require_draft,
     version_of,
@@ -56,9 +60,12 @@ class StartResult(Entity):
 
 
 class PresentResult(Entity):
-    """The version present_draft emailed, and whether it resent it or withdrew an approval."""
+    """The version present_draft emailed, how many of its entries are flagged, and whether it
+    resent it or withdrew an approval."""
 
     version: int
+    # How many of the version's entries are flagged for review.
+    flagged: int
     # Whether the draft was unchanged, so the latest version was emailed again as it was.
     resent: bool = False
     # Whether presenting withdrew an approval, and whether the reviewers were told so.
@@ -153,9 +160,10 @@ class Operations:
         return await self._check(newsletter.newsletter_id, draft.content)
 
     async def present_draft(self, email_reviewers: bool = True) -> PresentResult:
-        """Save the working draft as the next version, with its check failures and the judge's
-        latest verdicts, and email it to the reviewers, in the newsletter's email thread. When
-        the draft is unchanged since the latest version, email that version again instead.
+        """Save the working draft as the next version, with its check failures, the judge's
+        latest verdicts and its entry notes, and email it to the reviewers, in the newsletter's
+        email thread. When the draft is unchanged since the latest version, email that version
+        again instead.
 
         An approval is withdrawn, and the reviewers told, before anything else, so the approved
         version can no longer be sent. The version's email is sent before the version is saved,
@@ -178,6 +186,7 @@ class Operations:
             self._clock(),
             await self._check(newsletter_id, draft.content),
             await self._store.get_verdicts(newsletter_id),
+            await entry_notes(self._store, newsletter_id, draft.content),
         )
         presented = present(newsletter)
         if email_reviewers:
@@ -185,10 +194,11 @@ class Operations:
             sent_id = await self._outbox.to_reviewers(newsletter, body)
             presented = presented.model_copy(update={"thread_message_id": sent_id})
         await self._store.save_version(presented, version)
-        if withdrawn is None:
-            return PresentResult(version=version.version)
         return PresentResult(
-            version=version.version, approval_withdrawn=True, notice_sent=withdrawn
+            version=version.version,
+            flagged=_flagged(version),
+            approval_withdrawn=withdrawn is not None,
+            notice_sent=withdrawn,
         )
 
     async def approve(self, version: int, caller: str | None, message: str | None) -> ApproveResult:
@@ -223,7 +233,7 @@ class Operations:
         require_changeable(newsletter)
         if email_reviewers:
             await self._outbox.thread(newsletter, await self.reviewer_email(newsletter, latest))
-        return PresentResult(version=latest.version, resent=True)
+        return PresentResult(version=latest.version, flagged=_flagged(latest), resent=True)
 
     async def reviewer_email(
         self, newsletter: Newsletter, version: Version, reply: str | None = None
@@ -275,3 +285,18 @@ class Operations:
             self._categories,
             self._max_words,
         )
+
+
+async def entry_notes(store: Store, newsletter_id: str, content: Content) -> EntryNotes:
+    """The credit lines and flags of the content's entries, from the newsletter's current items,
+    extract records and screened emails."""
+    consolidation = await store.get_items(newsletter_id)
+    items = consolidation.items if consolidation else []
+    return EntryNotes(
+        credits=entry_credits(content, items, await store.list_screened_emails(newsletter_id)),
+        flags=entry_flags(content, items, await store.list_extract_records(newsletter_id)),
+    )
+
+
+def _flagged(version: Version) -> int:
+    return len(flagged_entries(version.content, version.notes.flags))

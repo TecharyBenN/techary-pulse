@@ -50,6 +50,7 @@ _INBOX_FIELDS = [
     "subject",
     "receivedDateTime",
     "uniqueBody",
+    "body",
     "internetMessageHeaders",
     "hasAttachments",
 ]
@@ -180,7 +181,8 @@ def _inbound(message: Message) -> InboundEmail:
                 "subject": message.subject or "",
                 "received": message.received_date_time,
                 "has_attachments": message.has_attachments,
-                "body": (message.unique_body.content if message.unique_body else None) or "",
+                "unique_body": _text(message.unique_body),
+                "body": _text(message.body),
                 "headers": headers,
             }
         )
@@ -192,6 +194,11 @@ def _id(item: Message | MailFolder | None) -> str:
     if item is None or item.id is None:
         raise MailboxError("Graph returned no ID")
     return item.id
+
+
+def _text(body: ItemBody | None) -> str:
+    """A listed body's plain text; Graph leaves out, or sends null for, a message with none."""
+    return (body.content if body else None) or ""
 
 
 def _item_body(body: Body) -> ItemBody:

@@ -7,7 +7,9 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
 
-from pulse.entities.content import JudgeOutput, Verdict, Version, WriterOutput
+from pydantic import TypeAdapter
+
+from pulse.entities.content import Verdict, Version, WriterOutput
 from pulse.entities.conversation import HandledMessage, ReviewerMessage
 from pulse.entities.errors import StoreError
 from pulse.entities.extracts import Consolidation, ExtractorOutput, ExtractRecord, make_record
@@ -18,6 +20,7 @@ from pulse.entities.store import HistoryRow
 _NEWSLETTER_COLUMNS = tuple(Newsletter.model_fields)
 _FEEDBACK_COLUMNS = ("newsletter_id", *ReviewerMessage.model_fields)
 _SCREENED_EMAIL_COLUMNS = ("newsletter_id", *ScreenedEmail.model_fields)
+_VERDICTS = TypeAdapter(list[Verdict])
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS newsletters (
@@ -128,25 +131,20 @@ class SqliteStore:
                 "SELECT message_id, excluded_id, data FROM extract_records WHERE newsletter_id = ?"
             )
             saved = connection.execute(sql, (newsletter_id,)).fetchall()
-            previous = next(
-                (_record(row) for row in saved if row["message_id"] == message_id), None
-            )
+            # Each email is extracted once, so an extraction that ran at the same time as
+            # another of the same email changes nothing.
+            for row in saved:
+                if row["message_id"] == message_id:
+                    return _record(row)
             used_ids = [row["excluded_id"] for row in saved if row["excluded_id"]]
-            record = make_record(message_id, output, previous, used_ids)
+            record = make_record(message_id, output, used_ids)
             row = {
                 "newsletter_id": newsletter_id,
                 "message_id": record.message_id,
                 "excluded_id": record.excluded_id,
                 "data": record.model_dump_json(),
             }
-            # An upsert keeps the row's position, so records stay in the order first saved.
-            connection.execute(
-                "INSERT INTO extract_records (newsletter_id, message_id, excluded_id, data)"
-                " VALUES (:newsletter_id, :message_id, :excluded_id, :data)"
-                " ON CONFLICT (newsletter_id, message_id)"
-                " DO UPDATE SET excluded_id = excluded.excluded_id, data = excluded.data",
-                row,
-            )
+            _insert(connection, "INSERT", "extract_records", row)
             return record
 
         return await self._execute(save)
@@ -181,7 +179,7 @@ class SqliteStore:
 
     async def save_verdicts(self, newsletter_id: str, verdicts: Sequence[Verdict]) -> None:
         sql = "UPDATE drafts SET verdicts = ? WHERE newsletter_id = ?"
-        params = (JudgeOutput(verdicts=list(verdicts)).model_dump_json(), newsletter_id)
+        params = (_VERDICTS.dump_json(list(verdicts)).decode(), newsletter_id)
         await self._execute(lambda connection: connection.execute(sql, params))
 
     async def get_verdicts(self, newsletter_id: str) -> list[Verdict] | None:
@@ -189,7 +187,7 @@ class SqliteStore:
         row = await self._execute(lambda c: c.execute(sql, (newsletter_id,)).fetchone())
         if row is None or row["verdicts"] is None:
             return None
-        return JudgeOutput.model_validate_json(row["verdicts"]).verdicts
+        return _VERDICTS.validate_json(row["verdicts"])
 
     async def save_version(self, newsletter: Newsletter, version: Version) -> None:
         row = {

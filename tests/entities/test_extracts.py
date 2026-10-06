@@ -30,7 +30,17 @@ from tests.emails import (
     make_screened_email,
 )
 
-FLAG = Sensitivity(type="commercial", evidence="mentions annual contract value")
+# The same kinds can be fine to share or withheld; only the extractor's judgement decides.
+FLAG = Sensitivity(
+    kind="personal_information", withheld=True, evidence="mentions a colleague's health"
+)
+NEW_BABY = Sensitivity(
+    kind="personal_information", withheld=False, evidence="congratulates a colleague on a baby"
+)
+PROFITS = Sensitivity(kind="financial", withheld=False, evidence="shares profits as good news")
+CASHFLOW = Sensitivity(kind="financial", withheld=True, evidence="an internal cashflow problem")
+COMMERCIAL = Sensitivity(kind="financial", withheld=False, evidence="a supplier's prices")
+NAMED = Sensitivity(kind="named_person", withheld=False, evidence="thanks a colleague by name")
 REVIEWER = "reviewer-oid"
 
 
@@ -39,14 +49,32 @@ def test_included_record_has_no_outcome() -> None:
 
 
 @pytest.mark.parametrize(
+    "kind", ["named_person", "personal_information", "financial", "confidential", "inappropriate"]
+)
+@pytest.mark.parametrize(("withheld", "expected"), [(True, "sensitivity"), (False, None)])
+def test_only_a_withheld_flag_excludes_whatever_its_kind(
+    kind: str, withheld: bool, expected: str | None
+) -> None:
+    flag = Sensitivity.model_validate({"kind": kind, "withheld": withheld, "evidence": "x"})
+
+    assert exclusion_outcome(make_output(sensitivity=[flag])) == expected
+
+
+@pytest.mark.parametrize(
     ("changes", "expected"),
     [
+        ({"sensitivity": [PROFITS]}, None),
+        ({"sensitivity": [CASHFLOW]}, "sensitivity"),
+        ({"sensitivity": [NEW_BABY]}, None),
         ({"sensitivity": [FLAG]}, "sensitivity"),
+        ({"sensitivity": [COMMERCIAL, FLAG]}, "sensitivity"),
         ({"sensitivity": [FLAG], "category": None}, "sensitivity"),
         ({"category": None}, "no_category"),
+        ({"sensitivity": [COMMERCIAL], "category": None}, "no_category"),
+        ({"sensitivity": [COMMERCIAL, NAMED]}, None),
     ],
 )
-def test_exclusion(changes: dict[str, Any], expected: str) -> None:
+def test_exclusion(changes: dict[str, Any], expected: str | None) -> None:
     assert exclusion_outcome(make_output(**changes)) == expected
 
 
@@ -55,15 +83,21 @@ def test_output_rejects_extra_fields() -> None:
         make_output(confidence=0.9)
 
 
-def test_record_rejects_unknown_sensitivity_type() -> None:
+@pytest.mark.parametrize("kind", ["secret", "commercial", "personal_named"])
+def test_record_rejects_unknown_sensitivity_kind(kind: str) -> None:
     with pytest.raises(ValueError):
-        Sensitivity(type="secret", evidence="x")
+        Sensitivity.model_validate({"kind": kind, "withheld": False, "evidence": "x"})
 
 
-def _record(
-    output: ExtractorOutput, previous: ExtractRecord | None = None, *used: str
-) -> ExtractRecord:
-    return make_record("m01", output, previous, used)
+def test_included_record_keeps_its_flags() -> None:
+    record = _record(make_output(sensitivity=[COMMERCIAL, NAMED]))
+
+    assert (record.exclusion, record.excluded_id) == (None, None)
+    assert record.sensitivity == [COMMERCIAL, NAMED]
+
+
+def _record(output: ExtractorOutput, *used: str) -> ExtractRecord:
+    return make_record("m01", output, used)
 
 
 def test_included_record_has_no_excluded_id() -> None:
@@ -91,41 +125,9 @@ def test_first_excluded_record_is_numbered_from_one() -> None:
 
 
 def test_next_excluded_record_follows_the_highest_number() -> None:
-    record = _record(make_output(category=None), None, "excluded-1", "excluded-3")
+    record = _record(make_output(category=None), "excluded-1", "excluded-3")
 
     assert record.excluded_id == "excluded-4"
-
-
-def test_replaced_record_keeps_its_excluded_id_while_excluded() -> None:
-    previous = _record(make_output(category=None), None, "excluded-1")
-
-    record = _record(make_output(sensitivity=[FLAG]), previous, "excluded-1", "excluded-2")
-
-    assert (record.exclusion, record.excluded_id) == ("sensitivity", "excluded-2")
-
-
-def test_replaced_record_that_is_included_loses_its_excluded_id() -> None:
-    previous = _record(make_output(category=None))
-
-    assert _record(make_output(), previous, "excluded-1").excluded_id is None
-
-
-def test_record_excluded_again_after_inclusion_gets_a_new_number() -> None:
-    previous = _record(make_output())
-
-    assert _record(make_output(category=None), previous, "excluded-1").excluded_id == "excluded-2"
-
-
-def test_restored_record_stays_included_when_extracted_again() -> None:
-    previous = restored([_record(make_output(sensitivity=[FLAG]))], "excluded-1", REVIEWER)
-
-    record = _record(make_output(sensitivity=[FLAG]), previous, "excluded-1")
-
-    assert (record.exclusion, record.excluded_id, record.restored_by) == (
-        None,
-        "excluded-1",
-        REVIEWER,
-    )
 
 
 def test_restoring_includes_the_record_and_records_the_reviewer() -> None:
@@ -157,24 +159,13 @@ SECOND = make_extract_record("m02", people=["Tom Evans", "Aisha Khan"])
 EXCLUDED = make_extract_record("m03", category=None)
 
 
-def test_input_is_the_named_included_records_once_each() -> None:
-    records = [INCLUDED, SECOND, EXCLUDED]
-
-    assert consolidation_input(records, ["m02", "m01", "m02"]) == [SECOND, INCLUDED]
+def test_input_is_every_included_record() -> None:
+    assert consolidation_input([INCLUDED, SECOND, EXCLUDED]) == [INCLUDED, SECOND]
 
 
-def test_input_refuses_excluded_and_unextracted_records() -> None:
-    with pytest.raises(Refusal) as refused:
-        consolidation_input([INCLUDED, EXCLUDED], ["m01", "m03", "m99"])
-
-    assert str(refused.value) == (
-        "m03 is excluded as excluded-1; m99 has no extract record in the open newsletter"
-    )
-
-
-def test_input_refuses_when_no_records_are_named() -> None:
-    with pytest.raises(Refusal, match="no extract records were named"):
-        consolidation_input([INCLUDED], [])
+def test_input_refuses_when_no_record_is_included() -> None:
+    with pytest.raises(Refusal, match="the newsletter has no included extract records"):
+        consolidation_input([EXCLUDED])
 
 
 def test_consolidation_numbers_items_in_order_and_gives_them_their_sources_people() -> None:
@@ -248,7 +239,7 @@ def test_restored_record_is_included_in_the_items() -> None:
     record = restored([EXCLUDED], "excluded-1", REVIEWER)
 
     assert not items_up_to_date(_stored(make_item(source_message_ids=["m01"])), [INCLUDED, record])
-    assert consolidation_input([INCLUDED, record], ["m01", "m03"]) == [INCLUDED, record]
+    assert consolidation_input([INCLUDED, record]) == [INCLUDED, record]
 
 
 def test_sender_names_are_each_sender_once_in_order() -> None:

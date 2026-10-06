@@ -30,7 +30,7 @@ from pulse.agents.orchestrator.tools import Tools
 from pulse.agents.writer.agent import build_writer
 from pulse.config import Config, ConfigError, load_config
 from pulse.entities.errors import PulseError
-from pulse.entities.mail import Mailbox, screen
+from pulse.entities.mail import InboundEmail, Mailbox, ScreenedEmail, screen
 from pulse.entities.store import Store
 from pulse.entrypoints.chat import create_app, serve
 from pulse.entrypoints.email import EmailChannel
@@ -131,6 +131,16 @@ def build_outbox(config: Config, conversation: Mailbox, store: Store, renderer: 
     )
 
 
+def build_screen(config: Config) -> Callable[[InboundEmail], ScreenedEmail]:
+    """The pre-filter, with the configured senders and sensitivity labels."""
+    return functools.partial(
+        screen,
+        allowed_sender_domains=config.allowed_sender_domains,
+        allowed_senders=config.allowed_senders,
+        allowed_sensitivity_labels=config.allowed_sensitivity_labels,
+    )
+
+
 def build_operations(
     config: Config,
     store: Store,
@@ -139,17 +149,11 @@ def build_operations(
     renderer: Renderer,
     clock: Callable[[], datetime],
 ) -> Operations:
-    screen_email = functools.partial(
-        screen,
-        allowed_sender_domains=config.allowed_sender_domains,
-        allowed_senders=config.allowed_senders,
-        allowed_sensitivity_labels=config.allowed_sensitivity_labels,
-    )
     return Operations(
         store,
         submissions,
         outbox,
-        screen_email,
+        build_screen(config),
         renderer.reviewer_email,
         clock,
         send_rule=config.send,

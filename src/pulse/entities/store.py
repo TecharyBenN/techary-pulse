@@ -55,7 +55,8 @@ class Store(Protocol):
     async def save_extract(
         self, newsletter_id: str, message_id: MessageId, output: ExtractorOutput
     ) -> ExtractRecord:
-        """Save the output as the email's extract record, replacing any earlier one."""
+        """Save the output as the email's extract record and return it; an email that already
+        has a record keeps it, and that record is returned."""
         ...
 
     async def save_restored(self, newsletter_id: str, record: ExtractRecord) -> None:

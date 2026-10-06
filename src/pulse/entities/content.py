@@ -1,4 +1,4 @@
-"""Newsletter content, the working draft, versions and the draft checks."""
+"""Newsletter content, the working draft, versions, entry notes and the draft checks."""
 
 import re
 from collections import Counter
@@ -11,17 +11,20 @@ from pydantic import AwareDatetime, PositiveInt
 
 from pulse.entities.base import Entity, StrictEntity
 from pulse.entities.errors import Refusal
-from pulse.entities.extracts import Item, sender_names
+from pulse.entities.extracts import ExtractRecord, Item, Sensitivity, sender_names
 from pulse.entities.mail import ScreenedEmail
 
-CheckName = Literal[
-    "word_count", "dashes", "digits", "people", "sentences", "senders", "items", "categories"
-]
+CheckName = Literal["word_count", "dashes", "digits", "people", "sentences", "items", "categories"]
 
 _DASHES = ("\N{EN DASH}", "\N{EM DASH}")
 _DIGITS = re.compile(r"[0-9]+")
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
 _MAX_SENTENCES = 2
+
+# The sensitivity flags of each flagged entry, by the entry's item ID.
+EntryFlags = dict[str, list[Sensitivity]]
+# The sender names each entry's credit line names, by the entry's item ID.
+EntryCredits = dict[str, list[str]]
 
 
 class Entry(StrictEntity):
@@ -70,20 +73,33 @@ class WriterOutput(StrictEntity):
     not_applied: list[NotApplied]
 
 
-class Verdict(StrictEntity):
-    """Whether the judge found the intro, or an entry, supported by its facts and feedback."""
+class Claim(StrictEntity):
+    """One claim a text makes, with the fact or feedback that states it."""
 
-    # "intro", or the entry's item ID.
-    target: str
-    supported: bool
-    # The unsupported claim, or None when the text is supported.
-    claim: str | None
+    claim: str
+    # Quoted from the facts or feedback, or None when nothing states it or a fact contradicts it.
+    source: str | None
 
 
 class JudgeOutput(StrictEntity):
-    """The judge's verdicts on the intro and each entry."""
+    """Each claim one text, the intro or an entry, makes, with its source."""
 
-    verdicts: list[Verdict]
+    claims: list[Claim]
+
+
+class Verdict(JudgeOutput):
+    """A judge's output with the text it is about, which code gives it."""
+
+    # "intro", or the entry's item ID.
+    target: str
+
+    @property
+    def supported(self) -> bool:
+        return not self.unsupported()
+
+    def unsupported(self) -> list[str]:
+        """The claims nothing in the facts or feedback states."""
+        return [claim.claim for claim in self.claims if claim.source is None]
 
 
 class CheckFailure(Entity):
@@ -95,6 +111,14 @@ class CheckFailure(Entity):
     detail: str
 
 
+class EntryNotes(Entity):
+    """What code adds to the writer's entries: credit lines for everyone, and flags for the
+    reviewers."""
+
+    credits: EntryCredits
+    flags: EntryFlags
+
+
 class Version(WriterOutput):
     """A working draft as presented to the reviewers."""
 
@@ -103,6 +127,8 @@ class Version(WriterOutput):
     check_failures: list[CheckFailure]
     # None when the version was not judged.
     verdicts: list[Verdict] | None
+    # Saved as presented, so they stay the same when the items change later.
+    notes: EntryNotes
 
 
 def version_of(
@@ -111,6 +137,7 @@ def version_of(
     created_at: datetime,
     check_failures: Sequence[CheckFailure],
     verdicts: Sequence[Verdict] | None,
+    notes: EntryNotes,
 ) -> Version:
     """The working draft as the version it is presented as."""
     return Version(
@@ -119,7 +146,56 @@ def version_of(
         created_at=created_at,
         check_failures=list(check_failures),
         verdicts=None if verdicts is None else list(verdicts),
+        notes=notes,
     )
+
+
+class FlaggedEntry(Entity):
+    """A flagged entry's text with its flags, as the flagged for review list shows it."""
+
+    text: str
+    flags: list[Sensitivity]
+
+
+def entry_flags(
+    content: Content, items: Sequence[Item], records: Sequence[ExtractRecord]
+) -> EntryFlags:
+    """Flag each entry with every sensitivity flag of its item's source records.
+
+    Flags come from the records, never from the writer's output. Unflagged entries, and IDs
+    that name no item, are left out.
+    """
+    by_message = {record.message_id: record for record in records}
+    by_id = {item.item_id: item.source_message_ids for item in items}
+    flags: EntryFlags = {}
+    for entry in content.entries():
+        found = [
+            flag
+            for message_id in by_id.get(entry.item_id, [])
+            for flag in by_message[message_id].sensitivity
+        ]
+        if found:
+            flags[entry.item_id] = found
+    return flags
+
+
+def entry_credits(
+    content: Content, items: Sequence[Item], emails: Sequence[ScreenedEmail]
+) -> EntryCredits:
+    """Credit each included item to the senders of its source emails, each once."""
+    return {
+        item_id: sender_names(sources)
+        for item_id, sources in item_sources(content, items, emails).items()
+    }
+
+
+def flagged_entries(content: Content, flags: EntryFlags) -> list[FlaggedEntry]:
+    """The flagged entries in the order the newsletter shows them."""
+    return [
+        FlaggedEntry(text=entry.text, flags=flags[entry.item_id])
+        for entry in content.entries()
+        if entry.item_id in flags
+    ]
 
 
 def require_draft(draft: WriterOutput | None) -> WriterOutput:
@@ -146,7 +222,8 @@ def item_sources(
 
 
 def source_text(email: ScreenedEmail) -> str:
-    """The text names and numbers in a draft are checked against."""
+    """The text names and numbers in a draft are checked against: the subject and the whole
+    body, including any message it forwards or quotes."""
     return "\n".join(part for part in (email.subject, email.body) if part)
 
 
@@ -238,11 +315,8 @@ def _people(context: _Context) -> Iterator[CheckFailure]:
             *context.senders(entry.item_id),
             *context.feedback,
         ]
+        # The writer's output checks already ensure every name is in the entry's text.
         for name in entry.people:
-            if not _contains(entry.text, name):
-                yield CheckFailure(
-                    check="people", target=entry.item_id, detail=f"{name} is not in the entry"
-                )
             if not _in_any(sources, name):
                 yield CheckFailure(
                     check="people",
@@ -256,15 +330,6 @@ def _sentences(context: _Context) -> Iterator[CheckFailure]:
         count = sum(1 for part in _SENTENCE_END.split(entry.text) if part.strip())
         if count > _MAX_SENTENCES:
             yield CheckFailure(check="sentences", target=entry.item_id, detail=f"{count} sentences")
-
-
-def _senders(context: _Context) -> Iterator[CheckFailure]:
-    for entry in context.content.entries():
-        for sender in context.senders(entry.item_id):
-            if not _contains(entry.text, sender):
-                yield CheckFailure(
-                    check="senders", target=entry.item_id, detail=f"{sender} is not named"
-                )
 
 
 def _items(context: _Context) -> Iterator[CheckFailure]:
@@ -294,7 +359,6 @@ _CHECKS: tuple[Callable[[_Context], Iterator[CheckFailure]], ...] = (
     _digits,
     _people,
     _sentences,
-    _senders,
     _items,
     _categories,
 )

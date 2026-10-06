@@ -11,16 +11,21 @@ from pulse.entities.errors import Refusal
 from pulse.entities.lifecycle import require_reviewer
 from pulse.entities.mail import MessageId, ScreenedEmail
 
-SensitivityType = Literal["commercial", "personal", "unannounced", "inappropriate"]
+SensitivityKind = Literal[
+    "named_person", "personal_information", "financial", "confidential", "inappropriate"
+]
 ExclusionReason = Literal["sensitivity", "no_category"]
 
 _EXCLUDED_ID = re.compile(r"excluded-([0-9]+)")
 
 
 class Sensitivity(StrictEntity):
-    """A sensitivity flag the extractor raised, with its evidence."""
+    """A sensitivity flag the extractor raised: what it is, whether it must be withheld from
+    all staff, and its evidence."""
 
-    type: SensitivityType
+    kind: SensitivityKind
+    # The extractor's judgement; the kind never decides it.
+    withheld: bool
     evidence: str
 
 
@@ -38,7 +43,7 @@ class ExtractorOutput(StrictEntity):
 
 def exclusion_outcome(output: ExtractorOutput) -> ExclusionReason | None:
     """The exclusion rules: why code excludes the record, or None when it is included."""
-    if output.sensitivity:
+    if any(flag.withheld for flag in output.sensitivity):
         return "sensitivity"
     if output.category is None:
         return "no_category"
@@ -58,28 +63,17 @@ class ExtractRecord(ExtractorOutput):
 
 
 def make_record(
-    message_id: MessageId,
-    output: ExtractorOutput,
-    previous: ExtractRecord | None,
-    used_ids: Collection[str],
+    message_id: MessageId, output: ExtractorOutput, used_ids: Collection[str]
 ) -> ExtractRecord:
-    """Apply the exclusion rules, keeping the excluded ID and any restore of the record this
-    one replaces, so extracting again never undoes a reviewer's restore.
-
-    `used_ids` holds the excluded IDs in use within the newsletter.
-    """
-    restored_by = previous.restored_by if previous else None
-    exclusion = None if restored_by else exclusion_outcome(output)
-    excluded_id = None
-    if exclusion is not None or restored_by:
-        excluded_id = previous.excluded_id if previous else None
-        excluded_id = excluded_id or f"excluded-{_highest(used_ids) + 1}"
+    """Apply the exclusion rules, numbering an excluded record after the excluded IDs in use
+    within the newsletter, `used_ids`."""
+    exclusion = exclusion_outcome(output)
     return ExtractRecord(
         **output.model_dump(),
         message_id=message_id,
         exclusion=exclusion,
-        excluded_id=excluded_id,
-        restored_by=restored_by,
+        excluded_id=None if exclusion is None else f"excluded-{_highest(used_ids) + 1}",
+        restored_by=None,
     )
 
 
@@ -138,24 +132,12 @@ class SourcedItem(Item):
     received: list[AwareDatetime]
 
 
-def consolidation_input(
-    records: Sequence[ExtractRecord], message_ids: Sequence[MessageId]
-) -> list[ExtractRecord]:
-    """The named records, once each; refuse unless every one is an included record."""
-    if not message_ids:
-        raise Refusal("no extract records were named")
-    by_id = {record.message_id: record for record in records}
-    named = list(dict.fromkeys(message_ids))
-    problems = []
-    for message_id in named:
-        record = by_id.get(message_id)
-        if record is None:
-            problems.append(f"{message_id} has no extract record in the open newsletter")
-        elif record.exclusion is not None:
-            problems.append(f"{message_id} is excluded as {record.excluded_id}")
-    if problems:
-        raise Refusal("; ".join(problems))
-    return [by_id[message_id] for message_id in named]
+def consolidation_input(records: Sequence[ExtractRecord]) -> list[ExtractRecord]:
+    """The included records; refuse when there are none."""
+    included = [record for record in records if record.exclusion is None]
+    if not included:
+        raise Refusal("the newsletter has no included extract records")
+    return included
 
 
 def make_consolidation(
@@ -177,7 +159,7 @@ def make_consolidation(
 def items_up_to_date(consolidation: Consolidation | None, records: Sequence[ExtractRecord]) -> bool:
     """Whether the items are built from exactly the included records.
 
-    New extractions, and records excluded on re-extraction, both leave the items out of date.
+    New extractions and restored records both leave the items out of date.
     """
     included = {record.message_id for record in records if record.exclusion is None}
     items = consolidation.items if consolidation else []

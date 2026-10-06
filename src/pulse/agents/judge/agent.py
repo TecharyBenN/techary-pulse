@@ -1,14 +1,14 @@
-"""The judge agent, which says whether the intro and each entry are supported by the facts and
-feedback: its definition, prompt and output checks."""
+"""The judge agent, which says whether one text, the intro or an entry, is supported by its facts
+and the feedback: its definition, prompt and output checks."""
 
-from collections import Counter
 from collections.abc import Sequence
+from typing import Literal
 
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models import Model
 
-from pulse.agents.prompts import data_block, feedback_block, read_instructions
-from pulse.entities.content import Content, JudgeOutput
+from pulse.agents.prompts import data_block, feedback_block, keyed, read_instructions
+from pulse.entities.content import JudgeOutput
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.extracts import SourcedItem
 
@@ -25,39 +25,17 @@ def build_judge(model: Model) -> Agent[None, JudgeOutput]:
 
 
 def judge_prompt(
-    content: Content, items: Sequence[SourcedItem], feedback: Sequence[ReviewerMessage]
+    part: Literal["intro", "entry"],
+    text: str,
+    items: Sequence[SourcedItem],
+    feedback: Sequence[ReviewerMessage],
 ) -> str:
-    """Every input stays inside a delimited block, never in the instructions."""
-    draft = {
-        "intro": content.intro,
-        "entries": [{"item_id": e.item_id, "text": e.text} for e in content.entries()],
-    }
+    """One text with the items whose facts may support it: every item for the intro, its own
+    for an entry. Every input stays inside a delimited block, never in the instructions."""
     return "\n\n".join(
         [
-            data_block("draft", draft),
-            data_block(
-                "items", [item.model_dump(mode="json", include=_ITEM_FIELDS) for item in items]
-            ),
+            data_block("text", {"part": part, "text": text}),
+            data_block("items", [keyed(item, "item_id", _ITEM_FIELDS) for item in items]),
             feedback_block(feedback),
         ]
     )
-
-
-def output_checks(output: JudgeOutput, content: Content) -> list[str]:
-    """The intro and every entry each need exactly one verdict."""
-    targets = ["intro", *(entry.item_id for entry in content.entries())]
-    counts = Counter(verdict.target for verdict in output.verdicts)
-    unknown = [
-        f"{target} is not the intro or an entry's item ID"
-        for target in counts
-        if target not in targets
-    ]
-    miscounted = [
-        f"{target} has {counts[target]} verdicts" for target in targets if counts[target] != 1
-    ]
-    claims = [
-        f"the verdict on {verdict.target} must name a claim exactly when it is not supported"
-        for verdict in output.verdicts
-        if verdict.supported == (verdict.claim is not None)
-    ]
-    return unknown + miscounted + claims

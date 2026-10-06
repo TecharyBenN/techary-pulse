@@ -11,7 +11,7 @@ from pulse.agents.consolidator.agent import build_consolidator, consolidator_pro
 from pulse.agents.runner import run_specialist
 from pulse.config import load_config
 from pulse.entities.extracts import ExtractorOutput, make_record
-from tests.emails import corpus_messages
+from tests.emails import CORPUS_ITEM_SOURCES, corpus_messages
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
 
@@ -23,7 +23,7 @@ async def test_duplicate_reports_merge_into_single_items() -> None:
     )
     model = OpenAIChatModel(config.llm.models["consolidator"], provider=provider)
     extracted = [
-        make_record(m["id"], ExtractorOutput.model_validate(m["extract"]), None, [])
+        make_record(m["id"], ExtractorOutput.model_validate(m["extract"]), [])
         for m in corpus_messages()
         if "extract" in m
     ]
@@ -37,4 +37,4 @@ async def test_duplicate_reports_merge_into_single_items() -> None:
 
     print(output.model_dump_json(indent=2))
     sources = sorted(sorted(item.source_message_ids) for item in output.items)
-    assert sources == [["m01", "m02"], ["m03", "m06"], ["m04"], ["m05"]]
+    assert sources == sorted(sorted(item) for item in CORPUS_ITEM_SOURCES)

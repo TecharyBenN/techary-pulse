@@ -21,7 +21,13 @@ from tests.emails import (
     stored_outcomes,
 )
 from tests.fakes.mailbox import FakeMailbox
-from tests.live import conversation_id, graph_mailbox, live_graph, live_orchestrator
+from tests.live import (
+    check_seeded_inbox,
+    conversation_id,
+    graph_mailbox,
+    live_graph,
+    live_orchestrator,
+)
 from tests.messages import make_message, make_newsletter
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
@@ -63,8 +69,7 @@ async def test_the_corpus_is_extracted_and_consolidated(tmp_path: Path) -> None:
     await store.initialise()
     async with live_graph(config) as client:
         mailbox = graph_mailbox(config, client, config.mailboxes.submissions)
-        inbox = sorted(email.subject for email in await mailbox.list_inbox())
-        assert inbox == sorted(corpus), "reset the dev inbox and seed the corpus once"
+        check_seeded_inbox(config, await mailbox.list_inbox())
         orchestrator = live_orchestrator(config, store, mailbox, FakeMailbox())
 
         drafted = (
@@ -80,15 +85,18 @@ async def test_the_corpus_is_extracted_and_consolidated(tmp_path: Path) -> None:
     newsletter = await store.get_open_newsletter()
     assert newsletter is not None
     emails = await store.list_screened_emails(newsletter.newsletter_id)
-    corpus_id = {email.message_id: corpus[email.subject] for email in emails}
+    # Other inbox messages, which the pre-filter rejects, are left out.
+    corpus_id = {e.message_id: corpus[e.subject] for e in emails if e.subject in corpus}
     outcomes = await stored_outcomes(store, newsletter.newsletter_id)
-    assert {corpus_id[m]: outcome for m, outcome in outcomes.items()} == {
+    assert {corpus_id[m]: o for m, o in outcomes.items() if m in corpus_id} == {
         m: CORPUS_OUTCOMES[m] for m in corpus.values()
     }
     items = await store.get_items(newsletter.newsletter_id)
     assert items is not None
     sources = [sorted(corpus_id[m] for m in item.source_message_ids) for item in items.items]
-    assert sorted(sources) == CORPUS_ITEM_SOURCES
+    # Emails kept out of the dev inbox are in no item.
+    seeded = [[m for m in item if m in corpus.values()] for item in CORPUS_ITEM_SOURCES]
+    assert sorted(sources) == sorted(item for item in seeded if item)
     for reply in (drafted, shown):
         assert reply is not None
         assert not _MESSAGE_ID.search(reply)

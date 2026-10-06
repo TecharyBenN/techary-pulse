@@ -2,13 +2,24 @@
 and the test fails, so it is reviewed before it is used; update one by deleting it and
 running the test again."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from pulse.adapters.render import escape_markdown
-from pulse.entities.content import CheckFailure, Content, Entry, NotApplied, Section, Version
+from pulse.adapters.render import credit, escape_markdown, labels
+from pulse.entities.content import (
+    CheckFailure,
+    Content,
+    Entry,
+    EntryNotes,
+    NotApplied,
+    Section,
+    Version,
+    entry_credits,
+    entry_flags,
+)
 from pulse.entities.extracts import Sensitivity, make_record
 from pulse.entities.review import build_review
 from tests.emails import (
@@ -61,18 +72,31 @@ EMAILS = [
     screen_email(make_email("m06", subject="Hello", sender_address="someone@example.com")),
 ]
 RECORDS = [
-    make_record("m01", make_output(), None, []),
-    make_record("m02", make_output(category="shout_out"), None, []),
+    make_record("m01", make_output(), []),
+    make_record(
+        "m02",
+        make_output(
+            category="shout_out",
+            sensitivity=[
+                Sensitivity(
+                    kind="named_person", withheld=False, evidence="thanks Sam Patel by name"
+                )
+            ],
+        ),
+        [],
+    ),
     make_record(
         "m03",
-        make_output(sensitivity=[Sensitivity(type="commercial", evidence="mentions a price")]),
-        None,
+        make_output(
+            sensitivity=[
+                Sensitivity(kind="confidential", withheld=True, evidence="an unannounced price")
+            ]
+        ),
         [],
     ),
     make_record(
         "m04",
         make_output(category=None, exclusion_reason="An out-of-office reply."),
-        None,
         ["excluded-1"],
     ),
 ]
@@ -83,7 +107,7 @@ CONSOLIDATION = make_consolidation(
 VERSION = Version(
     content=CONTENT,
     changes=["Shortened the intro"],
-    not_applied=[NotApplied(feedback="Add the contract value", reason="Commercially sensitive")],
+    not_applied=[NotApplied(feedback="Add the contract value", reason="It is not in the facts")],
     version=2,
     created_at=datetime(2026, 9, 26, 9, 0, tzinfo=UTC),
     check_failures=[CheckFailure(check="digits", target="item-2", detail="3")],
@@ -92,7 +116,21 @@ VERSION = Version(
         make_verdict(),
         make_verdict("item-2", claim="covering the service desk"),
     ],
+    notes=EntryNotes(
+        credits=entry_credits(CONTENT, CONSOLIDATION.items, EMAILS),
+        flags=entry_flags(CONTENT, CONSOLIDATION.items, RECORDS),
+    ),
 )
+CREDITS = VERSION.notes.credits
+# The views reviewers see, and the all-staff send, which has credit lines but no flags.
+REVIEWER_VIEWS: list[Callable[[Content], str]] = [
+    lambda content: make_renderer().newsletter(content, CREDITS, flags=VERSION.notes.flags),
+    lambda content: make_renderer().markdown(content, VERSION.notes),
+]
+UNFLAGGED_VIEWS: list[Callable[[Content], str]] = [
+    lambda content: make_renderer().newsletter(content, CREDITS),
+    lambda content: make_renderer().markdown(content, EntryNotes(credits=CREDITS, flags={})),
+]
 
 
 def _assert_golden(name: str, html: str) -> None:
@@ -105,7 +143,16 @@ def _assert_golden(name: str, html: str) -> None:
 
 
 def test_newsletter_matches_its_golden_file() -> None:
-    _assert_golden("newsletter.html", make_renderer().newsletter(CONTENT))
+    # The all-staff send: credit lines, and no labels.
+    _assert_golden("newsletter.html", make_renderer().newsletter(CONTENT, CREDITS))
+
+
+def test_flagged_newsletter_matches_its_golden_file() -> None:
+    html = make_renderer().newsletter(
+        CONTENT, CREDITS, reply="Here is the draft.", flags=VERSION.notes.flags
+    )
+
+    _assert_golden("newsletter_flagged.html", html)
 
 
 def test_reviewer_email_matches_its_golden_file() -> None:
@@ -143,7 +190,7 @@ def test_reply_on_its_own_matches_its_golden_file() -> None:
 
 
 def test_reply_comes_before_the_newsletter() -> None:
-    html = make_renderer().newsletter(CONTENT, reply="Here is the draft.")
+    html = make_renderer().newsletter(CONTENT, CREDITS, reply="Here is the draft.")
 
     assert html.index("Here is the draft.") < html.index(CONTENT.headline)
 
@@ -168,7 +215,47 @@ def test_reply_markdown_becomes_html_with_raw_html_escaped(text: str, html: str)
 
 
 def test_markdown_newsletter_matches_its_golden_file() -> None:
-    _assert_golden("newsletter.md", make_renderer().markdown(CONTENT))
+    markdown = make_renderer().markdown(CONTENT, EntryNotes(credits=CREDITS, flags={}))
+
+    _assert_golden("newsletter.md", markdown)
+
+
+def test_flagged_markdown_newsletter_matches_its_golden_file() -> None:
+    _assert_golden("newsletter_flagged.md", make_renderer().markdown(CONTENT, VERSION.notes))
+
+
+@pytest.mark.parametrize("render", UNFLAGGED_VIEWS)
+def test_unflagged_entries_have_credit_lines_but_no_labels_or_list(
+    render: Callable[[Content], str],
+) -> None:
+    output = render(CONTENT)
+
+    assert "Named person" not in output
+    assert "Flagged for review" not in output
+    assert "- Priya Shah" in output and "- Dan Wood" in output
+
+
+@pytest.mark.parametrize(
+    ("names", "line"),
+    [
+        (["Ben Nicholls"], "Ben Nicholls"),
+        (["Priya Shah", "Tom Evans"], "Priya Shah and Tom Evans"),
+        (["Priya Shah", "Tom Evans", "Aisha Khan"], "Priya Shah, Tom Evans and Aisha Khan"),
+    ],
+)
+def test_credit_names_every_sender(names: list[str], line: str) -> None:
+    assert credit(names) == line
+
+
+def test_labels_name_each_kind_once_and_mark_a_restored_withheld_flag() -> None:
+    flags = [
+        Sensitivity(kind="financial", withheld=False, evidence="a supplier's prices"),
+        Sensitivity(kind="financial", withheld=False, evidence="a deal value"),
+        Sensitivity(kind="named_person", withheld=False, evidence="thanks Sam Patel"),
+        Sensitivity(kind="personal_information", withheld=True, evidence="a colleague's health"),
+    ]
+
+    assert labels(flags) == ["Financial", "Named person", "Restored: personal information"]
 
 
 @pytest.mark.parametrize(
@@ -203,14 +290,22 @@ def test_markdown_escapes_every_value() -> None:
         }
     )
 
-    markdown = make_renderer().markdown(content)
+    flags = {"item-1": [Sensitivity(kind="financial", withheld=False, evidence=script)]}
+
+    markdown = make_renderer().markdown(
+        content, EntryNotes(credits={"item-1": [script]}, flags=flags)
+    )
 
     assert "<script>" not in markdown
-    assert markdown.count(r"\<script\>") == 3
+    # The headline, the intro, the entry, its credit line, and the entry in the flagged list
+    # with the flag's evidence.
+    assert markdown.count(r"\<script\>") == 6
 
 
-@pytest.mark.parametrize("render", ["newsletter", "markdown"])
-def test_sections_render_in_the_order_and_under_the_titles_given(render: str) -> None:
+@pytest.mark.parametrize("render", [*UNFLAGGED_VIEWS, *REVIEWER_VIEWS])
+def test_sections_render_in_the_order_and_under_the_titles_given(
+    render: Callable[[Content], str],
+) -> None:
     # A title and section the configuration does not have still render, as the writer gave them.
     content = CONTENT.model_copy(
         update={
@@ -230,7 +325,7 @@ def test_sections_render_in_the_order_and_under_the_titles_given(render: str) ->
         }
     )
 
-    output = getattr(make_renderer(), render)(content)
+    output = render(content)
 
     assert "This week" in output
     assert output.index("Thank-yous") < output.index("Customer successes") < output.index(PRIYA)
@@ -238,7 +333,7 @@ def test_sections_render_in_the_order_and_under_the_titles_given(render: str) ->
 
 
 def test_newsletter_has_no_review_section() -> None:
-    assert "Review" not in make_renderer().newsletter(CONTENT)
+    assert "Review" not in make_renderer().newsletter(CONTENT, CREDITS)
 
 
 def test_model_output_and_email_text_are_escaped() -> None:
@@ -263,6 +358,10 @@ def test_model_output_and_email_text_are_escaped() -> None:
             "changes": [script],
             "check_failures": [],
             "verdicts": [make_verdict("intro"), make_verdict(claim=script)],
+            "notes": EntryNotes(
+                credits={"item-1": [script]},
+                flags={"item-1": [Sensitivity(kind="financial", withheld=False, evidence=script)]},
+            ),
         }
     )
     review = build_review(version, CONSOLIDATION, RECORDS[:1], emails)
@@ -270,6 +369,7 @@ def test_model_output_and_email_text_are_escaped() -> None:
     html = make_renderer().reviewer_email(version, review)
 
     assert "<script>" not in html
-    # The headline, the entry, the unsupported claim and the entry it names, the change, the
-    # attachment, and the source map's text and subject.
-    assert html.count("&lt;script&gt;alert(1)&lt;/script&gt;") == 8
+    # The headline, the entry and its credit line, the unsupported claim and the entry it names,
+    # the flagged entry and its evidence, the change, the attachment, and the source map's text
+    # and subject.
+    assert html.count("&lt;script&gt;alert(1)&lt;/script&gt;") == 11

@@ -1,3 +1,7 @@
+{% macro flagged_list(flagged) -%}
+<h3 style="margin:12px 0 4px;font-size:14px;">Flagged for review</h3>
+<ul style="margin:0;padding-left:20px;">{% for entry in flagged %}<li>{{ entry.text }}{% for flag in entry.flags %}<br>{{ flag | label }}: {{ flag.evidence }}{% endfor %}</li>{% endfor %}</ul>
+{%- endmacro -%}
 <!DOCTYPE html>
 <html lang="en-GB">
 <head>
@@ -19,11 +23,14 @@
 <tr><td style="padding:8px 32px 16px;">
 <h2 style="margin:0 0 8px;padding-bottom:4px;font-size:18px;color:#000000;border-bottom:2px solid #47d7ac;">{{ section.title }}</h2>
 {% for entry in section.entries %}
-<p style="margin:0 0 12px;">{{ entry.text }}</p>
+<p style="margin:0 0 12px;">{{ entry.text }}{% for label in flags.get(entry.item_id, []) | labels %} <span style="font-size:12px;font-weight:bold;color:#333333;background:#47d7ac;padding:1px 6px;">{{ label }}</span>{% endfor %}{% if entry.item_id in credits %}<br><span style="font-size:13px;color:#333333;">- {{ credits[entry.item_id] | credit }}</span>{% endif %}</p>
 {% endfor %}
 </td></tr>
 {% endfor %}
-{% if review -%}
+{% if flagged and not review %}<tr><td style="padding:24px 32px;background:#ebebeb;font-size:14px;">
+{{ flagged_list(flagged) }}
+</td></tr>
+{% endif %}{% if review -%}
 <tr><td style="padding:24px 32px;background:#ebebeb;font-size:14px;">
 <h2 style="margin:0 0 12px;font-size:16px;color:#000000;">Review</h2>
 {% if review.check_failures %}
@@ -35,6 +42,9 @@
 {% elif review.unsupported %}
 <h3 style="margin:12px 0 4px;font-size:14px;">Unsupported claims</h3>
 <ul style="margin:0;padding-left:20px;">{% for finding in review.unsupported %}<li>{{ finding.problem }}<br>{{ finding.where }}</li>{% endfor %}</ul>
+{% endif %}
+{% if flagged %}
+{{ flagged_list(flagged) }}
 {% endif %}
 {% if review.changes %}
 <h3 style="margin:12px 0 4px;font-size:14px;">Changes</h3>
@@ -50,7 +60,7 @@
 {% endif %}
 {% if review.sensitivity_exclusions %}
 <h3 style="margin:12px 0 4px;font-size:14px;">Excluded for sensitivity</h3>
-<ul style="margin:0;padding-left:20px;">{% for excluded in review.sensitivity_exclusions %}<li>{{ excluded.record.excluded_id }}: {{ excluded.email.sender_name }}, "{{ excluded.email.subject }}"{% for flag in excluded.record.sensitivity %}<br>{{ flag.type }}: {{ flag.evidence }}{% endfor %}</li>{% endfor %}</ul>
+<ul style="margin:0;padding-left:20px;">{% for excluded in review.sensitivity_exclusions %}<li>{{ excluded.record.excluded_id }}: {{ excluded.email.sender_name }}, "{{ excluded.email.subject }}"{% for flag in excluded.record.sensitivity %}<br>{{ flag.kind | kind }}{% if flag.withheld %}, withheld{% endif %}: {{ flag.evidence }}{% endfor %}</li>{% endfor %}</ul>
 {% endif %}
 {% if review.other_exclusions %}
 <h3 style="margin:12px 0 4px;font-size:14px;">Other exclusions</h3>

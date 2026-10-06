@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models import Model
 
-from pulse.agents.prompts import categories_instruction, data_block, read_instructions
+from pulse.agents.prompts import categories_instruction, data_block, keyed, read_instructions
 from pulse.entities.extracts import ConsolidatorOutput, ExtractRecord
 
 INSTRUCTIONS = read_instructions(__package__)
@@ -31,7 +31,7 @@ def build_consolidator(
 
 def consolidator_prompt(records: Sequence[ExtractRecord]) -> str:
     """The records stay inside a delimited block, never in the instructions."""
-    data = [record.model_dump(mode="json", include=_PROMPT_FIELDS) for record in records]
+    data = [keyed(record, "message_id", _PROMPT_FIELDS) for record in records]
     return data_block("extract_records", data)
 
 

@@ -15,7 +15,7 @@ from pulse.agents.judge import agent as judge_agent
 from pulse.agents.runner import run_specialist
 from pulse.agents.writer import agent as writer_agent
 from pulse.entities.base import Entity
-from pulse.entities.content import JudgeOutput, WriterOutput, draft_changed
+from pulse.entities.content import JudgeOutput, Verdict, WriterOutput, draft_changed
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import Refusal, SpecialistFailed
 from pulse.entities.extracts import (
@@ -62,6 +62,9 @@ PROGRESS_NOTES = {
     "abandon": "Abandoning the newsletter",
 }
 _DEFAULT_NOTE = "Working on it"
+# The orchestrator's instructions allow one revision to fix checks and claims; code allows two,
+# so a run writes a draft or revision and at most two fixes before presenting.
+_MAX_WRITES_PER_RUN = 3
 
 
 def progress_note(tool: str) -> str:
@@ -153,6 +156,8 @@ class Tools:
         self._writer = writer
         self._judge = judge
         self._categories = categories
+        # Write calls by the message whose run made them.
+        self._writes: Counter[str] = Counter()
 
     def toolset(self) -> FunctionToolset[ReviewerMessage]:
         return FunctionToolset(
@@ -222,32 +227,27 @@ class Tools:
         ]
 
     @_reported
-    async def extract(self, message_ids: list[MessageId]) -> ExtractResult:
-        """Run the extractor on the named screened emails, in parallel, and store each extract
-        record with its exclusion outcome. Extracting an email again replaces its record.
-        Returns each email's outcome and the totals included, excluded by reason, and failed."""
+    async def extract(self) -> ExtractResult:
+        """Run the extractor, in parallel, on every screened email of the open newsletter that
+        passed the pre-filter and has no extract record yet, and store each extract record with
+        its exclusion outcome. An email that failed has no record, so calling this again retries
+        it. Returns each email's outcome and the totals included, excluded by reason, and
+        failed."""
         newsletter = await self._open()
         newsletter_id = newsletter.newsletter_id
-        emails = {e.message_id: e for e in await self._store.list_screened_emails(newsletter_id)}
+        extracted = {r.message_id for r in await self._store.list_extract_records(newsletter_id)}
+        pending = [
+            email
+            for email in await self._store.list_screened_emails(newsletter_id)
+            if email.rejection is None and email.message_id not in extracted
+        ]
         outcomes = await asyncio.gather(
-            *(
-                self._extract_one(newsletter_id, message_id, emails.get(message_id))
-                for message_id in dict.fromkeys(message_ids)
-            )
+            *(self._extract_one(newsletter_id, email) for email in pending)
         )
         return ExtractResult.of(list(outcomes))
 
-    async def _extract_one(
-        self, newsletter_id: str, message_id: MessageId, email: ScreenedEmail | None
-    ) -> ExtractOutcome:
-        if email is None:
-            return ExtractOutcome(
-                message_id=message_id, error="not a screened email of the open newsletter"
-            )
-        if email.rejection is not None:
-            return ExtractOutcome(
-                message_id=message_id, error=f"the pre-filter rejected it: {email.rejection}"
-            )
+    async def _extract_one(self, newsletter_id: str, email: ScreenedEmail) -> ExtractOutcome:
+        message_id = email.message_id
         try:
             output = await run_specialist(
                 self._extractor,
@@ -269,13 +269,12 @@ class Tools:
         return await self._operations.restore(excluded_id, ctx.deps.author)
 
     @_reported
-    async def consolidate(self, message_ids: list[MessageId]) -> dict[str, Any]:
-        """Run the consolidator on the named extract records, which must all be included, and
-        store the resulting items and headline, replacing any earlier ones. Name every included
-        record, because records not named are left out of the items."""
+    async def consolidate(self) -> dict[str, Any]:
+        """Run the consolidator on every included extract record of the open newsletter, and
+        store the resulting items and headline, replacing any earlier ones."""
         newsletter = await self._open()
         records = await self._store.list_extract_records(newsletter.newsletter_id)
-        selected = consolidation_input(records, message_ids)
+        selected = consolidation_input(records)
         output = await run_specialist(
             self._consolidator,
             consolidator_agent.consolidator_prompt(selected),
@@ -305,12 +304,16 @@ class Tools:
         }
 
     @_reported
-    async def write(self, instruction: str) -> dict[str, Any]:
+    async def write(self, ctx: RunContext[ReviewerMessage], instruction: str) -> dict[str, Any]:
         """Run the writer on the items, the excluded records and all feedback, following your
         instruction, and store the result as the working draft. When a working draft exists,
         the writer revises it. Returns the included IDs, the changes, any feedback not applied,
         and whether the draft now differs from the latest version."""
         newsletter = await self._open()
+        message_id = ctx.deps.message_id
+        if self._writes[message_id] >= _MAX_WRITES_PER_RUN:
+            raise Refusal("present the draft before revising it again")
+        self._writes[message_id] += 1
         newsletter_id = newsletter.newsletter_id
         consolidated, items, excluded = await self._items(newsletter_id)
         feedback = await self._store.list_feedback(newsletter_id)
@@ -356,25 +359,36 @@ class Tools:
 
     @_reported
     async def judge(self) -> dict[str, Any]:
-        """Run the judge on the working draft, which says whether the intro and each entry are
-        supported by the facts and feedback, and store its verdicts. Returns how many parts it
-        judged and each unsupported claim."""
+        """Run the judge on the working draft's intro and on each entry, in parallel, which
+        matches each claim to the facts and feedback that state it, and store its verdicts.
+        Returns how many parts it judged and the claims nothing states."""
         newsletter = await self._open()
         newsletter_id = newsletter.newsletter_id
         content = (await self._operations.draft_or_version(newsletter, None)).content
         _, items, _ = await self._items(newsletter_id)
         feedback = await self._store.list_feedback(newsletter_id)
-        output = await run_specialist(
-            self._judge,
-            judge_agent.judge_prompt(content, items, feedback),
-            lambda output: judge_agent.output_checks(output, content),
+        by_id = {item.item_id: item for item in items}
+        # One text per call: the intro may draw on any item, an entry only on its own.
+        targets = ["intro"]
+        prompts = [judge_agent.judge_prompt("intro", content.intro, items, feedback)]
+        for entry in content.entries():
+            own = [by_id[entry.item_id]] if entry.item_id in by_id else []
+            targets.append(entry.item_id)
+            prompts.append(judge_agent.judge_prompt("entry", entry.text, own, feedback))
+        outputs = await asyncio.gather(
+            # The output type is the whole contract: code decides support from the claims.
+            *(run_specialist(self._judge, prompt, lambda _: []) for prompt in prompts)
         )
-        await self._store.save_verdicts(newsletter_id, output.verdicts)
+        verdicts = [
+            Verdict(target=target, **output.model_dump())
+            for target, output in zip(targets, outputs, strict=True)
+        ]
+        await self._store.save_verdicts(newsletter_id, verdicts)
         return {
-            "judged": len(output.verdicts),
+            "judged": len(verdicts),
             "unsupported": [
-                verdict.model_dump(mode="json", include={"target", "claim"})
-                for verdict in output.verdicts
+                {"target": verdict.target, "claims": verdict.unsupported()}
+                for verdict in verdicts
                 if not verdict.supported
             ],
         }
@@ -384,8 +398,9 @@ class Tools:
         """Save the working draft as the next version and email it to the reviewers,
         withdrawing any approval first. When the working draft is unchanged since the latest
         version, email that version again instead, with the same number and no other change.
-        Returns the version number, whether it was resent, whether an approval was withdrawn
-        and, if so, whether the reviewers were told."""
+        Returns the version number, how many of its entries are flagged for review, whether it
+        was resent, whether an approval was withdrawn and, if so, whether the reviewers were
+        told."""
         # In the email channel, the reply carries the version, so reviewers get one email.
         email_reviewers = ctx.deps.channel != "email"
         return await self._operations.present_draft(email_reviewers=email_reviewers)

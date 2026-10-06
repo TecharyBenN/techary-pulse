@@ -2,6 +2,7 @@ import asyncio
 import json
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic_ai import RunContext
@@ -24,13 +25,14 @@ from pulse.agents.orchestrator.agent import build_agent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import PROGRESS_NOTES, ShowResult, Tools, progress_note
 from pulse.agents.writer.agent import build_writer
-from pulse.entities.content import Entry, JudgeOutput
+from pulse.entities.content import Claim, Entry, JudgeOutput
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.lifecycle import start_send
 from pulse.services.operations import ApproveResult, NoticeResult, RestoreResult
 from tests.emails import (
     CORPUS_ITEM_SOURCES,
     CORPUS_OUTCOMES,
+    ENTRY,
     corpus_consolidation,
     corpus_email,
     corpus_messages,
@@ -67,7 +69,32 @@ OUTPUTS = {
 CONSOLIDATOR_OUTPUT = make_consolidator_output(make_consolidator_item("m01"))
 CONSOLIDATION = make_consolidation(make_item(source_message_ids=["m01"]))
 DRAFT = make_draft()
-JUDGED = JudgeOutput(verdicts=[make_verdict("intro"), make_verdict(claim="Signed two customers")])
+JUDGED = [make_verdict("intro"), make_verdict(claim="Signed two customers")]
+
+
+def judge_model(seen: list[dict[str, Any]] | None = None) -> FunctionModel:
+    """Judges one text per call: finds the draft's entry unsupported and everything else
+    supported. `seen` collects each call's text and item IDs."""
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        request = messages[0]
+        assert isinstance(request, ModelRequest)
+        [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
+        assert isinstance(prompt, str)
+        blocks = prompt.split("\n\n")
+        text = json.loads(blocks[0].split("\n")[1])
+        items = json.loads(blocks[1].split("\n")[1])
+        if seen is not None:
+            seen.append(text | {"items": [item["item_id"] for item in items]})
+        if text["text"] == ENTRY:
+            claims = [Claim(claim="Signed two customers", source=None)]
+        else:
+            claims = [
+                Claim(claim="Signed Northwind Retail", source="Signed Northwind Retail today")
+            ]
+        return text_response(JudgeOutput(claims=claims).model_dump_json())
+
+    return FunctionModel(model)
 
 
 @pytest.fixture
@@ -100,7 +127,7 @@ def _tools(
             "Headline of the week",
             400,
         ),
-        build_judge(judge or FunctionModel(reply_with(JUDGED.model_dump_json()))),
+        build_judge(judge or judge_model()),
         CATEGORIES,
     )
 
@@ -109,7 +136,7 @@ async def _extracted(tools: Tools) -> str:
     """Start a newsletter and extract its screened emails, returning the newsletter ID."""
     started = await tools.start_newsletter()
     assert not isinstance(started, str)
-    await tools.extract(["m01", "m02", "m03"])
+    await tools.extract()
     return started.newsletter_id
 
 
@@ -169,7 +196,7 @@ async def test_get_newsletter_summarises_the_open_newsletter(store: SqliteStore)
     tools = _tools(store)
     started = await tools.start_newsletter()
     assert not isinstance(started, str)
-    await tools.extract(["m01", "m02", "m03"])
+    await tools.extract()
 
     assert await tools.get_newsletter() == {
         "newsletter_id": started.newsletter_id,
@@ -189,7 +216,7 @@ async def test_get_newsletter_summarises_the_open_newsletter(store: SqliteStore)
 async def test_list_screened_emails_never_returns_subjects_or_bodies(store: SqliteStore) -> None:
     tools = _tools(store)
     await tools.start_newsletter()
-    await tools.extract(["m01"])
+    await tools.extract()
 
     listed = await tools.list_screened_emails()
 
@@ -209,7 +236,8 @@ async def test_list_screened_emails_never_returns_subjects_or_bodies(store: Sqli
         "extract",
     }
     assert listed[0]["extract"] is not None
-    assert listed[1]["extract"] is None
+    # The pre-filter rejected m13, so it is never extracted.
+    assert listed[3]["extract"] is None
     text = json.dumps(listed)
     assert "Signed Northwind Retail today" not in text
     assert "Nothing to report." not in text
@@ -219,10 +247,13 @@ async def test_tools_refuse_before_any_newsletter_exists(store: SqliteStore) -> 
     tools = _tools(store)
 
     assert await tools.list_screened_emails() == "Refused: no newsletter exists yet"
-    assert await tools.extract(["m01"]) == "Refused: no newsletter is open"
-    assert await tools.consolidate(["m01"]) == "Refused: no newsletter is open"
+    assert await tools.extract() == "Refused: no newsletter is open"
+    assert await tools.consolidate() == "Refused: no newsletter is open"
     assert await tools.get_items() == "Refused: no newsletter exists yet"
-    assert await tools.write("Write the first draft.") == "Refused: no newsletter is open"
+    assert (
+        await tools.write(_run_for(make_message()), "Write the first draft.")
+        == "Refused: no newsletter is open"
+    )
     assert await tools.get_draft() == "Refused: no newsletter exists yet"
     assert await tools.present_draft(_run_for(make_message())) == "Refused: no newsletter is open"
 
@@ -232,7 +263,7 @@ async def test_extract_stores_each_record_with_its_exclusion(store: SqliteStore)
     started = await tools.start_newsletter()
     assert not isinstance(started, str)
 
-    result = await tools.extract(["m01", "m02", "m03"])
+    result = await tools.extract()
 
     assert not isinstance(result, str)
     assert (result.included, result.excluded, result.failed) == (
@@ -253,46 +284,42 @@ async def test_extract_stores_each_record_with_its_exclusion(store: SqliteStore)
     assert {r.message_id for r in records} == {"m01", "m02", "m03"}
 
 
-async def test_extract_refuses_rejected_and_unknown_emails(store: SqliteStore) -> None:
+async def test_extract_takes_only_emails_that_passed_and_have_no_record(
+    store: SqliteStore,
+) -> None:
     tools = _tools(store)
     await tools.start_newsletter()
+    await tools.extract()
 
-    result = await tools.extract(["m13", "m99"])
+    # m13 was rejected by the pre-filter, and the others already have records.
+    result = await tools.extract()
 
     assert not isinstance(result, str)
-    assert (result.included, result.excluded, result.failed) == (0, {}, 2)
-    assert [(o.message_id, o.error) for o in result.outcomes] == [
-        ("m13", "the pre-filter rejected it: sender_domain"),
-        ("m99", "not a screened email of the open newsletter"),
-    ]
+    assert (result.outcomes, result.included, result.excluded, result.failed) == ([], 0, {}, 0)
 
 
-async def test_extract_reports_an_invalid_response_and_stores_nothing(store: SqliteStore) -> None:
-    invalid = {INBOX[0].body: make_output(category="gossip").model_dump_json()}
+async def test_extract_reports_an_invalid_response_and_retries_it_when_called_again(
+    store: SqliteStore,
+) -> None:
+    invalid = OUTPUTS | {INBOX[0].body: make_output(category="gossip").model_dump_json()}
     tools = _tools(store, extractor_model(invalid))
     started = await tools.start_newsletter()
     assert not isinstance(started, str)
 
-    result = await tools.extract(["m01"])
+    result = await tools.extract()
 
     assert not isinstance(result, str)
     assert result.failed == 1
-    [outcome] = result.outcomes
-    assert outcome.error is not None
-    assert "gossip is not a configured category" in outcome.error
-    assert await store.list_extract_records(started.newsletter_id) == []
-
-
-async def test_extract_again_replaces_the_record(store: SqliteStore) -> None:
+    [failed] = [outcome for outcome in result.outcomes if outcome.error]
+    assert failed.message_id == "m01"
+    assert failed.error is not None and "gossip is not a configured category" in failed.error
+    records = await store.list_extract_records(started.newsletter_id)
+    assert {r.message_id for r in records} == {"m02", "m03"}
+    # The failed email still has no record, so the next call tries it again.
     tools = _tools(store)
-    started = await tools.start_newsletter()
-    assert not isinstance(started, str)
-    await tools.extract(["m02"])
-
-    await tools.extract(["m02"])
-
-    [record] = await store.list_extract_records(started.newsletter_id)
-    assert record.excluded_id == "excluded-1"
+    retried = await tools.extract()
+    assert not isinstance(retried, str)
+    assert [o.message_id for o in retried.outcomes] == ["m01"]
 
 
 async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteStore) -> None:
@@ -304,6 +331,7 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
         "delivery_highlight": "A project has been delivered.",
         "team_news": "Someone has joined.",
         "shout_out": "A colleague is thanked.",
+        "company_notices": "Information staff should know.",
     }
     consolidator = FunctionModel(reply_with(corpus_consolidation().model_dump_json()))
     tools = Tools(
@@ -318,17 +346,14 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
             "Headline of the week",
             400,
         ),
-        build_judge(FunctionModel(reply_with(JUDGED.model_dump_json()))),
+        build_judge(judge_model()),
         categories,
     )
-    passed = [m for m, outcome in CORPUS_OUTCOMES.items() if not outcome.startswith("rejected")]
-    included = [m for m, outcome in CORPUS_OUTCOMES.items() if outcome == "included"]
     model = responses(
         _call("get_newsletter"),
         _call("start_newsletter"),
-        _call("list_screened_emails"),
-        _call("extract", {"message_ids": passed}),
-        _call("consolidate", {"message_ids": included}),
+        _call("extract"),
+        _call("consolidate"),
         text_response("Done."),
     )
     orchestrator = Orchestrator(
@@ -347,7 +372,8 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
     assert await stored_outcomes(store, newsletter.newsletter_id) == CORPUS_OUTCOMES
     records = await store.list_extract_records(newsletter.newsletter_id)
     excluded_ids = sorted(r.excluded_id for r in records if r.excluded_id)
-    assert excluded_ids == sorted(f"excluded-{n}" for n in range(1, 10))
+    excluded = sum(1 for outcome in CORPUS_OUTCOMES.values() if outcome.startswith("excluded"))
+    assert excluded_ids == sorted(f"excluded-{n}" for n in range(1, excluded + 1))
     items = await store.get_items(newsletter.newsletter_id)
     assert items is not None
     assert [item.source_message_ids for item in items.items] == CORPUS_ITEM_SOURCES
@@ -357,7 +383,7 @@ async def test_consolidate_stores_the_items_and_headline(store: SqliteStore) -> 
     tools = _tools(store)
     newsletter_id = await _extracted(tools)
 
-    result = await tools.consolidate(["m01"])
+    result = await tools.consolidate()
 
     assert result == {
         "headline": "A new retail customer",
@@ -370,14 +396,14 @@ async def test_consolidate_stores_the_items_and_headline(store: SqliteStore) -> 
     assert (newsletter["items"], newsletter["items_up_to_date"]) == (1, True)
 
 
-async def test_consolidate_refuses_excluded_records(store: SqliteStore) -> None:
-    tools = _tools(store)
+async def test_consolidate_refuses_without_an_included_record(store: SqliteStore) -> None:
+    excluded = {body: make_output(category=None).model_dump_json() for body in OUTPUTS}
+    tools = _tools(store, extractor_model(excluded))
     newsletter_id = await _extracted(tools)
 
-    result = await tools.consolidate(["m01", "m02"])
+    result = await tools.consolidate()
 
-    assert isinstance(result, str)
-    assert result.startswith("Refused: m02 is excluded as excluded-")
+    assert result == "Refused: the newsletter has no included extract records"
     assert await store.get_items(newsletter_id) is None
 
 
@@ -389,7 +415,7 @@ async def test_consolidate_reports_an_invalid_response_and_stores_nothing(
     tools = _tools(store, consolidator=consolidator)
     newsletter_id = await _extracted(tools)
 
-    result = await tools.consolidate(["m01"])
+    result = await tools.consolidate()
 
     assert result == (
         "Failed: consolidator gave no valid response: source m09 is not an input record"
@@ -413,7 +439,7 @@ async def test_get_items_adds_sources_and_never_returns_subjects_or_bodies(
 ) -> None:
     tools = _tools(store)
     await _extracted(tools)
-    await tools.consolidate(["m01"])
+    await tools.consolidate()
 
     items = await tools.get_items()
 
@@ -432,7 +458,7 @@ async def test_get_items_adds_sources_and_never_returns_subjects_or_bodies(
 
 async def _consolidated(tools: Tools) -> str:
     newsletter_id = await _extracted(tools)
-    await tools.consolidate(["m01"])
+    await tools.consolidate()
     return newsletter_id
 
 
@@ -461,7 +487,7 @@ async def test_write_stores_the_first_draft(store: SqliteStore) -> None:
     tools = _tools(store, writer=_writer_prompts(prompts))
     newsletter_id = await _consolidated(tools)
 
-    result = await tools.write("Write the first draft.")
+    result = await tools.write(_run_for(make_message()), "Write the first draft.")
 
     assert result == {
         "changes": [],
@@ -480,11 +506,11 @@ async def test_write_revises_the_working_draft_with_all_feedback(store: SqliteSt
     tools = _tools(store, writer=_writer_prompts(prompts))
     newsletter_id = await _consolidated(tools)
     await store.record_feedback(newsletter_id, make_message("r01", text="Shorter intro, please."))
-    await tools.write("Write the first draft.")
+    await tools.write(_run_for(make_message()), "Write the first draft.")
 
     await tools.present_draft(_run_for(make_message()))
 
-    revised = await tools.write("Shorten the intro.")
+    revised = await tools.write(_run_for(make_message()), "Shorten the intro.")
 
     # The stand-in returns the same draft again, so it has not changed since v1.
     assert isinstance(revised, dict)
@@ -500,7 +526,7 @@ async def test_write_reports_an_invalid_response_and_stores_nothing(store: Sqlit
     tools = _tools(store, writer=FunctionModel(reply_with(invalid)))
     newsletter_id = await _consolidated(tools)
 
-    result = await tools.write("Write the first draft.")
+    result = await tools.write(_run_for(make_message()), "Write the first draft.")
 
     assert result == (
         "Failed: writer gave no valid response: item-9 in item_ids is not a known item"
@@ -512,7 +538,7 @@ async def test_get_draft_returns_the_working_draft_or_a_version(store: SqliteSto
     tools = _tools(store)
     await _consolidated(tools)
     assert await tools.get_draft() == "Refused: there is no working draft"
-    await tools.write("Write the first draft.")
+    await tools.write(_run_for(make_message()), "Write the first draft.")
     await tools.present_draft(_run_for(make_message()))
 
     assert await tools.get_draft() == DRAFT.model_dump(mode="json")
@@ -528,7 +554,7 @@ async def test_show_draft_names_what_to_show_and_refuses_what_does_not_exist(
     tools = _tools(store)
     await _consolidated(tools)
     assert await tools.show_draft() == "Refused: there is no working draft"
-    await tools.write("Write the first draft.")
+    await tools.write(_run_for(make_message()), "Write the first draft.")
     await tools.present_draft(_run_for(make_message()))
 
     assert await tools.show_draft() == ShowResult(version=None)
@@ -543,7 +569,7 @@ async def test_present_draft_emails_the_next_version(store: SqliteStore) -> None
     assert (
         await tools.present_draft(_run_for(make_message())) == "Refused: there is no working draft"
     )
-    await tools.write("Write the first draft.")
+    await tools.write(_run_for(make_message()), "Write the first draft.")
 
     result = await tools.present_draft(_run_for(make_message()))
 
@@ -557,7 +583,7 @@ async def test_present_draft_in_the_email_channel_sends_no_email(store: SqliteSt
     conversation = FakeMailbox()
     tools = _tools(store, conversation=conversation)
     await _consolidated(tools)
-    await tools.write("Write the first draft.")
+    await tools.write(_run_for(make_message()), "Write the first draft.")
 
     result = await tools.present_draft(_run_for(make_message("c01", channel="email")))
 
@@ -577,7 +603,7 @@ async def test_get_newsletter_shows_whether_the_draft_changed(store: SqliteStore
         return summary["draft_changed"]
 
     assert await draft_changed() is False
-    await tools.write("Write the first draft.")
+    await tools.write(_run_for(make_message()), "Write the first draft.")
     assert await draft_changed() is True
     await tools.present_draft(_run_for(make_message()))
     assert await draft_changed() is False
@@ -602,28 +628,75 @@ async def test_check_returns_every_failure_of_the_working_draft(store: SqliteSto
 async def test_judge_stores_its_verdicts_and_returns_the_unsupported_claims(
     store: SqliteStore,
 ) -> None:
-    tools = _tools(store)
+    seen: list[dict[str, Any]] = []
+    tools = _tools(store, judge=judge_model(seen))
     newsletter_id = await _consolidated(tools)
     assert await tools.judge() == "Refused: there is no working draft"
-    await tools.write("Write the first draft.")
+    await tools.write(_run_for(make_message()), "Write the first draft.")
 
     result = await tools.judge()
 
     assert result == {
         "judged": 2,
-        "unsupported": [{"target": "item-1", "claim": "Signed two customers"}],
+        "unsupported": [{"target": "item-1", "claims": ["Signed two customers"]}],
     }
-    assert await store.get_verdicts(newsletter_id) == JUDGED.verdicts
+    assert await store.get_verdicts(newsletter_id) == JUDGED
+    # One call per text: the intro with every item, each entry with only its own item.
+    assert seen == [
+        {"part": "intro", "text": DRAFT.content.intro, "items": ["item-1"]},
+        {"part": "entry", "text": ENTRY, "items": ["item-1"]},
+    ]
+
+
+async def test_judge_gives_an_entry_only_its_own_item(store: SqliteStore) -> None:
+    seen: list[dict[str, Any]] = []
+    consolidator = FunctionModel(
+        reply_with(
+            make_consolidator_output(
+                make_consolidator_item("m01"), make_consolidator_item("m02")
+            ).model_dump_json()
+        )
+    )
+    outputs = OUTPUTS | {INBOX[1].body: make_output().model_dump_json()}
+    tools = _tools(
+        store,
+        extractor=extractor_model(outputs),
+        consolidator=consolidator,
+        judge=judge_model(seen),
+    )
+    newsletter_id = await _extracted(tools)
+    await tools.consolidate()
+    await store.save_draft(newsletter_id, DRAFT)
+
+    await tools.judge()
+
+    assert [call["items"] for call in seen] == [["item-1", "item-2"], ["item-1"]]
 
 
 async def test_judge_reports_an_invalid_response_and_stores_nothing(store: SqliteStore) -> None:
-    invalid = JudgeOutput(verdicts=[make_verdict("intro")]).model_dump_json()
+    invalid = '{"claims": "Made up"}'
     tools = _tools(store, judge=FunctionModel(reply_with(invalid)))
     newsletter_id = await _consolidated(tools)
-    await tools.write("Write the first draft.")
+    await tools.write(_run_for(make_message()), "Write the first draft.")
 
-    assert await tools.judge() == "Failed: judge gave no valid response: item-1 has 0 verdicts"
+    assert await tools.judge() == (
+        "Failed: judge gave no valid response: the response did not match the output type"
+    )
     assert await store.get_verdicts(newsletter_id) is None
+
+
+async def test_write_refuses_a_fourth_call_in_one_run(store: SqliteStore) -> None:
+    tools = _tools(store)
+    await _consolidated(tools)
+    run = _run_for(make_message("r01"))
+    for _ in range(3):
+        assert not isinstance(await tools.write(run, "Revise the draft."), str)
+
+    assert await tools.write(run, "Revise the draft.") == (
+        "Refused: present the draft before revising it again"
+    )
+    # Each message's run has its own count.
+    assert not isinstance(await tools.write(_run_for(make_message("r02")), "Revise."), str)
 
 
 def _run_for(message: ReviewerMessage) -> RunContext[ReviewerMessage]:
@@ -678,7 +751,7 @@ def _call(tool: str, args: dict[str, object] | None = None) -> ModelResponse:
 async def _presented(tools: Tools) -> str:
     """Start a newsletter and present version 1, returning the newsletter ID."""
     newsletter_id = await _consolidated(tools)
-    await tools.write("Write the first draft.")
+    await tools.write(_run_for(make_message()), "Write the first draft.")
     await tools.present_draft(_run_for(make_message()))
     return newsletter_id
 
@@ -753,9 +826,9 @@ async def test_action_tools_refuse_once_the_newsletter_is_closed(store: SqliteSt
     await tools.abandon(_run_for(make_message()))
     refused = "Refused: no newsletter is open"
 
-    assert await tools.extract(["m01"]) == refused
-    assert await tools.consolidate(["m01"]) == refused
-    assert await tools.write("Shorten the intro.") == refused
+    assert await tools.extract() == refused
+    assert await tools.consolidate() == refused
+    assert await tools.write(_run_for(make_message()), "Shorten the intro.") == refused
     assert await tools.judge() == refused
     assert await tools.present_draft(_run_for(make_message())) == refused
     assert await tools.approve(_run_for(make_message(text="approve v1")), 1) == refused

@@ -13,7 +13,7 @@ from pulse.entities.mail import ScreenedEmail
 INSTRUCTIONS = read_instructions(__package__)
 
 # Code attaches the message ID to the record, so the model is not given it.
-_PROMPT_FIELDS = {"sender_name", "sender_address", "subject", "received", "body"}
+_PROMPT_FIELDS = {"sender_name", "sender_address", "subject", "received", "unique_body", "body"}
 
 
 def build_extractor(model: Model, categories: Mapping[str, str]) -> Agent[None, ExtractorOutput]:

@@ -4,8 +4,9 @@ from pathlib import Path
 import pytest
 
 from pulse.adapters.store import SqliteStore
-from pulse.entities.content import CheckFailure, Version, WriterOutput
+from pulse.entities.content import CheckFailure, EntryNotes, Version, WriterOutput
 from pulse.entities.errors import MailboxError, Refusal, StoreError
+from pulse.entities.extracts import Sensitivity
 from pulse.entities.lifecycle import Newsletter, Scheduled, abandon, start_send
 from pulse.services.operations import ApproveResult, NoticeResult, Operations, PresentResult
 from tests.emails import (
@@ -140,11 +141,12 @@ def _revised(*changes: str) -> WriterOutput:
     return draft.model_copy(update={"content": intro})
 
 
-async def _drafted(store: SqliteStore) -> None:
-    """An open newsletter with one included email, its item and a working draft."""
+async def _drafted(store: SqliteStore, flags: list[Sensitivity] | None = None) -> None:
+    """An open newsletter with one included email, flagged with `flags`, its item and a working
+    draft."""
     newsletter = make_newsletter()
     await store.save_start(newsletter, [screen_email(make_email("m01"))])
-    await store.save_extract("n-1", "m01", make_output())
+    await store.save_extract("n-1", "m01", make_output(sensitivity=flags or []))
     await store.save_items("n-1", make_consolidation(make_item(source_message_ids=["m01"])))
     await store.save_draft("n-1", make_draft())
 
@@ -194,7 +196,7 @@ async def test_present_without_emailing_saves_the_version_and_leaves_the_thread(
 
     result = await operations.present_draft(email_reviewers=False)
 
-    assert result == PresentResult(version=1)
+    assert result == PresentResult(version=1, flagged=0)
     assert [v.version for v in await _versions(store)] == [1]
     assert (conversation.sent, conversation.replies) == ([], [])
     newsletter = await _newsletter(store)
@@ -245,13 +247,50 @@ async def test_an_unchanged_draft_resends_the_latest_version(
 
     result = await operations.present_draft()
 
-    assert result == PresentResult(version=2, resent=True)
+    assert result == PresentResult(version=2, flagged=0, resent=True)
     assert [v.version for v in await _versions(store)] == [1, 2]
     first, again = conversation.replies
     assert again.message_id == first.reply_id
     assert again.body == first.body
     newsletter = await _newsletter(store)
     assert (newsletter.latest_version, newsletter.thread_message_id) == (2, again.reply_id)
+
+
+PRICE = Sensitivity(kind="financial", withheld=False, evidence="a supplier's prices")
+
+
+async def test_present_saves_the_entry_flags_and_returns_how_many_are_flagged(
+    operations: Operations, store: SqliteStore, conversation: FakeMailbox
+) -> None:
+    await _drafted(store, [PRICE])
+
+    result = await operations.present_draft()
+
+    assert result == PresentResult(version=1, flagged=1)
+    [version] = await _versions(store)
+    assert version.notes == EntryNotes(
+        credits={"item-1": ["Priya Shah"]}, flags={"item-1": [PRICE]}
+    )
+    [email] = conversation.sent
+    assert "Financial" in email.body.content
+    assert "- Priya Shah" in email.body.content
+
+
+async def test_a_version_keeps_its_flags_when_the_items_change(
+    operations: Operations, store: SqliteStore
+) -> None:
+    await _drafted(store, [PRICE])
+    await operations.present_draft()
+
+    # m01 is no longer the item's source, so the working draft's flags would now differ.
+    await store.save_start(await _newsletter(store), [screen_email(make_email("m02"))])
+    await store.save_extract("n-1", "m02", make_output())
+    await store.save_items("n-1", make_consolidation(make_item(source_message_ids=["m02"])))
+
+    [version] = await _versions(store)
+    assert version.notes.flags == {"item-1": [PRICE]}
+    # Resending shows the version as it was presented.
+    assert await operations.present_draft() == PresentResult(version=1, flagged=1, resent=True)
 
 
 async def test_a_draft_differing_only_in_its_reported_changes_is_unchanged(
@@ -261,7 +300,7 @@ async def test_a_draft_differing_only_in_its_reported_changes_is_unchanged(
     await operations.present_draft()
     await store.save_draft("n-1", make_draft(changes=["Checked the facts"]))
 
-    assert await operations.present_draft() == PresentResult(version=1, resent=True)
+    assert await operations.present_draft() == PresentResult(version=1, flagged=0, resent=True)
 
 
 async def test_resending_keeps_an_approval(
@@ -271,7 +310,7 @@ async def test_resending_keeps_an_approval(
 
     result = await operations.present_draft()
 
-    assert result == PresentResult(version=1, resent=True)
+    assert result == PresentResult(version=1, flagged=0, resent=True)
     newsletter = await _newsletter(store)
     assert (newsletter.state, newsletter.approved_version) == ("approved", 1)
     [again] = conversation.replies
@@ -287,7 +326,7 @@ async def test_resending_in_the_email_channel_sends_nothing(
 
     result = await operations.present_draft(email_reviewers=False)
 
-    assert result == PresentResult(version=1, resent=True)
+    assert result == PresentResult(version=1, flagged=0, resent=True)
     assert conversation.replies == []
     assert (await _newsletter(store)).thread_message_id == "sent-1"
 
@@ -630,7 +669,7 @@ async def test_present_over_an_approval_withdraws_it_first(
 
     result = await operations.present_draft()
 
-    assert result == PresentResult(version=2, approval_withdrawn=True, notice_sent=True)
+    assert result == PresentResult(version=2, flagged=0, approval_withdrawn=True, notice_sent=True)
     newsletter = await _newsletter(store)
     assert (newsletter.state, newsletter.latest_version, newsletter.approved_version) == (
         "in_review",
@@ -648,7 +687,7 @@ async def test_present_without_an_approval_withdraws_nothing(
 ) -> None:
     await _drafted(store)
 
-    assert await operations.present_draft() == PresentResult(version=1)
+    assert await operations.present_draft() == PresentResult(version=1, flagged=0)
 
 
 async def test_check_works_on_a_closed_newsletter(

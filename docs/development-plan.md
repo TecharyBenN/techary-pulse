@@ -39,7 +39,7 @@ A phase with a live check is complete only when the check has passed against the
 | Microsoft Graph calls | Microsoft Graph SDK for Python (`msgraph-sdk`), on Kiota's client factory | Microsoft maintains the requests, models, retries and paging. The client is built on Kiota's factory because `msgraph-core` 1.5.1's transport skips the SDK middleware, so throttled requests would not be retried. |
 | Rendering | Jinja2 with autoescaping on | Escapes model output and email-derived text by default. |
 | Email replies | `markdown-it-py` with its linkify extra, raw HTML off | Converts the orchestrator's Markdown replies to HTML for email, following CommonMark, and escapes any raw HTML in them; Python-Markdown cannot escape raw HTML. |
-| Scheduling | A cron library that supports IANA time zones, chosen in phase 10 | Computes the next start in `Europe/London` correctly across daylight saving changes. |
+| Scheduling | A cron library that supports IANA time zones, chosen in phase 11 | Computes the next start in `Europe/London` correctly across daylight saving changes. |
 | Logging | Standard library `logging` with python-json-logger | The established JSON formatter, which logs exceptions in full. |
 | Command line | `argparse` | Two commands do not need a framework. |
 | Container | `python:3.14-slim`, running as a non-root user | Small image with no build tools. |
@@ -58,8 +58,8 @@ A phase with a live check is complete only when the check has passed against the
 | 7. Quality | `check`, the judge |
 | 8. Approve, send, withdraw and abandon | `approve`, delivery, `withdraw_approval`, `abandon` |
 | 9. Email channel | Reviewer conversations by email |
-| 10. Scheduler | The start instruction on a schedule, `pulse draft` |
-| 11. Forwarded emails and sensitivity flags | Forwarded content for the extractor, the narrowed exclusion rules, flagged entries |
+| 10. Forwarded emails and sensitivity flags | Forwarded content for the extractor, withheld and flagged content, credit lines |
+| 11. Scheduler | The start instruction on a schedule, `pulse draft` |
 | 12. Recovery and retention | The remaining failure handling, retention |
 | 13. Production pilot | Deployment and the first real newsletter |
 
@@ -195,31 +195,36 @@ Scope:
 
 Exit criteria: tests cover each channel rule with fake mailboxes; live check: the test user replies to a reviewer email with feedback, receives the revised version in the thread, and continues the same conversation in LibreChat.
 
-### Phase 10: scheduler
-
-Scope: choosing the cron library, posting the start instruction on `schedule.draft_cron`, skipping while an approved newsletter awaits its send, the reviewer email opening the conversation from a scheduled run, and `pulse draft`, with the run lock shared across processes, because `pulse draft` runs beside `pulse serve`.
-
-Exit criteria: tests cover the schedule and the skip with a controlled clock; live check: `pulse draft` sends version 1 to the test user, who continues the conversation by email.
-
-### Phase 11: forwarded emails and sensitivity flags
+### Phase 10: forwarded emails and sensitivity flags
 
 Scope:
 
 - listing the inbox with Graph's `body` as well as `uniqueBody`, and the screened email keeping both when it passes the pre-filter, with the `screened_emails` table to match;
 - the extractor receiving both, and its instructions for forwarded and quoted messages as the design's extract section states them;
 - the draft checks matching names and digit sequences against a source message's whole body;
-- the extractor's sensitivity type definitions as the design states them, including any pricing as `commercial`, and `personal` split into `personal_private` and `personal_named`;
-- the exclusion rules: exclude only records flagged `personal_private`, `unannounced` or `inappropriate`, or with no category, and include records whose only flags are `commercial` or `personal_named`;
-- the `company_notices` section in the example configurations;
+- the extractor's sensitivity flags as the design states them: each with its kind, whether it is withheld, and its evidence, the extractor judging whether it is withheld;
+- the exclusion rules: exclude records with a withheld flag, or with no category, and include records with no withheld flag;
+- the `company_notices` section in the example configurations, and the `team_news` definition covering celebrations;
 - flagged entries as the design's flagged entries section states them: working them out from the items and extract records, saving them with each version, and returning the count from `present_draft`;
-- rendering `FLAGGED` beside flagged entries, and the flagged for review list after the newsletter, in the reviewer email and the chat endpoint's Markdown, and neither in the newsletter delivery sends, with golden files for each;
+- rendering each flagged entry's plain-text labels, and the flagged for review list after the newsletter, in the reviewer email, the chat endpoint's Markdown and the email channel's reply when a run shows the newsletter, and neither in the newsletter delivery sends, with golden files for each;
+- credit lines under every entry in every rendering, saved with each version; the writer's instructions to tell the news itself rather than report the email it came in, and no longer to name senders; and the `senders` draft check removed, with credit lines left out of the word count;
+- the judge run once for the intro and once per entry, and the limit on `write` calls in a run;
+- the judge matching each claim to its source; `extract` taking no arguments and extracting each screened email once, and `consolidate` taking every included record;
+- the extractor's `people` limited to the people the facts name, the writer's output check that every name in an entry's `people` appears in its text, and the `people` draft check reduced to the sources;
+- `confidential` covering a partner's or supplier's email marked for partners only, flagged and not withheld;
 - the orchestrator instructions for reporting flagged entries;
-- the synthetic corpus updated to the new rules, with a forwarded email, a pricing email, a shout-out, a birthday, a new joiner's welcome, a celebration such as a new baby, an email that credits people for their work without making them its subject, and a private personal email.
+- the synthetic corpus updated to the new rules, with a forwarded email, a pricing email, a shout-out, a birthday, a new joiner's welcome, a celebration such as a new baby, an email that credits people for their work, and a private personal email.
 
 Exit criteria:
 
-- tests cover forwarded and quoted bodies through listing, screening, extraction input and the draft checks; every exclusion outcome and the included `commercial` and `personal_named` cases; the flag rule; flags kept with a version; and rendering with and without flags;
-- live check: the test user forwards an email announcing a supplier's price change to the dev submissions mailbox; asking for a newsletter drafts it with `FLAGGED` beside its entry and its reason in the flagged for review list; a shout-out entry is flagged; a seeded private personal email is listed as excluded with its reason; and the approved version reaches the test distribution list with no flags.
+- tests cover forwarded and quoted bodies through listing, screening, extraction input and the draft checks; every exclusion outcome, including flags of each kind that are and are not withheld; the flag rule; flags and credit lines kept with a version; and rendering with and without flags, with credit lines in every rendering;
+- live check: the test user forwards an email announcing a supplier's price change to the dev submissions mailbox; asking for a newsletter drafts it with a `Financial` label beside its entry and its reason in the flagged for review list; a shout-out entry is labelled `Named person`; a seeded private personal email is listed as excluded with its reason; every entry carries its credit line and tells the news rather than reporting the email; and the approved version reaches the test distribution list with its credit lines and no flags.
+
+### Phase 11: scheduler
+
+Scope: choosing the cron library, posting the start instruction on `schedule.draft_cron`, skipping while an approved newsletter awaits its send, the reviewer email opening the conversation from a scheduled run, and `pulse draft`, with the run lock shared across processes, because `pulse draft` runs beside `pulse serve`.
+
+Exit criteria: tests cover the schedule and the skip with a controlled clock; live check: `pulse draft` sends version 1 to the test user, who continues the conversation by email.
 
 ### Phase 12: recovery and retention
 

@@ -20,6 +20,9 @@ from msgraph.generated.models.recipient import Recipient
 from msgraph.generated.models.single_value_legacy_extended_property import (
     SingleValueLegacyExtendedProperty,
 )
+from msgraph.generated.users.item.mail_folders.item.messages.messages_request_builder import (
+    MessagesRequestBuilder,
+)
 from msgraph.generated.users.item.messages.item.message_item_request_builder import (
     MessageItemRequestBuilder,
 )
@@ -29,10 +32,13 @@ from pulse.adapters.graph import GraphMailbox, graph_client
 from pulse.adapters.render import Renderer
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.config import Config
-from pulse.entities.mail import Mailbox
+from pulse.entities.mail import InboundEmail, Mailbox, address_in
 from pulse.entities.store import Store
-from pulse.main import build_operations, build_orchestrator, build_outbox
-from tests.emails import STAFF_DOMAIN
+from pulse.main import build_operations, build_orchestrator, build_outbox, build_screen
+from tests.emails import STAFF_DOMAIN, seedable_corpus_messages
+
+# Sent Items can lag behind a send, so a sent message is looked for this long.
+_SENT_WAIT_SECONDS = 120
 
 # PR_MESSAGE_FLAGS set to read, so a created message is received mail, not an unsent draft.
 _RECEIVED = SingleValueLegacyExtendedProperty(id="Integer 0x0E07", value="1")
@@ -51,6 +57,19 @@ async def live_graph(config: Config) -> AsyncIterator[GraphServiceClient]:
 
 def graph_mailbox(config: Config, client: GraphServiceClient, address: str) -> GraphMailbox:
     return GraphMailbox(client, address, config.graph.max_retries)
+
+
+def check_seeded_inbox(config: Config, inbox: list[InboundEmail], extra: int = 0) -> None:
+    """The inbox holds the seedable corpus once, and `extra` other messages that pass the
+    pre-filter. Others it rejects, such as a mail filter's reports, are never extracted, so
+    they are ignored."""
+    corpus = {m["subject"] for m in seedable_corpus_messages()}
+    screen = build_screen(config)
+    seeded = sorted(email.subject for email in inbox if email.subject in corpus)
+    others = [e for e in inbox if e.subject not in corpus and screen(e).rejection is None]
+    assert seeded == sorted(corpus) and len(others) == extra, (
+        "reset the dev inbox and seed the corpus once"
+    )
 
 
 def live_orchestrator(
@@ -114,3 +133,34 @@ async def place_in_inbox(
         ]
     inbox = client.users.by_user_id(address).mail_folders.by_mail_folder_id("inbox")
     await inbox.messages.post(created)
+
+
+async def sent_to(client: GraphServiceClient, mailbox: str, recipient: str, since: datetime) -> str:
+    """The body of the newest message the mailbox sent to `recipient` at or after `since`."""
+    query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+        select=["toRecipients", "sentDateTime", "body"], orderby=["sentDateTime desc"], top=10
+    )
+    config = RequestConfiguration[MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters](
+        query_parameters=query
+    )
+    sent_items = client.users.by_user_id(mailbox).mail_folders.by_mail_folder_id("sentitems")
+    # Graph gives sent times to the second.
+    since = since.replace(microsecond=0)
+    async with asyncio.timeout(_SENT_WAIT_SECONDS):
+        while True:
+            page = await sent_items.messages.get(config)
+            for message in page.value if page and page.value else []:
+                to = [
+                    r.email_address.address or ""
+                    for r in message.to_recipients or []
+                    if r.email_address
+                ]
+                sent = message.sent_date_time
+                if (
+                    address_in(recipient, to)
+                    and sent is not None
+                    and sent >= since
+                    and message.body
+                ):
+                    return message.body.content or ""
+            await asyncio.sleep(5)

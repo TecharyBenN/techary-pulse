@@ -76,9 +76,9 @@ def build_review(
         unsupported=None
         if version.verdicts is None
         else [
-            Finding(where=_where(content, verdict.target), problem=str(verdict.claim))
+            Finding(where=_where(content, verdict.target), problem=claim)
             for verdict in version.verdicts
-            if not verdict.supported
+            for claim in verdict.unsupported()
         ],
         changes=version.changes if revised else [],
         not_applied=version.not_applied if revised else [],
@@ -107,7 +107,6 @@ _CHECK_TITLES: dict[CheckName, str] = {
     "digits": "Number not in the sources or feedback",
     "people": "Name",
     "sentences": "Too many sentences",
-    "senders": "Sender",
     "items": "Item",
     "categories": "Section",
 }

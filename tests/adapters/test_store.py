@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from pulse.adapters.store import SqliteStore
-from pulse.entities.content import CheckFailure, Version, version_of
+from pulse.entities.content import CheckFailure, EntryNotes, Version, version_of
 from pulse.entities.errors import StoreError
 from pulse.entities.extracts import Sensitivity, restored
 from pulse.entities.lifecycle import abandon, open_newsletter, present, update
@@ -223,6 +223,15 @@ async def test_screened_emails_belong_to_their_newsletter(store: SqliteStore) ->
     assert [s.message_id for s in await store.list_screened_emails("n-2")] == ["m01"]
 
 
+async def test_screened_email_keeps_both_bodies(store: SqliteStore) -> None:
+    forwarded = make_screened_email(
+        "m19", unique_body="Sharing this.", body="Sharing this.\n\nFrom: Litware\nPrices rise."
+    )
+    await store.save_start(make_newsletter(), [forwarded])
+
+    assert await store.list_screened_emails("n-1") == [forwarded]
+
+
 async def test_rejected_screened_email_round_trip(store: SqliteStore) -> None:
     rejected = make_screened_email("m13", sender_address="alex.morgan@example.com")
     await store.save_start(make_newsletter(), [rejected])
@@ -247,15 +256,19 @@ async def test_extract_records_are_numbered_within_the_newsletter(store: SqliteS
     assert await store.list_extract_records("n-1") == [first, included, second]
 
 
-async def test_replaced_extract_record_keeps_its_excluded_id(store: SqliteStore) -> None:
+async def test_an_email_already_extracted_keeps_its_first_record(store: SqliteStore) -> None:
     await store.save_start(make_newsletter(), [])
-    await store.save_extract("n-1", "m01", make_output(category=None))
+    first = await store.save_extract("n-1", "m01", make_output(category=None))
 
-    flag = Sensitivity(type="commercial", evidence="mentions a contract value")
-    replaced = await store.save_extract("n-1", "m01", make_output(sensitivity=[flag]))
+    flag = Sensitivity(
+        kind="personal_information", withheld=True, evidence="mentions a colleague's health"
+    )
+    again = await store.save_extract("n-1", "m01", make_output(sensitivity=[flag]))
 
-    assert (replaced.exclusion, replaced.excluded_id) == ("sensitivity", "excluded-1")
-    assert await store.list_extract_records("n-1") == [replaced]
+    # Each email is extracted once, so a second extraction, such as one running at the same
+    # time, changes nothing.
+    assert again == first
+    assert await store.list_extract_records("n-1") == [first]
 
 
 async def test_restored_record_is_saved_in_place(store: SqliteStore) -> None:
@@ -267,9 +280,6 @@ async def test_restored_record_is_saved_in_place(store: SqliteStore) -> None:
     await store.save_restored("n-1", record)
 
     assert await store.list_extract_records("n-1") == [record, second]
-    # Extracting it again keeps the restore.
-    again = await store.save_extract("n-1", "m01", make_output(category=None))
-    assert (again.exclusion, again.restored_by) == (None, REVIEWER)
 
 
 async def test_no_items_before_consolidation(store: SqliteStore) -> None:
@@ -306,7 +316,11 @@ async def test_parallel_extracts_get_distinct_excluded_ids(store: SqliteStore) -
 
 def _version(number: int) -> Version:
     failure = CheckFailure(check="dashes", target="intro", detail="em or en dash")
-    return version_of(make_draft(), number, OPENED, [failure], [make_verdict(claim="Made up")])
+    flag = Sensitivity(kind="financial", withheld=False, evidence="mentions a price")
+    notes = EntryNotes(credits={"item-1": ["Priya Shah"]}, flags={"item-1": [flag]})
+    return version_of(
+        make_draft(), number, OPENED, [failure], [make_verdict(claim="Made up")], notes
+    )
 
 
 async def test_no_draft_before_writing(store: SqliteStore) -> None:

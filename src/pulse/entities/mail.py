@@ -39,7 +39,9 @@ class Email(Entity):
 class InboundEmail(Email):
     """A received message as listed from an inbox."""
 
-    # Graph's uniqueBody: the new content only, without quoted replies.
+    # Graph's uniqueBody: the sender's new content, without quoted replies or forwarded messages.
+    unique_body: str
+    # Graph's body: the whole message, including any message it forwards or quotes.
     body: str
     headers: dict[str, str]
 
@@ -64,7 +66,9 @@ class ScreenedEmail(Email):
     """An email from the submissions mailbox after the pre-filter, as Pulse stores it."""
 
     rejection: RejectionReason | None
-    # Kept only when the email passed the pre-filter, so rejected content is never stored.
+    # Both bodies are kept only when the email passed the pre-filter, so rejected content is
+    # never stored.
+    unique_body: str | None
     body: str | None
     # Whether delivery has moved it out of the inbox.
     moved: bool
@@ -135,10 +139,12 @@ def screen(
     rejection = _rejection(
         email, allowed_sender_domains, allowed_senders, allowed_sensitivity_labels
     )
+    passed = rejection is None
     return ScreenedEmail(
         **email.model_dump(include=set(Email.model_fields)),
         rejection=rejection,
-        body=email.body if rejection is None else None,
+        unique_body=email.unique_body if passed else None,
+        body=email.body if passed else None,
         moved=False,
     )
 

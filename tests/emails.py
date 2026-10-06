@@ -7,7 +7,15 @@ from typing import Any
 
 import yaml
 
-from pulse.entities.content import Content, Entry, Section, Verdict, WriterOutput
+from pulse.entities.content import (
+    Claim,
+    Content,
+    Entry,
+    EntryNotes,
+    Section,
+    Verdict,
+    WriterOutput,
+)
 from pulse.entities.extracts import (
     Consolidation,
     ConsolidatorItem,
@@ -42,16 +50,30 @@ CORPUS_OUTCOMES = {
     "m12": "excluded: no_category",
     "m13": "rejected: sender_domain",
     "m14": "rejected: sensitivity_label",
-    "m15": "excluded: sensitivity",
+    "m15": "included",
     "m16": "excluded: sensitivity",
     "m17": "excluded: no_category",
     "m18": "excluded: no_category",
+    "m19": "included",
+    "m20": "included",
+    "m21": "included",
+    "m22": "excluded: sensitivity",
+    "m23": "excluded: sensitivity",
 }
 # The corpus's duplicate reports of one piece of news share an item.
-CORPUS_ITEM_SOURCES = [["m01", "m02"], ["m03", "m06"], ["m04"], ["m05"]]
+CORPUS_ITEM_SOURCES = [
+    ["m01", "m02", "m15"],
+    ["m03", "m06"],
+    ["m04"],
+    ["m05"],
+    ["m19"],
+    ["m20"],
+    ["m21"],
+]
 
 
 def make_email(message_id: str = "m01", **changes: object) -> InboundEmail:
+    """`unique_body` defaults to the body, as for a message that forwards or quotes nothing."""
     fields: dict[str, object] = {
         "message_id": message_id,
         "sender_name": "Priya Shah",
@@ -61,8 +83,9 @@ def make_email(message_id: str = "m01", **changes: object) -> InboundEmail:
         "has_attachments": False,
         "body": "Tom Evans and I signed Northwind Retail on 22 September.",
         "headers": {},
-    }
-    return InboundEmail.model_validate(fields | changes)
+    } | changes
+    fields.setdefault("unique_body", fields["body"])
+    return InboundEmail.model_validate(fields)
 
 
 def screen_email(email: InboundEmail) -> ScreenedEmail:
@@ -91,7 +114,7 @@ def make_output(**changes: object) -> ExtractorOutput:
 
 def make_extract_record(message_id: str = "m01", **changes: object) -> ExtractRecord:
     """A first extraction of the email, numbered as the only record in its newsletter."""
-    return make_record(message_id, make_output(**changes), None, [])
+    return make_record(message_id, make_output(**changes), [])
 
 
 def make_consolidator_item(*source_message_ids: str, **changes: object) -> ConsolidatorItem:
@@ -120,6 +143,8 @@ def make_consolidation(*items: Item) -> Consolidation:
 
 
 ENTRY = "Priya Shah and Tom Evans signed Northwind Retail on 22 September."
+# A version with no credit lines and no flags.
+NO_NOTES = EntryNotes(credits={}, flags={})
 
 
 def make_draft(*entries: Entry, **changes: object) -> WriterOutput:
@@ -137,8 +162,11 @@ def make_draft(*entries: Entry, **changes: object) -> WriterOutput:
 
 
 def make_verdict(target: str = "item-1", claim: str | None = None) -> Verdict:
-    """A supported verdict, unless it names an unsupported claim."""
-    return Verdict(target=target, supported=claim is None, claim=claim)
+    """A verdict whose one claim has a source, unless it names a claim with none."""
+    if claim is None:
+        sourced = Claim(claim="Signed Northwind Retail", source="Signed Northwind Retail today")
+        return Verdict(target=target, claims=[sourced])
+    return Verdict(target=target, claims=[Claim(claim=claim, source=None)])
 
 
 def corpus_messages() -> list[dict[str, Any]]:
@@ -186,6 +214,7 @@ def corpus_email(message: dict[str, Any], position: int) -> InboundEmail:
         sender_address=message["sender_address"],
         subject=message["subject"],
         body=message["body"],
+        **({"unique_body": message["unique_body"]} if "unique_body" in message else {}),
         received=datetime(2026, 9, 22, 9, 0, tzinfo=UTC) + timedelta(minutes=position),
         has_attachments=message.get("has_attachments", False),
         headers=message.get("headers", {}),

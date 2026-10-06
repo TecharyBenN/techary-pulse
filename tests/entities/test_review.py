@@ -1,10 +1,19 @@
 from datetime import UTC, datetime
 
-from pulse.entities.content import CheckFailure, Entry, NotApplied, Verdict, Version, version_of
+from pulse.entities.content import (
+    CheckFailure,
+    Claim,
+    Entry,
+    NotApplied,
+    Verdict,
+    Version,
+    version_of,
+)
 from pulse.entities.extracts import Sensitivity, make_record, restored
 from pulse.entities.review import build_review
 from tests.emails import (
     ENTRY,
+    NO_NOTES,
     make_consolidation,
     make_draft,
     make_email,
@@ -22,13 +31,15 @@ EMAILS = [
     screen_email(make_email("m05", subject="From outside", sender_address="a@example.com")),
     screen_email(make_email("m06", subject="Price agreed")),
 ]
-SENSITIVE = Sensitivity(type="commercial", evidence="mentions a price")
+SENSITIVE = Sensitivity(
+    kind="confidential", withheld=True, evidence="mentions an unannounced price"
+)
 RECORDS = [
-    make_record("m01", make_output(), None, []),
-    make_record("m02", make_output(sensitivity=[SENSITIVE]), None, []),
-    make_record("m03", make_output(category=None), None, ["excluded-1"]),
+    make_record("m01", make_output(), []),
+    make_record("m02", make_output(sensitivity=[SENSITIVE]), []),
+    make_record("m03", make_output(category=None), ["excluded-1"]),
     restored(
-        [make_record("m06", make_output(sensitivity=[SENSITIVE]), None, ["excluded-2"])],
+        [make_record("m06", make_output(sensitivity=[SENSITIVE]), ["excluded-2"])],
         "excluded-3",
         "reviewer-oid",
     ),
@@ -47,10 +58,10 @@ def _version(
     draft = make_draft(
         *entries,
         changes=["Shortened the intro"],
-        not_applied=[NotApplied(feedback="Add the price", reason="Commercially sensitive")],
+        not_applied=[NotApplied(feedback="Add the price", reason="The price is not announced yet")],
     )
     created = datetime(2026, 9, 26, 9, 0, tzinfo=UTC)
-    return version_of(draft, number, created, failures or [], verdicts)
+    return version_of(draft, number, created, failures or [], verdicts, NO_NOTES)
 
 
 def test_review_lists_every_group_for_its_version() -> None:
@@ -104,6 +115,25 @@ def test_failures_and_unsupported_claims_are_named_as_reviewers_see_them() -> No
     ]
     assert review.unsupported is not None
     assert [(f.where, f.problem) for f in review.unsupported] == [("Intro", "A record week")]
+
+
+def test_each_unsupported_claim_is_its_own_finding() -> None:
+    verdict = Verdict(
+        target="item-1",
+        claims=[
+            Claim(claim="Signed two customers", source=None),
+            Claim(claim="on 22 September", source="Signed Northwind Retail on 22 September"),
+            Claim(claim="worth a million pounds", source=None),
+        ],
+    )
+
+    review = build_review(_version(1, verdicts=[verdict]), CONSOLIDATION, RECORDS, EMAILS)
+
+    assert review.unsupported is not None
+    assert [(f.where, f.problem) for f in review.unsupported] == [
+        (ENTRY, "Signed two customers"),
+        (ENTRY, "worth a million pounds"),
+    ]
 
 
 def test_a_version_not_judged_has_no_unsupported_list() -> None:

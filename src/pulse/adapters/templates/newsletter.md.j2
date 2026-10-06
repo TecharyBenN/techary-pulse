@@ -6,5 +6,15 @@
 {% for section in content.sections if section.entries %}
 ## {{ section.title }}
 {% for entry in section.entries %}
-{{ entry.text }}
+{{ entry.text }}{% for label in flags.get(entry.item_id, []) | labels %} **{{ label }}**{% endfor %}{% if entry.item_id in credits %}
+
+\- {{ credits[entry.item_id] | credit }}{% endif %}
 {% endfor %}{% endfor %}
+{% if flagged %}---
+
+## Flagged for review
+{% for entry in flagged %}
+- {{ entry.text }}{% for flag in entry.flags %}
+  - {{ flag | label }}: {{ flag.evidence }}{% endfor %}{% endfor %}
+
+{% endif %}

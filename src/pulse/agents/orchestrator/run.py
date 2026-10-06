@@ -26,16 +26,19 @@ from pulse.agents.orchestrator.agent import NO_REPLY, user_prompt
 from pulse.agents.orchestrator.tools import ShowResult, Tools, progress_note
 from pulse.agents.runner import is_truncated_or_refused
 from pulse.entities.base import Entity
-from pulse.entities.content import Content, Version
+from pulse.entities.content import Content, EntryNotes, Version
 from pulse.entities.conversation import ReviewerMessage, channel_changed
 from pulse.entities.errors import PulseError, RunFailed
 from pulse.entities.store import DELIVERY_NOTE, Store
+from pulse.services.operations import entry_notes
 
 Progress = Callable[[str], Awaitable[None]]
 
 _PRESENT_DRAFT = Tools.present_draft.__name__
 # Each of these tools shows the reviewer a newsletter after the reply.
 _SHOWING = (_PRESENT_DRAFT, Tools.show_draft.__name__)
+
+_NO_NOTES = EntryNotes(credits={}, flags={})
 
 _log = logging.getLogger(__name__)
 
@@ -45,6 +48,8 @@ class RunReply(Entity):
 
     text: str | None
     newsletter: Content | None
+    # That newsletter's credit lines and flags, which every reviewer view shows.
+    notes: EntryNotes
     # The version the run presented, so the email channel's reply carries its reviewer email.
     version: Version | None
 
@@ -230,9 +235,9 @@ class Orchestrator:
             fields["conversation_id"] = history.newsletter_id
             fields["outcome"] = "no_reply" if no_reply else "reply"
             _log.info("orchestrator_run", extra=fields | {"duration_ms": _ms_since(started)})
-            shown, version = await self._shown(message, history)
+            shown, notes, version = await self._shown(message, history)
             run_reply = RunReply(
-                text=None if no_reply else reply, newsletter=shown, version=version
+                text=None if no_reply else reply, newsletter=shown, notes=notes, version=version
             )
             if on_reply is not None:
                 await on_reply(run_reply)
@@ -240,20 +245,26 @@ class Orchestrator:
 
     async def _shown(
         self, message: ReviewerMessage, history: _History
-    ) -> tuple[Content | None, Version | None]:
+    ) -> tuple[Content | None, EntryNotes, Version | None]:
         """The newsletter this message's run last presented or showed, including in an earlier
-        attempt, and the version when the run presented it."""
+        attempt, with its notes, and the version when the run presented it.
+
+        A version keeps the notes it was presented with; the working draft's are worked out now.
+        """
         shown = history.shown.get(message.message_id)
         newsletter_id = history.newsletter_id
         if shown is None or newsletter_id is None:
-            return None, None
+            return None, _NO_NOTES, None
         if shown.version is None:
             draft = await self._store.get_draft(newsletter_id)
-            return (draft.content if draft else None), None
+            if draft is None:
+                return None, _NO_NOTES, None
+            notes = await entry_notes(self._store, newsletter_id, draft.content)
+            return draft.content, notes, None
         version = await self._store.get_version(newsletter_id, shown.version)
         if version is None:
-            return None, None
-        return version.content, version if shown.presented else None
+            return None, _NO_NOTES, None
+        return version.content, version.notes, version if shown.presented else None
 
     async def _converse(
         self, message: ReviewerMessage, history: _History, on_progress: Progress, new_chat: bool

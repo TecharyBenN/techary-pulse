@@ -10,6 +10,7 @@ from pulse.agents.prompts import (
     categories_instruction,
     data_block,
     feedback_block,
+    keyed,
     listed,
     read_instructions,
 )
@@ -76,7 +77,7 @@ def writer_prompt(
             "items",
             {
                 "headline": consolidation.headline if consolidation else None,
-                "items": [item.model_dump(mode="json", include=_ITEM_FIELDS) for item in items],
+                "items": [keyed(item, "item_id", _ITEM_FIELDS) for item in items],
             },
         ),
         data_block(
@@ -104,4 +105,11 @@ def output_checks(output: WriterOutput, known_ids: Collection[str]) -> list[str]
         for entry in content.entries()
         if entry.item_id not in content.item_ids
     ]
-    return unknown + missing
+    # The fix is always to remove the name: naming senders in the text is not wanted.
+    unnamed = [
+        f"remove {name} from the people of the {entry.item_id} entry: its text does not name them"
+        for entry in content.entries()
+        for name in entry.people
+        if name.casefold() not in entry.text.casefold()
+    ]
+    return unknown + missing + unnamed

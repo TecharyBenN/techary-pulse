@@ -8,6 +8,7 @@ from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, UserPro
 
 from pulse.adapters.store import SqliteStore
 from pulse.entities.errors import MailboxError, Refusal
+from pulse.entities.extracts import Sensitivity
 from pulse.entities.lifecycle import Newsletter, OnApproval, Scheduled
 from pulse.entities.mail import Body, OutboundEmail
 from pulse.entities.store import DELIVERY_NOTE
@@ -54,11 +55,11 @@ class _Setup:
             self.store, self.submissions, self.conversation, self.clock, self.lock
         )
 
-    async def approved(self) -> Newsletter:
-        """A newsletter with version 1 presented and approved."""
+    async def approved(self, flags: list[Sensitivity] | None = None) -> Newsletter:
+        """A newsletter with version 1 presented and approved; `flags` flags m01's entry."""
         await self.store.initialise()
         newsletter_id = (await self.operations.start_newsletter()).newsletter_id
-        await self.store.save_extract(newsletter_id, "m01", make_output())
+        await self.store.save_extract(newsletter_id, "m01", make_output(sensitivity=flags or []))
         await self.store.save_extract(newsletter_id, "m02", make_output(category=None))
         consolidation = make_consolidation(make_item(source_message_ids=["m01"]))
         await self.store.save_items(newsletter_id, consolidation)
@@ -107,6 +108,25 @@ async def test_sends_the_approved_version_once_to_all_staff(setup: _Setup) -> No
         APPROVED,
     )
     assert await setup.store.get_open_newsletter() is None
+
+
+async def test_a_flagged_version_is_sent_with_its_credit_lines_but_no_flags(
+    setup: _Setup,
+) -> None:
+    newsletter = await setup.approved(
+        [Sensitivity(kind="financial", withheld=False, evidence="mentions a price")]
+    )
+    version = await setup.store.get_version(newsletter.newsletter_id, 1)
+    assert version is not None and version.notes.flags
+
+    await setup.delivery.deliver()
+
+    [email] = setup.to_all_staff()
+    assert ENTRY in email.body.content
+    assert "- Priya Shah" in email.body.content
+    assert "Financial" not in email.body.content
+    assert "Flagged for review" not in email.body.content
+    assert "mentions a price" not in email.body.content
 
 
 async def test_scheduled_send_waits_for_the_send_slot(tmp_path: Path) -> None:

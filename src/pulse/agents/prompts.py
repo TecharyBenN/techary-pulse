@@ -5,6 +5,8 @@ import json
 from collections.abc import Mapping, Sequence
 from importlib.resources import files
 
+from pydantic import BaseModel
+
 from pulse.entities.conversation import ReviewerMessage
 
 # Who sent each message is for the store, so agents are not given it.
@@ -19,6 +21,13 @@ def read_instructions(package: str | None) -> str:
 def data_block(tag: str, data: object) -> str:
     """Untrusted data as JSON inside a tagged block, which the instructions say is data."""
     return f"<{tag}>\n{json.dumps(data, ensure_ascii=False)}\n</{tag}>"
+
+
+def keyed(model: BaseModel, key: str, fields: set[str]) -> dict[str, object]:
+    """The model's `fields` as JSON data with `key` first, so an agent reads which item or
+    record it is before its detail."""
+    data = model.model_dump(mode="json", include=fields)
+    return {key: data.pop(key), **data}
 
 
 def feedback_block(feedback: Sequence[ReviewerMessage]) -> str:

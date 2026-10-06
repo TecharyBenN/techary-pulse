@@ -21,12 +21,20 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pulse.adapters.store import SqliteStore
 from pulse.agents.orchestrator.agent import user_prompt
 from pulse.agents.orchestrator.run import Orchestrator, RunReply, history_note
-from pulse.entities.content import Version, version_of
+from pulse.entities.content import EntryNotes, Version, version_of
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import MailboxError, RunFailed
+from pulse.entities.extracts import Sensitivity
 from pulse.entities.lifecycle import abandon, open_newsletter, present
 from pulse.entities.store import DELIVERY_NOTE, HistoryRow
-from tests.emails import make_draft
+from tests.emails import (
+    NO_NOTES,
+    make_consolidation,
+    make_draft,
+    make_item,
+    make_output,
+    make_screened_email,
+)
 from tests.fakes.models import (
     ModelFunction,
     Tools,
@@ -457,9 +465,13 @@ async def test_a_refused_present_draft_supersedes_nothing(store: SqliteStore) ->
     assert _tool_results(seen) == [{"items": ["detail"]}, "Refused: there is no working draft"]
 
 
+PRICE = Sensitivity(kind="financial", withheld=False, evidence="mentions a supplier's prices")
+
+
 async def _version_1(store: SqliteStore) -> Version:
-    """Store version 1, which the stand-in present_draft presents."""
-    version = version_of(make_draft(), 1, OPENED, [], None)
+    """Store version 1, which the stand-in present_draft presents, with its entry flagged."""
+    notes = EntryNotes(credits={"item-1": ["Priya Shah"]}, flags={"item-1": [PRICE]})
+    version = version_of(make_draft(), 1, OPENED, [], None, notes)
     await store.save_version(present(make_newsletter()), version)
     return version
 
@@ -471,6 +483,7 @@ async def test_reply_carries_the_version_the_run_presented(store: SqliteStore) -
     reply = await make_orchestrator(store, model, Tools()).handle(make_message())
 
     assert (reply.text, reply.newsletter) == ("Version 1 is ready.", version.content)
+    assert reply.notes == version.notes
 
 
 async def test_reply_carries_no_version_when_the_run_presented_none(store: SqliteStore) -> None:
@@ -478,7 +491,7 @@ async def test_reply_carries_no_version_when_the_run_presented_none(store: Sqlit
 
     reply = await make_orchestrator(store, reply_with("Noted.")).handle(make_message())
 
-    assert reply.newsletter is None
+    assert (reply.newsletter, reply.notes) == (None, NO_NOTES)
 
 
 async def test_retried_message_carries_the_version_its_earlier_attempt_presented(
@@ -515,6 +528,25 @@ async def test_reply_carries_the_working_draft_the_run_showed(store: SqliteStore
     reply = await make_orchestrator(store, model, Tools()).handle(make_message())
 
     assert (reply.text, reply.newsletter) == ("Here is the draft.", shown.content)
+    # The draft has no items yet, so it has no notes.
+    assert reply.notes == NO_NOTES
+
+
+async def test_the_working_draft_shown_carries_its_notes_from_the_items_and_records(
+    store: SqliteStore,
+) -> None:
+    await _version_1(store)
+    await store.save_draft("n-1", make_draft(changes=["Shortened the intro"]))
+    named = Sensitivity(kind="named_person", withheld=False, evidence="thanks a colleague by name")
+    await store.save_extract("n-1", "m01", make_output(sensitivity=[named]))
+    await store.save_items("n-1", make_consolidation(make_item(source_message_ids=["m01"])))
+    await store.save_start(make_newsletter(), [make_screened_email("m01", sender_name="Dan Wood")])
+    model = responses(show_call(), text_response("Here is the draft."))
+
+    reply = await make_orchestrator(store, model, Tools()).handle(make_message())
+
+    # Worked out when shown, not taken from version 1.
+    assert reply.notes == EntryNotes(credits={"item-1": ["Dan Wood"]}, flags={"item-1": [named]})
 
 
 async def _feedback(store: SqliteStore, newsletter_id: str) -> list[str]:

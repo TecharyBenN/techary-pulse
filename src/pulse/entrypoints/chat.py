@@ -21,7 +21,7 @@ from pydantic import BaseModel, ValidationError
 
 from pulse.agents.orchestrator.run import Orchestrator, RunReply
 from pulse.entities.auth import Caller
-from pulse.entities.content import Content
+from pulse.entities.content import Content, EntryNotes
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import InvalidToken, PulseError
 
@@ -89,7 +89,7 @@ def create_app(
     verify: Callable[[str], Awaitable[Caller]],
     reviewer_role: str,
     clock: Callable[[], datetime],
-    render_markdown: Callable[[Content], str],
+    render_markdown: Callable[[Content, EntryNotes], str],
 ) -> FastAPI:
     """`render_markdown` renders the newsletter a run presented or showed, after the reply."""
     app = FastAPI()
@@ -162,7 +162,7 @@ async def _stream(
     task: asyncio.Task[RunReply],
     notes: asyncio.Queue[str | None],
     completion: _Completion,
-    render_markdown: Callable[[Content], str],
+    render_markdown: Callable[[Content, EntryNotes], str],
 ) -> AsyncIterator[str]:
     yield completion.chunk(ChoiceDelta(role="assistant"))
     while (note := await notes.get()) is not None:
@@ -178,9 +178,10 @@ async def _stream(
     yield "data: [DONE]\n\n"
 
 
-def _content(reply: RunReply, render_markdown: Callable[[Content], str]) -> str:
-    """The reply, then the newsletter in Markdown when the run presented or showed one."""
-    newsletter = render_markdown(reply.newsletter) if reply.newsletter else None
+def _content(reply: RunReply, render_markdown: Callable[[Content, EntryNotes], str]) -> str:
+    """The reply, then the newsletter in Markdown, with its notes, when the run presented or
+    showed one."""
+    newsletter = render_markdown(reply.newsletter, reply.notes) if reply.newsletter else None
     return "\n\n".join(part for part in (reply.text, newsletter) if part)
 
 
