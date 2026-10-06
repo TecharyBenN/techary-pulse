@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections.abc import Mapping
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -24,9 +25,11 @@ from pulse.agents.judge.agent import build_judge
 from pulse.agents.orchestrator.agent import build_agent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import PROGRESS_NOTES, ShowResult, Tools, progress_note
+from pulse.agents.sensitivity.agent import build_sensitivity
 from pulse.agents.writer.agent import build_writer
 from pulse.entities.content import Claim, Entry, JudgeOutput
 from pulse.entities.conversation import ReviewerMessage
+from pulse.entities.extracts import Extraction
 from pulse.entities.lifecycle import start_send
 from pulse.services.operations import ApproveResult, NoticeResult, RestoreResult
 from tests.emails import (
@@ -47,7 +50,13 @@ from tests.emails import (
     stored_outcomes,
 )
 from tests.fakes.mailbox import FakeMailbox
-from tests.fakes.models import extractor_model, reply_with, responses, text_response
+from tests.fakes.models import (
+    extractor_model,
+    reply_with,
+    responses,
+    sensitivity_model,
+    text_response,
+)
 from tests.messages import REVIEWER, make_message
 from tests.operations import REVIEWERS, make_operations
 
@@ -60,11 +69,11 @@ INBOX = [
     make_email("m03", body="Thanks!"),
     make_email("m13", sender_address="alex.morgan@example.com"),
 ]
-# The extractor stand-in finds each email by its body.
+# The extractor and sensitivity stand-ins find each email by its body.
 OUTPUTS = {
-    INBOX[0].body: make_output().model_dump_json(),
-    INBOX[1].body: make_output(category=None).model_dump_json(),
-    INBOX[2].body: make_output(category=None).model_dump_json(),
+    INBOX[0].body: make_output(),
+    INBOX[1].body: make_output(category=None),
+    INBOX[2].body: make_output(category=None),
 }
 CONSOLIDATOR_OUTPUT = make_consolidator_output(make_consolidator_item("m01"))
 CONSOLIDATION = make_consolidation(make_item(source_message_ids=["m01"]))
@@ -106,7 +115,8 @@ async def store(tmp_path: Path) -> SqliteStore:
 
 def _tools(
     store: SqliteStore,
-    extractor: FunctionModel | None = None,
+    outputs: Mapping[str, Extraction] = OUTPUTS,
+    sensitivity: FunctionModel | None = None,
     consolidator: FunctionModel | None = None,
     writer: FunctionModel | None = None,
     conversation: FakeMailbox | None = None,
@@ -115,7 +125,8 @@ def _tools(
     return Tools(
         make_operations(store, FakeMailbox(INBOX), conversation),
         store,
-        build_extractor(extractor or extractor_model(OUTPUTS), CATEGORIES),
+        build_extractor(extractor_model(outputs), CATEGORIES),
+        build_sensitivity(sensitivity or sensitivity_model(outputs)),
         build_consolidator(
             consolidator or FunctionModel(reply_with(CONSOLIDATOR_OUTPUT.model_dump_json())),
             CATEGORIES,
@@ -301,8 +312,8 @@ async def test_extract_takes_only_emails_that_passed_and_have_no_record(
 async def test_extract_reports_an_invalid_response_and_retries_it_when_called_again(
     store: SqliteStore,
 ) -> None:
-    invalid = OUTPUTS | {INBOX[0].body: make_output(category="gossip").model_dump_json()}
-    tools = _tools(store, extractor_model(invalid))
+    invalid = OUTPUTS | {INBOX[0].body: make_output(category="gossip")}
+    tools = _tools(store, invalid)
     started = await tools.start_newsletter()
     assert not isinstance(started, str)
 
@@ -322,10 +333,33 @@ async def test_extract_reports_an_invalid_response_and_retries_it_when_called_ag
     assert [o.message_id for o in retried.outcomes] == ["m01"]
 
 
+async def test_extract_fails_an_email_when_the_sensitivity_agent_fails_and_retries_it(
+    store: SqliteStore,
+) -> None:
+    invalid = FunctionModel(reply_with('{"sensitivity": "none"}'))
+    tools = _tools(store, sensitivity=invalid)
+    started = await tools.start_newsletter()
+    assert not isinstance(started, str)
+
+    result = await tools.extract()
+
+    assert not isinstance(result, str)
+    assert (result.failed, len(result.outcomes)) == (3, 3)
+    assert all(outcome.error for outcome in result.outcomes)
+    assert await store.list_extract_records(started.newsletter_id) == []
+    # No email has a record, so the next call tries every one again.
+    retried = await _tools(store).extract()
+    assert not isinstance(retried, str)
+    assert retried.failed == 0
+    assert {o.message_id for o in retried.outcomes} == {"m01", "m02", "m03"}
+
+
 async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteStore) -> None:
     messages = corpus_messages()
     inbox = [corpus_email(message, n) for n, message in enumerate(messages)]
-    outputs = {m["body"]: json.dumps(m["extract"]) for m in messages if "extract" in m}
+    outputs = {
+        m["body"]: Extraction.model_validate(m["extract"]) for m in messages if "extract" in m
+    }
     categories = {
         "customer_win": "A new customer has signed.",
         "delivery_highlight": "A project has been delivered.",
@@ -338,6 +372,7 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
         make_operations(store, FakeMailbox(inbox)),
         store,
         build_extractor(extractor_model(outputs), categories),
+        build_sensitivity(sensitivity_model(outputs)),
         build_consolidator(consolidator, categories),
         build_writer(
             FunctionModel(reply_with(DRAFT.model_dump_json())),
@@ -397,8 +432,8 @@ async def test_consolidate_stores_the_items_and_headline(store: SqliteStore) -> 
 
 
 async def test_consolidate_refuses_without_an_included_record(store: SqliteStore) -> None:
-    excluded = {body: make_output(category=None).model_dump_json() for body in OUTPUTS}
-    tools = _tools(store, extractor_model(excluded))
+    excluded = {body: make_output(category=None) for body in OUTPUTS}
+    tools = _tools(store, excluded)
     newsletter_id = await _extracted(tools)
 
     result = await tools.consolidate()
@@ -657,10 +692,10 @@ async def test_judge_gives_an_entry_only_its_own_item(store: SqliteStore) -> Non
             ).model_dump_json()
         )
     )
-    outputs = OUTPUTS | {INBOX[1].body: make_output().model_dump_json()}
+    outputs = OUTPUTS | {INBOX[1].body: make_output()}
     tools = _tools(
         store,
-        extractor=extractor_model(outputs),
+        outputs,
         consolidator=consolidator,
         judge=judge_model(seen),
     )

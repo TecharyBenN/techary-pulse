@@ -88,6 +88,7 @@ llm:
   models:
     orchestrator: gateway-mid-model
     extractor: gateway-small-model
+    sensitivity: gateway-small-model
     consolidator: gateway-mid-model
     writer: gateway-mid-model
     judge: gateway-mid-model

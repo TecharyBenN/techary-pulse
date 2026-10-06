@@ -211,7 +211,8 @@ Scope:
 - the judge run once for the intro and once per entry, and the limit on `write` calls in a run;
 - the judge matching each claim to its source; `extract` taking no arguments and extracting each screened email once, and `consolidate` taking every included record;
 - the extractor's `people` limited to the people the facts name, the writer's output check that every name in an entry's `people` appears in its text, and the `people` draft check reduced to the sources;
-- `confidential` covering a partner's or supplier's email marked for partners only, flagged and not withheld;
+- `confidential` covering a partner's or supplier's email marked for partners only or asking not to distribute it further, flagged and not withheld;
+- the sensitivity agent, split from the extractor, run alongside it on each screened email;
 - the orchestrator instructions for reporting flagged entries;
 - the synthetic corpus updated to the new rules, with a forwarded email, a pricing email, a shout-out, a birthday, a new joiner's welcome, a celebration such as a new baby, an email that credits people for their work, and a private personal email.
 

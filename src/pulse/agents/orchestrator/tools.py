@@ -12,6 +12,7 @@ from pydantic_ai.toolsets import FunctionToolset
 from pulse.agents.consolidator import agent as consolidator_agent
 from pulse.agents.extractor import agent as extractor_agent
 from pulse.agents.judge import agent as judge_agent
+from pulse.agents.prompts import email_prompt
 from pulse.agents.runner import run_specialist
 from pulse.agents.writer import agent as writer_agent
 from pulse.entities.base import Entity
@@ -22,8 +23,10 @@ from pulse.entities.extracts import (
     Consolidation,
     ConsolidatorOutput,
     ExclusionReason,
+    Extraction,
     ExtractorOutput,
     ExtractRecord,
+    SensitivityOutput,
     SourcedItem,
     consolidation_input,
     items_up_to_date,
@@ -144,6 +147,7 @@ class Tools:
         operations: Operations,
         store: Store,
         extractor: Agent[None, ExtractorOutput],
+        sensitivity: Agent[None, SensitivityOutput],
         consolidator: Agent[None, ConsolidatorOutput],
         writer: Agent[None, WriterOutput],
         judge: Agent[None, JudgeOutput],
@@ -152,6 +156,7 @@ class Tools:
         self._operations = operations
         self._store = store
         self._extractor = extractor
+        self._sensitivity = sensitivity
         self._consolidator = consolidator
         self._writer = writer
         self._judge = judge
@@ -248,15 +253,26 @@ class Tools:
 
     async def _extract_one(self, newsletter_id: str, email: ScreenedEmail) -> ExtractOutcome:
         message_id = email.message_id
-        try:
-            output = await run_specialist(
+        prompt = email_prompt(email)
+        # Sensitivity is judged in its own call, so a flag is never dropped while the extractor
+        # works on the news.
+        extracted, flagged = await asyncio.gather(
+            run_specialist(
                 self._extractor,
-                extractor_agent.extractor_prompt(email),
-                lambda output: extractor_agent.output_checks(output, self._categories),
-            )
-        except SpecialistFailed as failure:
-            return ExtractOutcome(message_id=message_id, error=str(failure))
-        record = await self._store.save_extract(newsletter_id, message_id, output)
+                prompt,
+                functools.partial(extractor_agent.output_checks, categories=self._categories),
+            ),
+            run_specialist(self._sensitivity, prompt, lambda output: []),
+            return_exceptions=True,
+        )
+        if isinstance(extracted, BaseException) or isinstance(flagged, BaseException):
+            for result in (extracted, flagged):
+                if isinstance(result, BaseException) and not isinstance(result, SpecialistFailed):
+                    raise result
+            failures = [str(r) for r in (extracted, flagged) if isinstance(r, SpecialistFailed)]
+            return ExtractOutcome(message_id=message_id, error="; ".join(failures))
+        extraction = Extraction(**extracted.model_dump(), **flagged.model_dump())
+        record = await self._store.save_extract(newsletter_id, message_id, extraction)
         return ExtractOutcome(
             message_id=message_id, exclusion=record.exclusion, excluded_id=record.excluded_id
         )

@@ -38,20 +38,29 @@ class ExtractorOutput(StrictEntity):
     summary: str
     facts: list[str]
     people: list[str]
+
+
+class SensitivityOutput(StrictEntity):
+    """What the sensitivity agent flags in one screened email."""
+
     sensitivity: list[Sensitivity]
 
 
-def exclusion_outcome(output: ExtractorOutput) -> ExclusionReason | None:
+class Extraction(ExtractorOutput, SensitivityOutput):
+    """Both agents' answers for one screened email, as code combines them."""
+
+
+def exclusion_outcome(extraction: Extraction) -> ExclusionReason | None:
     """The exclusion rules: why code excludes the record, or None when it is included."""
-    if any(flag.withheld for flag in output.sensitivity):
+    if any(flag.withheld for flag in extraction.sensitivity):
         return "sensitivity"
-    if output.category is None:
+    if extraction.category is None:
         return "no_category"
     return None
 
 
-class ExtractRecord(ExtractorOutput):
-    """An extractor output with the email it came from and the exclusion outcome code gave it."""
+class ExtractRecord(Extraction):
+    """An extraction with the email it came from and the exclusion outcome code gave it."""
 
     message_id: MessageId
     exclusion: ExclusionReason | None
@@ -63,13 +72,13 @@ class ExtractRecord(ExtractorOutput):
 
 
 def make_record(
-    message_id: MessageId, output: ExtractorOutput, used_ids: Collection[str]
+    message_id: MessageId, extraction: Extraction, used_ids: Collection[str]
 ) -> ExtractRecord:
     """Apply the exclusion rules, numbering an excluded record after the excluded IDs in use
     within the newsletter, `used_ids`."""
-    exclusion = exclusion_outcome(output)
+    exclusion = exclusion_outcome(extraction)
     return ExtractRecord(
-        **output.model_dump(),
+        **extraction.model_dump(),
         message_id=message_id,
         exclusion=exclusion,
         excluded_id=None if exclusion is None else f"excluded-{_highest(used_ids) + 1}",

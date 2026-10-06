@@ -6,7 +6,7 @@ from typing import Protocol
 from pulse.entities.base import Entity
 from pulse.entities.content import Verdict, Version, WriterOutput
 from pulse.entities.conversation import HandledMessage, ReviewerMessage
-from pulse.entities.extracts import Consolidation, ExtractorOutput, ExtractRecord
+from pulse.entities.extracts import Consolidation, Extraction, ExtractRecord
 from pulse.entities.lifecycle import Newsletter
 from pulse.entities.mail import MessageId, ScreenedEmail
 
@@ -53,7 +53,7 @@ class Store(Protocol):
         ...
 
     async def save_extract(
-        self, newsletter_id: str, message_id: MessageId, output: ExtractorOutput
+        self, newsletter_id: str, message_id: MessageId, extraction: Extraction
     ) -> ExtractRecord:
         """Save the output as the email's extract record and return it; an email that already
         has a record keeps it, and that record is returned."""

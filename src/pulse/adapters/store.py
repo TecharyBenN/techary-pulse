@@ -12,7 +12,7 @@ from pydantic import TypeAdapter
 from pulse.entities.content import Verdict, Version, WriterOutput
 from pulse.entities.conversation import HandledMessage, ReviewerMessage
 from pulse.entities.errors import StoreError
-from pulse.entities.extracts import Consolidation, ExtractorOutput, ExtractRecord, make_record
+from pulse.entities.extracts import Consolidation, Extraction, ExtractRecord, make_record
 from pulse.entities.lifecycle import CLOSED_STATES, Newsletter
 from pulse.entities.mail import MessageId, ScreenedEmail
 from pulse.entities.store import HistoryRow
@@ -122,7 +122,7 @@ class SqliteStore:
         await self._execute(lambda connection: connection.execute(sql, (newsletter_id, message_id)))
 
     async def save_extract(
-        self, newsletter_id: str, message_id: MessageId, output: ExtractorOutput
+        self, newsletter_id: str, message_id: MessageId, extraction: Extraction
     ) -> ExtractRecord:
         def save(connection: sqlite3.Connection) -> ExtractRecord:
             # Parallel extractions number their records, so the write lock is taken before reading.
@@ -137,7 +137,7 @@ class SqliteStore:
                 if row["message_id"] == message_id:
                     return _record(row)
             used_ids = [row["excluded_id"] for row in saved if row["excluded_id"]]
-            record = make_record(message_id, output, used_ids)
+            record = make_record(message_id, extraction, used_ids)
             row = {
                 "newsletter_id": newsletter_id,
                 "message_id": record.message_id,

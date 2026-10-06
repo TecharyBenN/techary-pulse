@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import BaseModel
 
 from pulse.entities.content import (
     Claim,
@@ -20,7 +21,7 @@ from pulse.entities.extracts import (
     Consolidation,
     ConsolidatorItem,
     ConsolidatorOutput,
-    ExtractorOutput,
+    Extraction,
     ExtractRecord,
     Item,
     make_record,
@@ -97,7 +98,7 @@ def make_screened_email(message_id: str = "m01", **changes: object) -> ScreenedE
     return screen_email(make_email(message_id, **changes))
 
 
-def make_output(**changes: object) -> ExtractorOutput:
+def make_output(**changes: object) -> Extraction:
     """An included output by default; `category=None` also gives it a reason, unless one is set."""
     if changes.get("category", "") is None:
         changes = {"exclusion_reason": "Fits no section."} | changes
@@ -109,7 +110,12 @@ def make_output(**changes: object) -> ExtractorOutput:
         "people": ["Priya Shah", "Tom Evans"],
         "sensitivity": [],
     }
-    return ExtractorOutput.model_validate(fields | changes)
+    return Extraction.model_validate(fields | changes)
+
+
+def share[M: BaseModel](extraction: Extraction, model: type[M]) -> M:
+    """One agent's share of a combined extraction: the fields its output type holds."""
+    return model.model_validate(extraction.model_dump(include=set(model.model_fields)))
 
 
 def make_extract_record(message_id: str = "m01", **changes: object) -> ExtractRecord:

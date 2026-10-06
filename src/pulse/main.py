@@ -27,6 +27,7 @@ from pulse.agents.judge.agent import build_judge
 from pulse.agents.orchestrator.agent import build_agent
 from pulse.agents.orchestrator.run import Orchestrator, history_note
 from pulse.agents.orchestrator.tools import Tools
+from pulse.agents.sensitivity.agent import build_sensitivity
 from pulse.agents.writer.agent import build_writer
 from pulse.config import Config, ConfigError, load_config
 from pulse.entities.errors import PulseError
@@ -176,6 +177,7 @@ def build_orchestrator(
         operations,
         store,
         build_extractor(model("extractor"), categories),
+        build_sensitivity(model("sensitivity")),
         build_consolidator(model("consolidator"), categories),
         build_writer(
             model("writer"),

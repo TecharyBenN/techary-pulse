@@ -10,7 +10,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pulse.agents.consolidator.agent import build_consolidator, consolidator_prompt, output_checks
 from pulse.agents.runner import run_specialist
 from pulse.config import load_config
-from pulse.entities.extracts import ExtractorOutput, make_record
+from pulse.entities.extracts import Extraction, make_record
 from tests.emails import CORPUS_ITEM_SOURCES, corpus_messages
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
@@ -23,7 +23,7 @@ async def test_duplicate_reports_merge_into_single_items() -> None:
     )
     model = OpenAIChatModel(config.llm.models["consolidator"], provider=provider)
     extracted = [
-        make_record(m["id"], ExtractorOutput.model_validate(m["extract"]), [])
+        make_record(m["id"], Extraction.model_validate(m["extract"]), [])
         for m in corpus_messages()
         if "extract" in m
     ]

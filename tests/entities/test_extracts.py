@@ -6,7 +6,7 @@ import pytest
 from pulse.entities.errors import Refusal
 from pulse.entities.extracts import (
     Consolidation,
-    ExtractorOutput,
+    Extraction,
     ExtractRecord,
     Item,
     Sensitivity,
@@ -28,6 +28,7 @@ from tests.emails import (
     make_item,
     make_output,
     make_screened_email,
+    share,
 )
 
 # The same kinds can be fine to share or withheld; only the extractor's judgement decides.
@@ -96,7 +97,7 @@ def test_included_record_keeps_its_flags() -> None:
     assert record.sensitivity == [COMMERCIAL, NAMED]
 
 
-def _record(output: ExtractorOutput, *used: str) -> ExtractRecord:
+def _record(output: Extraction, *used: str) -> ExtractRecord:
     return make_record("m01", output, used)
 
 
@@ -106,16 +107,13 @@ def test_included_record_has_no_excluded_id() -> None:
     assert (record.exclusion, record.excluded_id) == (None, None)
 
 
-def test_record_keeps_the_extractor_output_and_takes_the_message_id_from_code() -> None:
+def test_record_keeps_the_extraction_and_takes_the_message_id_from_code() -> None:
     output = make_output()
 
     record = _record(output)
 
     assert record.message_id == "m01"
-    assert (
-        ExtractorOutput.model_validate(record.model_dump(include=set(ExtractorOutput.model_fields)))
-        == output
-    )
+    assert share(record, Extraction) == output
 
 
 def test_first_excluded_record_is_numbered_from_one() -> None:

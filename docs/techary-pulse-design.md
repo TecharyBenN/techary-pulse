@@ -69,7 +69,7 @@ flowchart LR
 | Scheduler | Posts the start instruction on `schedule.draft_cron`. Every `schedule.poll_interval_seconds`, runs the email channel's poll, then delivery, so a change a reviewer emailed takes effect before a send due in the same poll. |
 | Orchestrator | Runs the newsletter conversation and decides which tools to call. |
 | Tools | The orchestrator's only means of acting. Each tool enforces its own checks in code. |
-| Specialist agents | The extractor, consolidator, writer and judge, each called through a tool. |
+| Specialist agents | The extractor, sensitivity agent, consolidator, writer and judge, each called through a tool. |
 | Delivery | Sends an approved newsletter at its send time and moves its screened emails. |
 | Store | SQLite database holding newsletters, their screened emails, drafts, versions, feedback and conversation history. |
 
@@ -90,6 +90,7 @@ src/pulse/
 │   │                  and the configured categories
 │   ├── orchestrator/  agent.py, prompt.md, tools.py, and run.py for one orchestrator run
 │   ├── extractor/     agent.py and prompt.md
+│   ├── sensitivity/   agent.py and prompt.md
 │   ├── consolidator/  agent.py and prompt.md
 │   ├── writer/        agent.py and prompt.md
 │   └── judge/         agent.py and prompt.md
@@ -203,7 +204,7 @@ The orchestrator's rules are set with `instructions`, which Pydantic AI sends wi
 | --- | --- | --- |
 | `start_newsletter` | Action | Opens a newsletter with the pending emails, or adds those that have arrived since to the open one, and applies the pre-filter to them. |
 | `list_screened_emails` | Read | Returns each screened email's message ID, sender name, received time, attachment flag, pre-filter outcome, and extract record if one exists. Never returns subjects or bodies. |
-| `extract` | Specialist | Runs the extractor, in parallel, on every screened email of the open newsletter that passed the pre-filter and has no extract record yet, and stores each extract record with its exclusion outcome. It takes no arguments, so the orchestrator never copies message IDs it could get wrong. An email whose extraction failed still has no record, so calling `extract` again retries it. Returns each email's outcome and the totals included, excluded by reason, and failed. |
+| `extract` | Specialist | Runs the extractor and the sensitivity agent, in parallel, on every screened email of the open newsletter that passed the pre-filter and has no extract record yet, and stores each extract record with its exclusion outcome. It takes no arguments, so the orchestrator never copies message IDs it could get wrong. An email whose extraction failed still has no record, so calling `extract` again retries it. Returns each email's outcome and the totals included, excluded by reason, and failed. |
 | `restore` | Action | Includes a named excluded record, recording the reviewer who asked. The items are then out of date until `consolidate` runs. |
 | `consolidate` | Specialist | Runs the consolidator on every included extract record and stores the resulting items and headline, replacing any earlier ones. Returns the headline, the item count and each item's ID, category and sources. |
 | `write` | Specialist | Runs the writer on the items, the excluded records, all feedback, the orchestrator's instruction and, when revising, the working draft, and stores the result as the working draft. A call is a revision whenever a working draft exists. Returns the included IDs, the changes, the feedback not applied and whether the working draft has changed since the latest version. |
@@ -281,11 +282,12 @@ Each specialist agent is a Pydantic AI agent whose instructions are part of its 
 | Agent | Called by | Input | Model tier |
 | --- | --- | --- | --- |
 | `extractor` | `extract`, once per screened email | Sender name and address from `from`, subject, received time, `uniqueBody` and the whole body | Small |
+| `sensitivity` | `extract`, once per screened email, alongside the extractor | The same as the extractor | Small |
 | `consolidator` | `consolidate` | Included extract records, and the configured categories | Mid |
 | `writer` | `write` | Consolidated items with sender names and received dates, excluded records, all feedback, the orchestrator's instruction and, when revising, the working draft | Mid |
 | `judge` | `judge`, once for the intro and once per entry | One entry and its item, or the intro and every item, with all feedback | Mid |
 
-The extractor is the only agent that reads message subjects and bodies. Extract records are derived from them, so every agent that receives an extract record, including the orchestrator, treats it as untrusted data. The code checks on each tool limit what a malicious record could cause: approval needs the reviewer's own words, and restoring, withdrawing or abandoning needs a reviewer as the caller.
+The extractor and the sensitivity agent are the only agents that read message subjects and bodies, and neither has tools. Extract records are derived from them, so every agent that receives an extract record, including the orchestrator, treats it as untrusted data. The code checks on each tool limit what a malicious record could cause: approval needs the reviewer's own words, and restoring, withdrawing or abandoning needs a reviewer as the caller.
 
 The model for each agent, including the orchestrator, comes from `llm.models` in configuration, keyed by agent name. Configuration fails to load if an agent has no model entry or an entry names no agent.
 
@@ -294,6 +296,8 @@ The model for each agent, including the orchestrator, comes from `llm.models` in
 Pulse sends every model call to `llm.base_url` in the OpenAI-compatible chat completions format that the gateway exposes. The gateway credential is read from the environment variable named in `llm.api_key_env`. Model names in configuration are the names the gateway exposes. Pulse holds no provider credentials.
 
 ### Extract
+
+`extract` runs two agents on each screened email, in parallel: the extractor returns the category, exclusion reason, summary, facts and people, and the sensitivity agent returns the sensitivity flags. Code combines their answers into the email's extract record, shown below. Judging sensitivity in its own call keeps a flag from being dropped when the email also has news to extract. If either agent gives no valid response, the email is not extracted, and the next `extract` call tries it again.
 
 ```json
 {
@@ -315,11 +319,11 @@ Pulse sends every model call to `llm.base_url` in the OpenAI-compatible chat com
 | --- | --- |
 | `category` | The configured section category that the news stated in the email fits; `null` when it fits none, including emails that state no news, such as automatic replies, test emails, newsletters and vague messages |
 | `exclusion_reason` | `null` when `category` is set; otherwise one short sentence for the reviewers saying why the email fits no category |
-| `sensitivity.kind` | What the flagged content is: `named_person` (a named person is congratulated, recognised, thanked, welcomed or credited, or has a birthday), `personal_information` (details of a person's private life, such as a new baby, a wedding, health, family matters, or performance or HR issues), `financial` (any pricing, deal value, margin, revenue, profit, budget or cash figure or situation, including a partner's or supplier's), `confidential` (news not yet public, or content marked confidential or draft, including a partner's or supplier's email marked for its partners only; the standard confidentiality footer an organisation adds to every email is not flagged) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
-| `sensitivity.withheld` | `true` when the content must not reach all staff unless a reviewer decides otherwise, such as health, HR or performance matters, financial difficulty, budget shortfalls or possible redundancies, unannounced internal changes, and inappropriate content; `false` when it is fine to share once a reviewer has seen it, such as a welcome, a thank-you, a birthday, a new baby, a supplier's price change, a partner's announcement marked for partners only, or profits shared as good news. The kind never decides it: the same kind can be either |
+| `sensitivity.kind` | What the flagged content is: `named_person` (a named person is congratulated, recognised, thanked, welcomed or credited, or has a birthday), `personal_information` (details of a person's private life, such as a new baby, a wedding, health, family matters, or performance or HR issues), `financial` (any pricing, deal value, margin, revenue, profit, budget or cash figure or situation, including a partner's or supplier's), `confidential` (news not yet public, or content marked confidential or draft, including a partner's or supplier's email marked for partners only or asking not to distribute it further; the standard confidentiality footer an organisation adds to every email is not flagged) or `inappropriate` (offensive, discriminatory or harassing content, profanity, criticism of named colleagues or customers) |
+| `sensitivity.withheld` | `true` when the content must not reach all staff unless a reviewer decides otherwise, such as health, HR or performance matters, financial difficulty, budget shortfalls or possible redundancies, unannounced internal changes, and inappropriate content; `false` when it is fine to share once a reviewer has seen it, such as a welcome, a thank-you, a birthday, a new baby, a supplier's price change, a partner's email marked for partners only, or profits shared as good news. Techary is the partner on a partner's email, and the newsletter rewords it for Techary's own staff, so a partner's marking or request not to distribute further does not make it withheld. The kind never decides it: the same kind can be either |
 | `sensitivity.evidence` | One short phrase saying what triggered the flag, without quoting the email |
 
-The extractor states only facts in the message, writing the sender's name where the sender's own text says I or we, so each fact names who it is about. The record's `people` lists everyone the facts name, and only them: someone who only sends, forwards or signs the email is not part of the news, and is credited through the credit line instead. The news is what the sender puts forward: when the sender forwards a message for staff to know about, the facts come from the forwarded message and name the organisation it is from, not the person who signed it; when the sender replies to an earlier conversation, the facts come from the sender's own text, and the earlier messages are ignored unless that text points to them as the news. An email that adds a fact to other news, such as a follow-up giving a figure for an earlier update, takes the category of that news. Code attaches the email's message ID to the extractor's output, making it the email's extract record, and excludes every record that has no category or carries a withheld flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. Restoring a record includes it: `restore` clears its exclusion outcome, keeps its excluded ID and records the reviewer who restored it, and the record then becomes an item like any other included record. Each screened email is extracted once. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries a withheld flag, and `no_category`, when `category` is `null`. A record with no withheld flag is included and keeps its flags, which mark its entries as described in [flagged entries](#flagged-entries). The extractor judges whether each flag is withheld; code only applies that judgement. The extractor's output checks require exactly one of `category` and `exclusion_reason`, and the category to be configured.
+The extractor states only facts in the message, writing the sender's name where the sender's own text says I or we, so each fact names who it is about. The record's `people` lists everyone the facts name, and only them: someone who only sends, forwards or signs the email is not part of the news, and is credited through the credit line instead. The news is what the sender puts forward: when the sender forwards a message for staff to know about, the facts come from the forwarded message and name the organisation it is from, not the person who signed it; when the sender replies to an earlier conversation, the facts come from the sender's own text, and the earlier messages are ignored unless that text points to them as the news. An email that adds a fact to other news, such as a follow-up giving a figure for an earlier update, takes the category of that news. Code attaches the email's message ID to the extractor's output, making it the email's extract record, and excludes every record that has no category or carries a withheld flag, and gives each excluded record an ID of the form `excluded-{n}`, numbered from 1 within the newsletter, so it can be restored. Restoring a record includes it: `restore` clears its exclusion outcome, keeps its excluded ID and records the reviewer who restored it, and the record then becomes an item like any other included record. Each screened email is extracted once. The exclusion outcome is the first that applies of: `sensitivity`, when the record carries a withheld flag, and `no_category`, when `category` is `null`. A record with no withheld flag is included and keeps its flags, which mark its entries as described in [flagged entries](#flagged-entries). The sensitivity agent judges whether each flag is withheld; code only applies that judgement. The extractor's output checks require exactly one of `category` and `exclusion_reason`, and the category to be configured.
 
 ### Consolidate
 
@@ -502,11 +506,11 @@ Within Pulse:
 - approval is recorded only by the `approve` tool, which checks the caller, the newsletter state and the version against the store, and requires the reviewer's own message to start with `approve v{version}`;
 - only verified reviewers can start an orchestrator run: in the chat endpoint, callers whose verified token carries the reviewer role, and in the email channel, senders Exchange authenticated as internal; otherwise, only the scheduler and `pulse draft` start one, and only with the start instruction;
 - conversation history is loaded only from the store, never from a client;
-- the extractor is the only agent that reads message subjects and bodies, and it has no tools; every other agent receives extract records, which it treats as untrusted data;
+- the extractor and the sensitivity agent are the only agents that read message subjects and bodies, and they have no tools; every other agent receives extract records, which it treats as untrusted data;
 - staff emails and reviewer messages never enter agent instructions or system prompts;
 - the orchestrator's tools are those listed in [tools](#tools), and each enforces its own checks in code;
 - the pre-filter rejects senders outside `allowed_sender_domains`, and outside `allowed_senders` when that list is not empty, and messages whose sensitivity label is not allowed;
-- the extractor flags sensitive and inappropriate content and judges whether each flag is withheld; code excludes every record with a withheld flag unless a verified reviewer restores it, and flags every entry drawn from a record with any sensitivity flag, so reviewers see each one before approving; the newsletter sent to `all_staff` carries no flags;
+- the sensitivity agent flags sensitive and inappropriate content and judges whether each flag is withheld; code excludes every record with a withheld flag unless a verified reviewer restores it, and flags every entry drawn from a record with any sensitivity flag, so reviewers see each one before approving; the newsletter sent to `all_staff` carries no flags;
 - drafts use only extracted facts and reviewer feedback, and the draft checks verify names and numbers against them;
 - rendering escapes all model output and email-derived text, in HTML and in Markdown; the orchestrator's email replies are converted from Markdown with any raw HTML in them escaped, and links to script, file or data addresses are left as text;
 - the chat endpoint accepts only requests whose bearer token verifies against the configured issuer, audience and key set, and trusts no identity a client states in any other way.
@@ -634,6 +638,7 @@ llm:
   models:
     orchestrator: <gateway-model-name>
     extractor: <gateway-model-name>
+    sensitivity: <gateway-model-name>
     consolidator: <gateway-model-name>
     writer: <gateway-model-name>
     judge: <gateway-model-name>
@@ -685,7 +690,7 @@ A synthetic corpus of staff emails is kept for manual runs against the dev tenan
 | Conversation mailbox | The shared mailbox named by `mailboxes.conversation`, used for all reviewer communication and the newsletter send. |
 | Credit line | The line code adds under each entry naming who shared its news, such as `- Ben Nicholls`. It appears in every rendering, including the newsletter sent to all staff. |
 | Delivery | Scheduled code that sends an approved newsletter and moves its screened emails. |
-| Extract record | The facts, people, category and sensitivity flags the extractor finds in one screened email. |
+| Extract record | The facts, people and category the extractor finds in one screened email, with the sensitivity flags the sensitivity agent finds in it. |
 | Flagged entry | An entry code labels for the reviewers with the kinds of its sensitivity flags, because its item draws on a record with a sensitivity flag, such as a price or a person being congratulated. Labels appear wherever reviewers see the newsletter, by email or in the chat endpoint, never in the newsletter sent to all staff. |
 | HITL | Human in the loop: a person who reviews output before it takes effect. |
 | Immutable ID | Graph message ID that stays the same when a message moves folders. |
@@ -707,5 +712,5 @@ A synthetic corpus of staff emails is kept for manual runs against the dev tenan
 | Store | SQLite database holding newsletters, screened emails, drafts, versions, feedback and conversation history. |
 | Submissions mailbox | The shared mailbox named by `mailboxes.submissions`, where staff send updates. |
 | Version | A draft presented to the reviewers, numbered from 1 within its newsletter. |
-| Withheld flag | A sensitivity flag the extractor judges must not reach all staff unless a reviewer decides otherwise. A record carrying one is excluded until a reviewer restores it. |
+| Withheld flag | A sensitivity flag the sensitivity agent judges must not reach all staff unless a reviewer decides otherwise. A record carrying one is excluded until a reviewer restores it. |
 | Working draft | The draft the orchestrator is working on, not yet presented to the reviewers. |

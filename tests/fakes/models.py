@@ -1,10 +1,12 @@
-"""Stand-in models for the orchestrator and the extractor, and a test-only tool."""
+"""Stand-in models for the orchestrator, the extractor and the sensitivity agent, and a test-only
+tool."""
 
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 
+from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
@@ -21,8 +23,10 @@ from pulse.agents.orchestrator.agent import INSTRUCTIONS
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import ShowResult
 from pulse.entities.conversation import ReviewerMessage
+from pulse.entities.extracts import Extraction, ExtractorOutput, SensitivityOutput
 from pulse.entities.store import Store
 from pulse.services.operations import PresentResult
+from tests.emails import share
 
 ModelFunction = Callable[[list[ModelMessage], AgentInfo], Awaitable[ModelResponse]]
 
@@ -114,9 +118,9 @@ def responses(*answers: ModelResponse | Exception) -> ModelFunction:
     return model
 
 
-def extractor_model(outputs: Mapping[str, str]) -> FunctionModel:
-    """Answer each email with the JSON set for its body, found in the first prompt, so a retry
-    gets the same answer."""
+def _email_model(outputs: Mapping[str, Extraction], answer: type[BaseModel]) -> FunctionModel:
+    """Answer each email with the share of the extraction set for its body, found in the first
+    prompt, so a retry gets the same answer."""
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         request = messages[0]
@@ -124,6 +128,14 @@ def extractor_model(outputs: Mapping[str, str]) -> FunctionModel:
         [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
         assert isinstance(prompt, str)
         email = json.loads(prompt.split("\n")[1])
-        return text_response(outputs[email["body"]])
+        return text_response(share(outputs[email["body"]], answer).model_dump_json())
 
     return FunctionModel(model)
+
+
+def extractor_model(outputs: Mapping[str, Extraction]) -> FunctionModel:
+    return _email_model(outputs, ExtractorOutput)
+
+
+def sensitivity_model(outputs: Mapping[str, Extraction]) -> FunctionModel:
+    return _email_model(outputs, SensitivityOutput)

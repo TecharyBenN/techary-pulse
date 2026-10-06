@@ -6,14 +6,10 @@ from collections.abc import Mapping
 from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models import Model
 
-from pulse.agents.prompts import categories_instruction, data_block, read_instructions
+from pulse.agents.prompts import categories_instruction, read_instructions
 from pulse.entities.extracts import ExtractorOutput
-from pulse.entities.mail import ScreenedEmail
 
 INSTRUCTIONS = read_instructions(__package__)
-
-# Code attaches the message ID to the record, so the model is not given it.
-_PROMPT_FIELDS = {"sender_name", "sender_address", "subject", "received", "unique_body", "body"}
 
 
 def build_extractor(model: Model, categories: Mapping[str, str]) -> Agent[None, ExtractorOutput]:
@@ -24,11 +20,6 @@ def build_extractor(model: Model, categories: Mapping[str, str]) -> Agent[None, 
         instructions=[INSTRUCTIONS, categories_instruction(categories)],
         name="extractor",
     )
-
-
-def extractor_prompt(email: ScreenedEmail) -> str:
-    """The email stays inside a delimited block, never in the instructions."""
-    return data_block("email", email.model_dump(mode="json", include=_PROMPT_FIELDS))
 
 
 def output_checks(output: ExtractorOutput, categories: Mapping[str, str]) -> list[str]:

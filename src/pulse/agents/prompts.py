@@ -1,5 +1,5 @@
-"""Prompt parts every agent uses: instructions, delimited data blocks, feedback and the configured
-categories."""
+"""Prompt parts the agents share: instructions, delimited data blocks, the screened email, feedback
+and the configured categories."""
 
 import json
 from collections.abc import Mapping, Sequence
@@ -8,9 +8,12 @@ from importlib.resources import files
 from pydantic import BaseModel
 
 from pulse.entities.conversation import ReviewerMessage
+from pulse.entities.mail import ScreenedEmail
 
 # Who sent each message is for the store, so agents are not given it.
 _FEEDBACK_FIELDS = {"received", "text"}
+# Code attaches the message ID to the record, so the model is not given it.
+_EMAIL_FIELDS = {"sender_name", "sender_address", "subject", "received", "unique_body", "body"}
 
 
 def read_instructions(package: str | None) -> str:
@@ -28,6 +31,12 @@ def keyed(model: BaseModel, key: str, fields: set[str]) -> dict[str, object]:
     record it is before its detail."""
     data = model.model_dump(mode="json", include=fields)
     return {key: data.pop(key), **data}
+
+
+def email_prompt(email: ScreenedEmail) -> str:
+    """One screened email for the agents that read it, the extractor and the sensitivity agent.
+    The email stays inside a delimited block, never in the instructions."""
+    return data_block("email", email.model_dump(mode="json", include=_EMAIL_FIELDS))
 
 
 def feedback_block(feedback: Sequence[ReviewerMessage]) -> str:
