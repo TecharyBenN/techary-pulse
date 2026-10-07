@@ -84,16 +84,15 @@ src/pulse/
 │                      the review section, the newsletter lifecycle, the specialist agents'
 │                      output types, which entities extend, Pulse's exception types, and the
 │                      interfaces the other layers implement: the mailbox and the store
-├── agents/            Every agent, one folder each
-│   ├── runner.py      Runs any specialist agent: validates its answer and retries once
-│   ├── prompts.py     What every agent's prompts share: instructions, delimited data blocks
-│   │                  and the configured categories
-│   ├── orchestrator/  agent.py, prompt.md, tools.py, and run.py for one orchestrator run
-│   ├── extractor/     agent.py and prompt.md
-│   ├── sensitivity/   agent.py and prompt.md
-│   ├── consolidator/  agent.py and prompt.md
-│   ├── writer/        agent.py and prompt.md
-│   └── judge/         agent.py and prompt.md
+├── agents/            The agents and the base classes they extend
+│   ├── base.py        What every agent shares, and how a specialist agent is given its work,
+│   │                  run and checked
+│   ├── orchestrator/  Runs the newsletter conversation through its tools
+│   ├── extractor/     Finds the news in one screened email
+│   ├── sensitivity/   Flags sensitive content in one screened email
+│   ├── consolidator/  Merges records that report the same news and writes the headline
+│   ├── writer/        Writes and revises the newsletter's content
+│   └── judge/         Checks each part of the draft against its facts
 ├── services/          Code the tools and the scheduler call
 │   ├── operations.py  Start, restore, check, present, approve, withdraw and abandon: state change,
 │   │                  save, email
@@ -110,6 +109,8 @@ src/pulse/
 tests/                 Mirrors src/pulse/; fakes/ holds the fake mailbox, fake Graph, controlled clock
                        and stand-in models
 ```
+
+Each agent's folder holds `agent.py`, which defines its class, and `prompt.md`, its instructions. The orchestrator's folder also holds `tools.py`, its tools, and `run.py`, which runs it for one reviewer message.
 
 ## Newsletters
 

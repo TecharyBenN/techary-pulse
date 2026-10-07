@@ -19,14 +19,14 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
 from pulse.adapters.store import SqliteStore
-from pulse.agents.consolidator.agent import build_consolidator
-from pulse.agents.extractor.agent import build_extractor
-from pulse.agents.judge.agent import build_judge
-from pulse.agents.orchestrator.agent import build_agent
+from pulse.agents.consolidator.agent import ConsolidatorAgent
+from pulse.agents.extractor.agent import ExtractorAgent
+from pulse.agents.judge.agent import JudgeAgent
+from pulse.agents.orchestrator.agent import OrchestratorAgent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import PROGRESS_NOTES, ShowResult, Tools, progress_note
-from pulse.agents.sensitivity.agent import build_sensitivity
-from pulse.agents.writer.agent import build_writer
+from pulse.agents.sensitivity.agent import SensitivityAgent
+from pulse.agents.writer.agent import WriterAgent
 from pulse.entities.content import Claim, Entry, JudgeOutput
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.extracts import Extraction
@@ -125,21 +125,20 @@ def _tools(
     return Tools(
         make_operations(store, FakeMailbox(INBOX), conversation),
         store,
-        build_extractor(extractor_model(outputs), CATEGORIES),
-        build_sensitivity(sensitivity or sensitivity_model(outputs)),
-        build_consolidator(
+        ExtractorAgent(extractor_model(outputs), CATEGORIES),
+        SensitivityAgent(sensitivity or sensitivity_model(outputs)),
+        ConsolidatorAgent(
             consolidator or FunctionModel(reply_with(CONSOLIDATOR_OUTPUT.model_dump_json())),
             CATEGORIES,
         ),
-        build_writer(
+        WriterAgent(
             writer or FunctionModel(reply_with(DRAFT.model_dump_json())),
             CATEGORIES,
             {"customer_win": "Customer wins"},
             "Headline of the week",
             400,
         ),
-        build_judge(judge or judge_model()),
-        CATEGORIES,
+        JudgeAgent(judge or judge_model()),
     )
 
 
@@ -371,18 +370,17 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
     tools = Tools(
         make_operations(store, FakeMailbox(inbox)),
         store,
-        build_extractor(extractor_model(outputs), categories),
-        build_sensitivity(sensitivity_model(outputs)),
-        build_consolidator(consolidator, categories),
-        build_writer(
+        ExtractorAgent(extractor_model(outputs), categories),
+        SensitivityAgent(sensitivity_model(outputs)),
+        ConsolidatorAgent(consolidator, categories),
+        WriterAgent(
             FunctionModel(reply_with(DRAFT.model_dump_json())),
             categories,
             {"customer_win": "Customer wins"},
             "Headline of the week",
             400,
         ),
-        build_judge(judge_model()),
-        categories,
+        JudgeAgent(judge_model()),
     )
     model = responses(
         _call("get_newsletter"),
@@ -392,7 +390,7 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
         text_response("Done."),
     )
     orchestrator = Orchestrator(
-        build_agent(FunctionModel(model), tools.toolset()),
+        OrchestratorAgent(FunctionModel(model), tools.toolset()),
         store,
         40,
         timedelta(minutes=15),

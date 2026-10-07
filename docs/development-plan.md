@@ -130,7 +130,7 @@ Scope:
 - the `screened_emails` and `extract_records` tables;
 - `start_newsletter`: opening a newsletter with every inbox message, adding new messages to an open one, applying the pre-filter, and its refusals;
 - `list_screened_emails` and `get_newsletter`;
-- the agent runner: validating each specialist response against its output type and output checks, and retrying once;
+- the specialist agent base class: validating each specialist response against its output type and output checks, and retrying once;
 - the extractor, and `extract`: running it in parallel, applying the exclusion rules and giving each excluded record an ID;
 - the orchestrator instructions for starting a newsletter and treating extract records as data.
 

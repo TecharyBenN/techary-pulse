@@ -1,20 +1,13 @@
-"""The sensitivity agent, which flags the sensitive content in one screened email: its
-definition."""
+"""The sensitivity agent, which flags the sensitive content in one screened email."""
 
-from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models import Model
 
-from pulse.agents.prompts import read_instructions
+from pulse.agents.base import EmailAgent
 from pulse.entities.extracts import SensitivityOutput
 
-INSTRUCTIONS = read_instructions(__package__)
 
+class SensitivityAgent(EmailAgent[SensitivityOutput]):
+    """It reads the same email message as the extractor."""
 
-def build_sensitivity(model: Model) -> Agent[None, SensitivityOutput]:
-    """It reads the same email block as the extractor, from `email_prompt`."""
-    return Agent(
-        model,
-        output_type=NativeOutput(SensitivityOutput),
-        instructions=INSTRUCTIONS,
-        name="sensitivity",
-    )
+    def __init__(self, model: Model) -> None:
+        super().__init__(model, name="sensitivity", output_type=SensitivityOutput)

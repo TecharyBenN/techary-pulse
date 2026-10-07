@@ -7,8 +7,7 @@ import pytest
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from pulse.agents.consolidator.agent import build_consolidator, consolidator_prompt, output_checks
-from pulse.agents.runner import run_specialist
+from pulse.agents.consolidator.agent import ConsolidatorAgent, ConsolidatorTask
 from pulse.config import load_config
 from pulse.entities.extracts import Extraction, make_record
 from tests.emails import CORPUS_ITEM_SOURCES, corpus_messages
@@ -29,10 +28,8 @@ async def test_duplicate_reports_merge_into_single_items() -> None:
     ]
     records = [record for record in extracted if record.exclusion is None]
 
-    output = await run_specialist(
-        build_consolidator(model, config.categories),
-        consolidator_prompt(records),
-        lambda output: output_checks(output, records, config.categories),
+    output = await ConsolidatorAgent(model, config.categories).answer(
+        ConsolidatorTask(records=records)
     )
 
     print(output.model_dump_json(indent=2))

@@ -21,14 +21,14 @@ from pulse.adapters.graph import GraphMailbox, certificate_thumbprint, graph_cli
 from pulse.adapters.render import Renderer
 from pulse.adapters.store import SqliteStore
 from pulse.adapters.tokens import JwtVerifier
-from pulse.agents.consolidator.agent import build_consolidator
-from pulse.agents.extractor.agent import build_extractor
-from pulse.agents.judge.agent import build_judge
-from pulse.agents.orchestrator.agent import build_agent
+from pulse.agents.consolidator.agent import ConsolidatorAgent
+from pulse.agents.extractor.agent import ExtractorAgent
+from pulse.agents.judge.agent import JudgeAgent
+from pulse.agents.orchestrator.agent import OrchestratorAgent
 from pulse.agents.orchestrator.run import Orchestrator, history_note
 from pulse.agents.orchestrator.tools import Tools
-from pulse.agents.sensitivity.agent import build_sensitivity
-from pulse.agents.writer.agent import build_writer
+from pulse.agents.sensitivity.agent import SensitivityAgent
+from pulse.agents.writer.agent import WriterAgent
 from pulse.config import Config, ConfigError, load_config
 from pulse.entities.errors import PulseError
 from pulse.entities.mail import InboundEmail, Mailbox, ScreenedEmail, screen
@@ -176,21 +176,20 @@ def build_orchestrator(
     tools = Tools(
         operations,
         store,
-        build_extractor(model("extractor"), categories),
-        build_sensitivity(model("sensitivity")),
-        build_consolidator(model("consolidator"), categories),
-        build_writer(
+        ExtractorAgent(model("extractor"), categories),
+        SensitivityAgent(model("sensitivity")),
+        ConsolidatorAgent(model("consolidator"), categories),
+        WriterAgent(
             model("writer"),
             categories,
             {section.category: section.title for section in config.sections},
             config.headline_title,
             config.limits.max_words,
         ),
-        build_judge(model("judge")),
-        categories,
+        JudgeAgent(model("judge")),
     )
     return Orchestrator(
-        build_agent(model("orchestrator"), tools.toolset()),
+        OrchestratorAgent(model("orchestrator"), tools.toolset()),
         store,
         config.orchestrator.max_tool_calls,
         timedelta(minutes=config.orchestrator.max_run_minutes),
