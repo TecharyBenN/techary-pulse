@@ -22,9 +22,9 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from pulse.agents.orchestrator.agent import NO_REPLY, user_prompt
+from pulse.agents.base import is_truncated_or_refused
+from pulse.agents.orchestrator.agent import NO_REPLY, OrchestratorAgent
 from pulse.agents.orchestrator.tools import ShowResult, Tools, progress_note
-from pulse.agents.runner import is_truncated_or_refused
 from pulse.entities.base import Entity
 from pulse.entities.content import Content, EntryNotes, Version
 from pulse.entities.conversation import ReviewerMessage, channel_changed
@@ -181,7 +181,7 @@ class Orchestrator:
 
     def __init__(
         self,
-        agent: Agent[ReviewerMessage, str],
+        agent: OrchestratorAgent,
         store: Store,
         max_tool_calls: int,
         max_run_time: timedelta,
@@ -283,7 +283,7 @@ class Orchestrator:
             await self._store.list_feedback(history.newsletter_id) if history.newsletter_id else []
         )
         # The reviewer's screen shows nothing of the conversation in either case.
-        prompt = user_prompt(message, recap=new_chat or channel_changed(feedback, message))
+        prompt = self._agent.message(message, recap=new_chat or channel_changed(feedback, message))
         return await self._run(prompt, message, history, on_progress)
 
     async def _run(

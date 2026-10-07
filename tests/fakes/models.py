@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 
 from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
     ModelMessage,
@@ -18,8 +18,9 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.toolsets import FunctionToolset
 
-from pulse.agents.orchestrator.agent import INSTRUCTIONS
+from pulse.agents.orchestrator.agent import OrchestratorAgent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import ShowResult
 from pulse.entities.conversation import ReviewerMessage
@@ -64,13 +65,10 @@ def make_orchestrator(
     max_run_time: timedelta = timedelta(minutes=15),
     lock: asyncio.Lock | None = None,
 ) -> Orchestrator:
-    agent = Agent(
-        FunctionModel(model),
-        deps_type=ReviewerMessage,
-        output_type=str,
-        instructions=INSTRUCTIONS,
-        tools=[tools.ping, tools.caller, tools.present_draft, tools.show_draft] if tools else [],
+    toolset = FunctionToolset(
+        [tools.ping, tools.caller, tools.present_draft, tools.show_draft] if tools else []
     )
+    agent = OrchestratorAgent(FunctionModel(model), toolset)
     return Orchestrator(agent, store, max_tool_calls, max_run_time, lock or asyncio.Lock())
 
 

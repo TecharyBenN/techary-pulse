@@ -3,30 +3,26 @@
 import asyncio
 import functools
 from collections import Counter
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from typing import Any, Self
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import RunContext
 from pydantic_ai.toolsets import FunctionToolset
 
-from pulse.agents.consolidator import agent as consolidator_agent
-from pulse.agents.extractor import agent as extractor_agent
-from pulse.agents.judge import agent as judge_agent
-from pulse.agents.prompts import email_prompt
-from pulse.agents.runner import run_specialist
-from pulse.agents.writer import agent as writer_agent
+from pulse.agents.consolidator.agent import ConsolidatorAgent, ConsolidatorTask
+from pulse.agents.extractor.agent import ExtractorAgent
+from pulse.agents.judge.agent import JudgeAgent, JudgeTask
+from pulse.agents.sensitivity.agent import SensitivityAgent
+from pulse.agents.writer.agent import WriterAgent, WriterTask
 from pulse.entities.base import Entity
-from pulse.entities.content import JudgeOutput, Verdict, WriterOutput, draft_changed
+from pulse.entities.content import Verdict, draft_changed
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.errors import Refusal, SpecialistFailed
 from pulse.entities.extracts import (
     Consolidation,
-    ConsolidatorOutput,
     ExclusionReason,
     Extraction,
-    ExtractorOutput,
     ExtractRecord,
-    SensitivityOutput,
     SourcedItem,
     consolidation_input,
     items_up_to_date,
@@ -146,12 +142,11 @@ class Tools:
         self,
         operations: Operations,
         store: Store,
-        extractor: Agent[None, ExtractorOutput],
-        sensitivity: Agent[None, SensitivityOutput],
-        consolidator: Agent[None, ConsolidatorOutput],
-        writer: Agent[None, WriterOutput],
-        judge: Agent[None, JudgeOutput],
-        categories: Mapping[str, str],
+        extractor: ExtractorAgent,
+        sensitivity: SensitivityAgent,
+        consolidator: ConsolidatorAgent,
+        writer: WriterAgent,
+        judge: JudgeAgent,
     ) -> None:
         self._operations = operations
         self._store = store
@@ -160,7 +155,6 @@ class Tools:
         self._consolidator = consolidator
         self._writer = writer
         self._judge = judge
-        self._categories = categories
         # Write calls by the message whose run made them.
         self._writes: Counter[str] = Counter()
 
@@ -253,17 +247,10 @@ class Tools:
 
     async def _extract_one(self, newsletter_id: str, email: ScreenedEmail) -> ExtractOutcome:
         message_id = email.message_id
-        prompt = email_prompt(email)
         # Sensitivity is judged in its own call, so a flag is never dropped while the extractor
         # works on the news.
         extracted, flagged = await asyncio.gather(
-            run_specialist(
-                self._extractor,
-                prompt,
-                functools.partial(extractor_agent.output_checks, categories=self._categories),
-            ),
-            run_specialist(self._sensitivity, prompt, lambda output: []),
-            return_exceptions=True,
+            self._extractor.answer(email), self._sensitivity.answer(email), return_exceptions=True
         )
         if isinstance(extracted, BaseException) or isinstance(flagged, BaseException):
             for result in (extracted, flagged):
@@ -291,11 +278,7 @@ class Tools:
         newsletter = await self._open()
         records = await self._store.list_extract_records(newsletter.newsletter_id)
         selected = consolidation_input(records)
-        output = await run_specialist(
-            self._consolidator,
-            consolidator_agent.consolidator_prompt(selected),
-            lambda output: consolidator_agent.output_checks(output, selected, self._categories),
-        )
+        output = await self._consolidator.answer(ConsolidatorTask(records=selected))
         consolidation = make_consolidation(output, selected)
         await self._store.save_items(newsletter.newsletter_id, consolidation)
         return {
@@ -334,11 +317,15 @@ class Tools:
         consolidated, items, excluded = await self._items(newsletter_id)
         feedback = await self._store.list_feedback(newsletter_id)
         draft = await self._store.get_draft(newsletter_id)
-        known = [item.item_id for item in items]
-        output = await run_specialist(
-            self._writer,
-            writer_agent.writer_prompt(consolidated, items, excluded, feedback, instruction, draft),
-            lambda output: writer_agent.output_checks(output, known),
+        output = await self._writer.answer(
+            WriterTask(
+                headline=consolidated.headline if consolidated else None,
+                items=items,
+                excluded=excluded,
+                feedback=feedback,
+                instruction=instruction,
+                draft=draft,
+            )
         )
         await self._store.save_draft(newsletter_id, output)
         return output.model_dump(mode="json", include={"changes", "not_applied"}) | {
@@ -386,15 +373,12 @@ class Tools:
         by_id = {item.item_id: item for item in items}
         # One text per call: the intro may draw on any item, an entry only on its own.
         targets = ["intro"]
-        prompts = [judge_agent.judge_prompt("intro", content.intro, items, feedback)]
+        tasks = [JudgeTask(part="intro", text=content.intro, items=items, feedback=feedback)]
         for entry in content.entries():
             own = [by_id[entry.item_id]] if entry.item_id in by_id else []
             targets.append(entry.item_id)
-            prompts.append(judge_agent.judge_prompt("entry", entry.text, own, feedback))
-        outputs = await asyncio.gather(
-            # The output type is the whole contract: code decides support from the claims.
-            *(run_specialist(self._judge, prompt, lambda _: []) for prompt in prompts)
-        )
+            tasks.append(JudgeTask(part="entry", text=entry.text, items=own, feedback=feedback))
+        outputs = await asyncio.gather(*(self._judge.answer(task) for task in tasks))
         verdicts = [
             Verdict(target=target, **output.model_dump())
             for target, output in zip(targets, outputs, strict=True)
