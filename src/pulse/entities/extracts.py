@@ -20,11 +20,11 @@ _EXCLUDED_ID = re.compile(r"excluded-([0-9]+)")
 
 
 class Sensitivity(StrictEntity):
-    """A sensitivity flag the extractor raised: what it is, whether it must be withheld from
-    all staff, and its evidence."""
+    """A sensitivity flag the sensitivity agent raised: what it is, whether it must be withheld
+    from all staff, and its evidence."""
 
     kind: SensitivityKind
-    # The extractor's judgement; the kind never decides it.
+    # The sensitivity agent's judgement; the kind never decides it.
     withheld: bool
     evidence: str
 
