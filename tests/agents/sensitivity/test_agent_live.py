@@ -10,7 +10,13 @@ from pydantic_ai.models import Model
 from pulse.agents.sensitivity.agent import SensitivityAgent
 from pulse.config import Config
 from pulse.entities.extracts import SensitivityOutput
-from tests.evaluation import SensitivityExpectation, expectations, run_live, sensitivity_problems
+from tests.evaluation import (
+    SensitivityExpectation,
+    corpus_inputs,
+    expectations,
+    run_live,
+    sensitivity_problems,
+)
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
 
@@ -26,7 +32,7 @@ async def test_the_sensitivity_agent_gives_the_expected_flags_for_every_corpus_e
     def problems(corpus_id: str, output: SensitivityOutput) -> list[str]:
         return sensitivity_problems(output, expected[corpus_id])
 
-    answers = await run_live("sensitivity", build, problems, _details, SAMPLES)
+    answers = await run_live("sensitivity", build, corpus_inputs(), problems, _details, SAMPLES)
 
     assert all(not answer.problems for answer in answers)
 

@@ -202,6 +202,11 @@ def corpus_consolidation(record_ids: Mapping[str, str]) -> ConsolidatorOutput:
     return ConsolidatorOutput(headline=expected["headline"], items=items)
 
 
+def corpus_expectation(agent: str) -> Any:
+    """The test's expected answer for an agent that takes the whole newsletter at once."""
+    return _corpus()["expect"][agent]
+
+
 def graph_corpus_emails() -> list[ScreenedEmail]:
     return SCREENED_EMAILS.validate_json(GRAPH_CORPUS.read_bytes())
 

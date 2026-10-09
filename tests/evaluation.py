@@ -9,55 +9,101 @@ import os
 import re
 import subprocess
 from collections import Counter, defaultdict
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, Self, get_args
+from typing import Any, NamedTuple, Self, get_args
 
 import httpx2
-from pydantic import AwareDatetime, BaseModel
+from pydantic import AwareDatetime, BaseModel, TypeAdapter
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from pulse.agents.base import EmailAgent
+from pulse.agents.base import SpecialistAgent
+from pulse.agents.consolidator.agent import ConsolidatorTask
 from pulse.config import Config, load_config
 from pulse.entities.base import Entity, StrictEntity
 from pulse.entities.errors import SpecialistFailed
-from pulse.entities.extracts import ExtractorOutput, SensitivityKind, SensitivityOutput
+from pulse.entities.extracts import (
+    ConsolidatorOutput,
+    ExtractorOutput,
+    ExtractRecord,
+    SensitivityKind,
+    SensitivityOutput,
+)
 from pulse.entities.mail import ScreenedEmail
-from tests.emails import corpus_email, corpus_messages, graph_corpus_emails, screen_email
+from tests.emails import (
+    corpus_email,
+    corpus_expectation,
+    corpus_messages,
+    graph_corpus_emails,
+    screen_email,
+)
 
 EVALUATIONS = Path("evaluations")
+# The included records the first-stage baselines produced, which the consolidator is given, and
+# three of their excluded records as a reviewer restored them.
+INCLUDED_RECORDS = Path(__file__).parent / "corpus" / "included_records.json"
+_RECORDS = TypeAdapter(list[ExtractRecord])
 
-# The email and sample a request to the gateway belongs to; each evaluated call runs in its own
+# The input and sample a request to the gateway belongs to; each evaluated call runs in its own
 # task, so concurrent calls never share it.
 _CALL: contextvars.ContextVar[tuple[str, int]] = contextvars.ContextVar("evaluated_call")
 
 
-class Input(NamedTuple):
-    """A corpus email given to the agent: as Graph returned it, or built locally when it was kept
-    out of the dev inbox."""
+class Input[T](NamedTuple):
+    """One task given to the agent, as Pulse gives it, named for the report, with where it came
+    from."""
 
-    corpus_id: str
-    form: Literal["graph", "local"]
-    email: ScreenedEmail
+    input_id: str
+    label: str
+    # For a corpus email, "graph" when Graph returned it and "local" when it was kept out of the
+    # dev inbox; for a later agent, the baselines its input came from.
+    form: str
+    task: T
 
 
-def corpus_inputs() -> list[Input]:
-    """Every corpus email that passes the pre-filter, in corpus order."""
+def corpus_inputs() -> list[Input[ScreenedEmail]]:
+    """Every corpus email that passes the pre-filter, in corpus order, named by corpus ID."""
     graph = {email.message_id: email for email in graph_corpus_emails()}
     inputs = []
     for position, message in enumerate(corpus_messages()):
         corpus_id = message["id"]
         if corpus_id in graph:
-            inputs.append(Input(corpus_id, "graph", graph[corpus_id]))
+            email = graph[corpus_id]
+            inputs.append(Input(corpus_id, email.subject, "graph", email))
         elif not message.get("seed", True):
             email = screen_email(corpus_email(message, position))
             if email.rejection is None:
-                inputs.append(Input(corpus_id, "local", email))
+                inputs.append(Input(corpus_id, email.subject, "local", email))
     return inputs
+
+
+def consolidator_inputs() -> list[Input[ConsolidatorTask]]:
+    """The newsletter's included records, as the first-stage baselines produced them, each named by
+    the corpus ID of its email; then the same with three restored records among them, in corpus
+    order, as the store lists them."""
+    saved = json.loads(INCLUDED_RECORDS.read_text(encoding="utf-8"))
+    included = _RECORDS.validate_python(saved["records"])
+    restored = _RECORDS.validate_python(saved["restored"])
+    order = [message["id"] for message in corpus_messages()]
+    with_restored = sorted([*included, *restored], key=lambda r: order.index(r.message_id))
+    return [
+        Input(
+            "included",
+            f"{len(included)} included records",
+            "baselines",
+            ConsolidatorTask(records=included),
+        ),
+        Input(
+            "restored",
+            f"{len(included)} included and {len(restored)} restored records",
+            "baselines",
+            ConsolidatorTask(records=with_restored),
+        ),
+    ]
 
 
 class ExtractorExpectation(StrictEntity):
@@ -97,16 +143,12 @@ def extractor_problems(output: ExtractorOutput, expected: ExtractorExpectation) 
     people = [] if left_out else expected.people
     if {_words(name) for name in output.people} != {_words(name) for name in people}:
         problems.append(f"people {output.people} instead of {people}")
-    facts = [f" {_words(fact)} " for fact in output.facts]
-    problems += [
-        f"the facts do not mention {word}"
-        for word in ([] if left_out else expected.mention)
-        if not any(f" {_words(word)} " in fact for fact in facts)
-    ]
+    mention = () if left_out else expected.mention
+    problems += [f"the facts do not mention {word}" for word in _missing(mention, output.facts)]
     problems += [
         f"the facts mention {word}"
         for word in expected.omit
-        if any(f" {_words(word)} " in fact for fact in facts)
+        if word not in _missing([word], output.facts)
     ]
     return problems
 
@@ -152,6 +194,66 @@ def _held(withheld: bool) -> str:
     return "withheld" if withheld else "not withheld"
 
 
+class ItemExpectation(StrictEntity):
+    """One item the consolidator should return: the corpus emails merged into it."""
+
+    sources: list[str]
+    # None when any configured category will do, as for a restored record that fits none.
+    category: str | None
+    # Words the item's facts must contain.
+    mention: tuple[str, ...] = ()
+
+
+class ConsolidatorExpectation(StrictEntity):
+    """The consolidator's right answer for the newsletter's included records."""
+
+    items: list[ItemExpectation]
+
+
+def consolidator_expectations() -> dict[str, ConsolidatorExpectation]:
+    """The expected items for each consolidator input: with restored records, the included
+    records' items and one more for each restored record."""
+    expected = corpus_expectation("consolidator")
+    items = [ItemExpectation.model_validate(item) for item in expected["items"]]
+    restored = [ItemExpectation.model_validate(item) for item in expected["restored_items"]]
+    return {
+        "included": ConsolidatorExpectation(items=items),
+        "restored": ConsolidatorExpectation(items=items + restored),
+    }
+
+
+def consolidator_problems(
+    output: ConsolidatorOutput, sources: Mapping[str, str], expected: ConsolidatorExpectation
+) -> list[str]:
+    """How the items depart from the expected ones; empty when they are right. `sources` maps
+    each input record ID to the corpus ID of its email."""
+    given = {
+        frozenset(sources[record_id] for record_id in item.source_record_ids): item
+        for item in output.items
+    }
+    problems = []
+    for wanted in expected.items:
+        name = " + ".join(wanted.sources)
+        item = given.pop(frozenset(wanted.sources), None)
+        if item is None:
+            problems.append(f"no item merging {name}")
+            continue
+        if wanted.category is not None and item.category != wanted.category:
+            problems.append(f"{name}: category {item.category} instead of {wanted.category}")
+        problems += [
+            f"{name}: the facts do not mention {word}"
+            for word in _missing(wanted.mention, item.facts)
+        ]
+    problems += [f"an unexpected item merging {' + '.join(sorted(merged))}" for merged in given]
+    return problems
+
+
+def _missing(words: Sequence[str], facts: Sequence[str]) -> list[str]:
+    """The words that no fact contains as whole words, ignoring case, punctuation and spacing."""
+    padded = [f" {_words(fact)} " for fact in facts]
+    return [word for word in words if not any(f" {_words(word)} " in fact for fact in padded)]
+
+
 def _words(text: str) -> str:
     """The text's words, lower case, separated by single spaces."""
     return " ".join(re.findall(r"[^\W_]+", text.casefold()))
@@ -181,8 +283,8 @@ class Recorder:
     def client(self, **kwargs: Any) -> httpx2.AsyncClient:
         return httpx2.AsyncClient(event_hooks={"response": [self._record]}, **kwargs)
 
-    def take(self, corpus_id: str, sample: int) -> list[Exchange]:
-        return self._exchanges.pop((corpus_id, sample), [])
+    def take(self, input_id: str, sample: int) -> list[Exchange]:
+        return self._exchanges.pop((input_id, sample), [])
 
     async def _record(self, response: httpx2.Response) -> None:
         await response.aread()
@@ -212,10 +314,10 @@ class Recorder:
 
 
 class Answer(Entity):
-    """One sample of the agent's answer for one email, scored, with the exchanges behind it."""
+    """One sample of the agent's answer for one input, scored, with the exchanges behind it."""
 
-    corpus_id: str
-    form: Literal["graph", "local"]
+    input_id: str
+    form: str
     sample: int
     output: dict[str, Any] | None
     # Why the agent gave no valid answer, when it gave none.
@@ -224,35 +326,35 @@ class Answer(Entity):
     exchanges: list[Exchange]
 
 
-async def evaluate[O: BaseModel](
-    answer: Callable[[ScreenedEmail], Awaitable[O]],
+async def evaluate[T, O: BaseModel](
+    answer: Callable[[T], Awaitable[O]],
     problems: Callable[[str, O], list[str]],
-    inputs: Sequence[Input],
+    inputs: Sequence[Input[T]],
     samples: int,
     recorder: Recorder,
 ) -> list[Answer]:
     """Answer every input `samples` times. Each round answers every input at once, as `extract`
-    does; `problems` scores an answer for the email named by its corpus ID."""
+    does; `problems` scores an answer for the input named by its ID."""
 
-    async def one(item: Input, sample: int) -> Answer:
-        _CALL.set((item.corpus_id, sample))
+    async def one(item: Input[T], sample: int) -> Answer:
+        _CALL.set((item.input_id, sample))
         output: O | None = None
         try:
-            output = await answer(item.email)
+            output = await answer(item.task)
         except (SpecialistFailed, AgentRunError) as failure:
             error: str | None = str(failure)
             found = [f"no valid response: {failure}"]
         else:
             error = None
-            found = problems(item.corpus_id, output)
+            found = problems(item.input_id, output)
         return Answer(
-            corpus_id=item.corpus_id,
+            input_id=item.input_id,
             form=item.form,
             sample=sample,
             output=None if output is None else output.model_dump(mode="json"),
             error=error,
             problems=found,
-            exchanges=recorder.take(item.corpus_id, sample),
+            exchanges=recorder.take(item.input_id, sample),
         )
 
     answers: list[Answer] = []
@@ -319,16 +421,17 @@ def save_results(results: Results, folder: Path = EVALUATIONS) -> Path:
     return path
 
 
-async def run_live[O: BaseModel](
+async def run_live[T, O: BaseModel](
     agent: str,
-    build: Callable[[Model, Config], EmailAgent[O]],
+    build: Callable[[Model, Config], SpecialistAgent[T, O]],
+    inputs: Sequence[Input[T]],
     problems: Callable[[str, O], list[str]],
     details: Callable[[dict[str, Any]], list[str]],
     samples: int,
 ) -> list[Answer]:
-    """Run the agent, built by `build` as main builds it, on every corpus input through the dev
-    gateway, using ./config.yaml and .env. Save the results and print a report for each email;
-    `details` gives the lines worth reading from one answer."""
+    """Run the agent, built by `build` as main builds it, on every input through the dev gateway,
+    using ./config.yaml and .env. Save the results and print a report for each input; `details`
+    gives the lines worth reading from one answer."""
     config = load_config(Path("config.yaml"))
     model = config.llm.models[agent]
     recorder = Recorder()
@@ -338,7 +441,6 @@ async def run_live[O: BaseModel](
         http_client=recorder.client(),
     )
     evaluated = build(OpenAIChatModel(model, provider=provider), config)
-    inputs = corpus_inputs()
     started = datetime.now(UTC)
     answers = await evaluate(evaluated.answer, problems, inputs, samples, recorder)
     results = Results.of(
@@ -353,26 +455,32 @@ async def run_live[O: BaseModel](
     )
     path = save_results(results)
     for item in inputs:
-        _report(item, [a for a in answers if a.corpus_id == item.corpus_id], details)
-    exchanges = [exchange for answer in answers for exchange in answer.exchanges]
-    tokens = Counter[str]()
-    for exchange in exchanges:
-        tokens.update(exchange.usage or {})
+        _report(item, [a for a in answers if a.input_id == item.input_id], details)
+    calls = sum(len(answer.exchanges) for answer in answers)
+    input_tokens, output_tokens = token_totals(answers)
     right = sum(1 for answer in answers if not answer.problems)
     print(
-        f"\n{right}/{len(answers)} answers right; {len(exchanges)} calls, "
-        f"{tokens['prompt_tokens']} input and {tokens['completion_tokens']} output tokens; "
-        f"results in {path}"
+        f"\n{right}/{len(answers)} answers right; {calls} calls, "
+        f"{input_tokens} input and {output_tokens} output tokens; results in {path}"
     )
     return answers
 
 
-def _report(
-    item: Input, answers: list[Answer], details: Callable[[dict[str, Any]], list[str]]
+def token_totals(answers: Sequence[Answer]) -> tuple[int, int]:
+    """The input and output tokens of every exchange; a failed request reports none."""
+    usages = [exchange.usage or {} for answer in answers for exchange in answer.exchanges]
+    return (
+        sum(usage.get("prompt_tokens", 0) for usage in usages),
+        sum(usage.get("completion_tokens", 0) for usage in usages),
+    )
+
+
+def _report[T](
+    item: Input[T], answers: list[Answer], details: Callable[[dict[str, Any]], list[str]]
 ) -> None:
     right = sum(1 for answer in answers if not answer.problems)
     retried = sum(1 for answer in answers if len(answer.exchanges) > 1)
-    heading = f"{item.corpus_id} {item.email.subject!r}"
+    heading = f"{item.input_id} {item.label!r}"
     print(f"\n{heading}: {right}/{len(answers)} right, {retried} retried")
     lines = [problem for answer in answers for problem in answer.problems]
     lines += [line for answer in answers if answer.output for line in details(answer.output)]

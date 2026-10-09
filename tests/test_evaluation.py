@@ -9,21 +9,33 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from pulse.agents.extractor.agent import ExtractorAgent
-from pulse.entities.extracts import ExtractorOutput, SensitivityOutput
+from pulse.entities.extracts import (
+    ConsolidatorItem,
+    ConsolidatorOutput,
+    ExtractorOutput,
+    SensitivityOutput,
+)
 from tests.emails import corpus_email, corpus_messages, make_output, make_screened_email, share
 from tests.emails import screen_email as screened
 from tests.evaluation import (
+    Answer,
+    ConsolidatorExpectation,
+    Exchange,
     ExtractorExpectation,
     Input,
     Recorder,
     Results,
     SensitivityExpectation,
+    consolidator_expectations,
+    consolidator_inputs,
+    consolidator_problems,
     corpus_inputs,
     evaluate,
     expectations,
     extractor_problems,
     save_results,
     sensitivity_problems,
+    token_totals,
 )
 
 pytestmark = pytest.mark.anyio
@@ -133,12 +145,12 @@ def test_every_corpus_email_that_passes_the_pre_filter_is_an_input_with_an_expec
 
     inputs = corpus_inputs()
 
-    assert sorted(i.corpus_id for i in inputs) == sorted(passing)
+    assert sorted(i.input_id for i in inputs) == sorted(passing)
     assert set(expectations("extractor", ExtractorExpectation)) == passing
     assert set(expectations("sensitivity", SensitivityExpectation)) == passing
     # Only emails kept out of the dev inbox are built locally; the rest are as Graph returned them.
     local = {m["id"] for m in messages if not m.get("seed", True)}
-    assert {i.corpus_id for i in inputs if i.form == "local"} == local & passing
+    assert {i.input_id for i in inputs if i.form == "local"} == local & passing
 
 
 FLAGGED = SensitivityExpectation(flags={"named_person": False, "personal_information": False})
@@ -214,6 +226,91 @@ def test_an_optional_flag_alone_does_not_withhold_the_email() -> None:
     ]
 
 
+MERGED = ConsolidatorExpectation.model_validate(
+    {
+        "items": [
+            {"sources": ["m01", "m02"], "category": "customer_win", "mention": ["Northwind"]},
+            {"sources": ["m03"], "category": "delivery_highlight", "mention": ["Contoso"]},
+        ]
+    }
+)
+SOURCES = {"record-1": "m01", "record-2": "m02", "record-3": "m03"}
+
+
+def _items(*items: tuple[list[str], str, list[str]]) -> ConsolidatorOutput:
+    return ConsolidatorOutput(
+        headline="A new customer and a launch",
+        items=[
+            ConsolidatorItem(category=category, facts=facts, source_record_ids=records)
+            for records, category, facts in items
+        ],
+    )
+
+
+def test_items_merged_as_expected_have_no_problems() -> None:
+    output = _items(
+        (["record-2", "record-1"], "customer_win", ["Northwind Retail signed."]),
+        (["record-3"], "delivery_highlight", ["The Contoso migration went live."]),
+    )
+
+    assert consolidator_problems(output, SOURCES, MERGED) == []
+
+
+def test_records_split_from_their_item_are_a_problem() -> None:
+    output = _items(
+        (["record-1"], "customer_win", ["Northwind Retail signed."]),
+        (["record-2"], "customer_win", ["Northwind Retail signed."]),
+        (["record-3"], "delivery_highlight", ["The Contoso migration went live."]),
+    )
+
+    assert consolidator_problems(output, SOURCES, MERGED) == [
+        "no item merging m01 + m02",
+        "an unexpected item merging m01",
+        "an unexpected item merging m02",
+    ]
+
+
+def test_a_merged_item_with_the_wrong_category_or_missing_facts_is_a_problem() -> None:
+    output = _items(
+        (["record-1", "record-2"], "shout_out", ["A deal was signed."]),
+        (["record-3"], "delivery_highlight", ["The Contoso migration went live."]),
+    )
+
+    assert consolidator_problems(output, SOURCES, MERGED) == [
+        "m01 + m02: category shout_out instead of customer_win",
+        "m01 + m02: the facts do not mention Northwind",
+    ]
+
+
+def test_an_item_with_no_set_category_may_take_any() -> None:
+    expected = ConsolidatorExpectation.model_validate(
+        {"items": [{"sources": ["m01", "m02", "m03"], "category": None}]}
+    )
+    output = _items((["record-1", "record-2", "record-3"], "team_news", ["Dan Wood is in Leeds."]))
+
+    assert consolidator_problems(output, SOURCES, expected) == []
+
+
+def test_each_consolidator_input_has_expected_items_holding_every_record_once() -> None:
+    inputs = {item.input_id: item for item in consolidator_inputs()}
+    expected = consolidator_expectations()
+
+    assert set(inputs) == set(expected) == {"included", "restored"}
+    for input_id, item in inputs.items():
+        records = [record.message_id for record in item.task.records]
+        sources = [source for i in expected[input_id].items for source in i.sources]
+        assert sorted(sources) == sorted(records)
+    # Restored records are given in corpus order among the others, as the store lists them.
+    restored = [record.message_id for record in inputs["restored"].task.records]
+    assert restored == sorted(restored)
+    assert set(restored) - {r.message_id for r in inputs["included"].task.records} == {
+        "m12",
+        "m22",
+        "m23",
+    }
+    assert all(record.exclusion is None for record in inputs["restored"].task.records)
+
+
 def _completion(content: str) -> dict[str, object]:
     return {
         "id": "c1",
@@ -254,8 +351,13 @@ def _gateway(recorder: Recorder, invalid: Mapping[str, int] | None = None) -> Ex
 
 
 INPUTS = [
-    Input("m01", "graph", make_screened_email("m01")),
-    Input("m02", "local", make_screened_email("m02", body="Tom Evans closed Contoso today.")),
+    Input("m01", "Signed Northwind Retail today", "graph", make_screened_email("m01")),
+    Input(
+        "m02",
+        "Contoso",
+        "local",
+        make_screened_email("m02", body="Tom Evans closed Contoso today."),
+    ),
 ]
 
 
@@ -267,7 +369,7 @@ async def test_evaluate_scores_every_sample_with_the_exchanges_that_produced_it(
         agent.answer, lambda _, output: extractor_problems(output, EXPECTED), INPUTS, 2, recorder
     )
 
-    assert [(a.corpus_id, a.form, a.sample) for a in answers] == [
+    assert [(a.input_id, a.form, a.sample) for a in answers] == [
         ("m01", "graph", 1),
         ("m02", "local", 1),
         ("m01", "graph", 2),
@@ -289,7 +391,7 @@ async def test_evaluate_scores_every_sample_with_the_exchanges_that_produced_it(
         }
     # The same email sends the same request in every sample, and each email its own.
     first = {
-        c: {a.exchanges[0].request_sha256 for a in answers if a.corpus_id == c}
+        c: {a.exchanges[0].request_sha256 for a in answers if a.input_id == c}
         for c in ("m01", "m02")
     }
     assert all(len(hashes) == 1 for hashes in first.values())
@@ -312,7 +414,7 @@ async def test_evaluate_keeps_the_retry_with_the_answer_it_belongs_to() -> None:
         agent.answer, lambda _, output: extractor_problems(output, EXPECTED), INPUTS, 1, recorder
     )
 
-    exchanges = {a.corpus_id: len(a.exchanges) for a in answers}
+    exchanges = {a.input_id: len(a.exchanges) for a in answers}
     assert exchanges == {"m01": 1, "m02": 2}
     assert all(a.problems == [] for a in answers)
 
@@ -376,3 +478,32 @@ def test_results_are_saved_privately(tmp_path: Path) -> None:
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["requests"] == {"abc": {"messages": [{"role": "user", "content": "Hello"}]}}
     assert len(saved["commit"]) == 40
+
+
+def test_token_totals_add_input_and_output_tokens_across_every_exchange() -> None:
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 10,
+        "total_tokens": 110,
+        "prompt_tokens_details": {"cached_tokens": 0},
+    }
+    exchange = Exchange(
+        request_sha256="abc",
+        status=200,
+        model="m",
+        finish_reason="stop",
+        usage=usage,
+        content="{}",
+    )
+    failed = exchange.model_copy(update={"status": 502, "usage": None})
+    answer = Answer(
+        input_id="m01",
+        form="graph",
+        sample=1,
+        output=None,
+        error=None,
+        problems=[],
+        exchanges=[exchange, exchange, failed],
+    )
+
+    assert token_totals([answer]) == (200, 20)

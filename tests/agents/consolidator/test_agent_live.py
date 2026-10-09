@@ -1,38 +1,51 @@
-"""Runs the consolidator on the corpus through the dev gateway, using ./config.yaml and .env."""
+"""Evaluates the consolidator on its own, on the included records the first-stage baselines
+produced, with and without three restored records, through the dev gateway, using ./config.yaml
+and .env. Every call is paid; the results, with every request sent, go to
+evaluations/consolidator/."""
 
-import os
-from pathlib import Path
+from typing import Any
 
 import pytest
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.models import Model
 
-from pulse.agents.consolidator.agent import ConsolidatorAgent, ConsolidatorTask
-from pulse.config import load_config
-from pulse.entities.extracts import Extraction, make_consolidation, make_record
-from tests.emails import CORPUS_ITEM_SOURCES, corpus_messages
+from pulse.agents.consolidator.agent import ConsolidatorAgent
+from pulse.config import Config
+from pulse.entities.extracts import ConsolidatorOutput, numbered_records
+from tests.evaluation import (
+    consolidator_expectations,
+    consolidator_inputs,
+    consolidator_problems,
+    run_live,
+)
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
 
+# One call per input and sample, as the consolidator takes every included record at once.
+SAMPLES = 10
 
-async def test_duplicate_reports_merge_into_single_items() -> None:
-    config = load_config(Path("config.yaml"))
-    provider = OpenAIProvider(
-        base_url=config.llm.base_url, api_key=os.environ[config.llm.api_key_env]
-    )
-    model = OpenAIChatModel(config.llm.models["consolidator"], provider=provider)
-    extracted = [
-        make_record(m["id"], Extraction.model_validate(m["extract"]), [])
-        for m in corpus_messages()
-        if "extract" in m
-    ]
-    records = [record for record in extracted if record.exclusion is None]
 
-    output = await ConsolidatorAgent(model, config.categories).answer(
-        ConsolidatorTask(records=records)
-    )
+@pytest.mark.parametrize("input_id", ["included", "restored"])
+async def test_the_consolidator_merges_the_records_as_expected(input_id: str) -> None:
+    expected = consolidator_expectations()
+    inputs = [item for item in consolidator_inputs() if item.input_id == input_id]
+    sources = {
+        item.input_id: {
+            record_id: record.message_id
+            for record_id, record in numbered_records(item.task.records).items()
+        }
+        for item in inputs
+    }
 
-    print(output.model_dump_json(indent=2))
-    items = make_consolidation(output, records).items
-    sources = sorted(sorted(item.source_message_ids) for item in items)
-    assert sources == sorted(sorted(item) for item in CORPUS_ITEM_SOURCES)
+    def build(model: Model, config: Config) -> ConsolidatorAgent:
+        return ConsolidatorAgent(model, config.categories)
+
+    def problems(input_id: str, output: ConsolidatorOutput) -> list[str]:
+        return consolidator_problems(output, sources[input_id], expected[input_id])
+
+    answers = await run_live("consolidator", build, inputs, problems, _details, SAMPLES)
+
+    assert all(not answer.problems for answer in answers)
+
+
+def _details(output: dict[str, Any]) -> list[str]:
+    return [f"headline: {output['headline']}", f"{len(output['items'])} items"]

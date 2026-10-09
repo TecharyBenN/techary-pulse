@@ -9,7 +9,13 @@ from pydantic_ai.models import Model
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.config import Config
 from pulse.entities.extracts import ExtractorOutput
-from tests.evaluation import ExtractorExpectation, expectations, extractor_problems, run_live
+from tests.evaluation import (
+    ExtractorExpectation,
+    corpus_inputs,
+    expectations,
+    extractor_problems,
+    run_live,
+)
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
 
@@ -25,7 +31,7 @@ async def test_the_extractor_gives_the_expected_answer_for_every_corpus_email() 
     def problems(corpus_id: str, output: ExtractorOutput) -> list[str]:
         return extractor_problems(output, expected[corpus_id])
 
-    answers = await run_live("extractor", build, problems, _details, SAMPLES)
+    answers = await run_live("extractor", build, corpus_inputs(), problems, _details, SAMPLES)
 
     assert all(not answer.problems for answer in answers)
 
