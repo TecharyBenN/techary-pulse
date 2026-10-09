@@ -8,10 +8,11 @@ from pydantic_ai.models import Model
 
 from pulse.agents.base import SpecialistAgent
 from pulse.entities.base import Entity
-from pulse.entities.extracts import ConsolidatorOutput, ExtractRecord
+from pulse.entities.extracts import ConsolidatorOutput, ExtractRecord, numbered_records
 
-# Every input record is included, so its exclusion fields carry nothing.
-_RECORD_FIELDS = {"message_id", "category", "summary", "facts", "people"}
+# Every input record is included, so its exclusion fields carry nothing, and its record ID
+# stands in for its message ID.
+_RECORD_FIELDS = {"category", "summary", "facts", "people"}
 
 
 class ConsolidatorTask(Entity):
@@ -34,23 +35,24 @@ class ConsolidatorAgent(SpecialistAgent[ConsolidatorTask, ConsolidatorOutput]):
         self._categories = categories
 
     def message(self, task: ConsolidatorTask) -> str:
-        data = [record.model_dump(mode="json", include=_RECORD_FIELDS) for record in task.records]
+        data = [
+            {"record_id": record_id, **record.model_dump(mode="json", include=_RECORD_FIELDS)}
+            for record_id, record in numbered_records(task.records).items()
+        ]
         return self._data_block("extract_records", data)
 
     def checks(self, output: ConsolidatorOutput, task: ConsolidatorTask) -> list[str]:
-        inputs = [record.message_id for record in task.records]
-        counts = Counter(
-            message_id for item in output.items for message_id in item.source_message_ids
-        )
+        inputs = list(numbered_records(task.records))
+        counts = Counter(record_id for item in output.items for record_id in item.source_record_ids)
         unknown = [
-            f"source {message_id} is not an input record"
-            for message_id in counts
-            if message_id not in inputs
+            f"source {record_id} is not an input record"
+            for record_id in counts
+            if record_id not in inputs
         ]
         misplaced = [
-            f"record {message_id} appears {counts[message_id]} times in the items"
-            for message_id in inputs
-            if counts[message_id] != 1
+            f"record {record_id} appears {counts[record_id]} times in the items"
+            for record_id in inputs
+            if counts[record_id] != 1
         ]
         unconfigured = [
             f"category {category} is not a configured category"

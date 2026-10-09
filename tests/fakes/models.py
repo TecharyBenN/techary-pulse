@@ -27,7 +27,7 @@ from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.extracts import Extraction, ExtractorOutput, SensitivityOutput
 from pulse.entities.store import Store
 from pulse.services.operations import PresentResult
-from tests.emails import share
+from tests.emails import CORPUS_ITEM_SOURCES, corpus_consolidation, corpus_messages, share
 
 ModelFunction = Callable[[list[ModelMessage], AgentInfo], Awaitable[ModelResponse]]
 
@@ -137,3 +137,24 @@ def extractor_model(outputs: Mapping[str, Extraction]) -> FunctionModel:
 
 def sensitivity_model(outputs: Mapping[str, Extraction]) -> FunctionModel:
     return _email_model(outputs, SensitivityOutput)
+
+
+def corpus_consolidator_model() -> FunctionModel:
+    """Answer with the corpus's expected consolidation. The prompt names records only by record
+    ID, so each is matched to its corpus email by its facts, which differ for every email the
+    consolidation uses."""
+    used = {m for item in CORPUS_ITEM_SOURCES for m in item}
+    sources = [m for m in corpus_messages() if m["id"] in used]
+    by_facts = {tuple(m["extract"]["facts"]): m["id"] for m in sources}
+    assert len(by_facts) == len(sources)
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        request = messages[0]
+        assert isinstance(request, ModelRequest)
+        [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
+        assert isinstance(prompt, str)
+        records = json.loads(prompt.split("\n")[1])
+        record_ids = {by_facts[tuple(r["facts"])]: r["record_id"] for r in records}
+        return text_response(corpus_consolidation(record_ids).model_dump_json())
+
+    return FunctionModel(model)

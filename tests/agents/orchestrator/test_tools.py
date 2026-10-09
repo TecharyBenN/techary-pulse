@@ -36,7 +36,6 @@ from tests.emails import (
     CORPUS_ITEM_SOURCES,
     CORPUS_OUTCOMES,
     ENTRY,
-    corpus_consolidation,
     corpus_email,
     corpus_messages,
     make_consolidation,
@@ -51,6 +50,7 @@ from tests.emails import (
 )
 from tests.fakes.mailbox import FakeMailbox
 from tests.fakes.models import (
+    corpus_consolidator_model,
     extractor_model,
     reply_with,
     responses,
@@ -75,7 +75,7 @@ OUTPUTS = {
     INBOX[1].body: make_output(category=None),
     INBOX[2].body: make_output(category=None),
 }
-CONSOLIDATOR_OUTPUT = make_consolidator_output(make_consolidator_item("m01"))
+CONSOLIDATOR_OUTPUT = make_consolidator_output(make_consolidator_item("record-1"))
 CONSOLIDATION = make_consolidation(make_item(source_message_ids=["m01"]))
 DRAFT = make_draft()
 JUDGED = [make_verdict("intro"), make_verdict(claim="Signed two customers")]
@@ -366,7 +366,7 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
         "shout_out": "A colleague is thanked.",
         "company_notices": "Information staff should know.",
     }
-    consolidator = FunctionModel(reply_with(corpus_consolidation().model_dump_json()))
+    consolidator = corpus_consolidator_model()
     tools = Tools(
         make_operations(store, FakeMailbox(inbox)),
         store,
@@ -443,7 +443,9 @@ async def test_consolidate_refuses_without_an_included_record(store: SqliteStore
 async def test_consolidate_reports_an_invalid_response_and_stores_nothing(
     store: SqliteStore,
 ) -> None:
-    invalid = make_consolidator_output(make_consolidator_item("m01", "m09")).model_dump_json()
+    invalid = make_consolidator_output(
+        make_consolidator_item("record-1", "record-9")
+    ).model_dump_json()
     consolidator = FunctionModel(responses(text_response(invalid), text_response(invalid)))
     tools = _tools(store, consolidator=consolidator)
     newsletter_id = await _extracted(tools)
@@ -451,7 +453,7 @@ async def test_consolidate_reports_an_invalid_response_and_stores_nothing(
     result = await tools.consolidate()
 
     assert result == (
-        "Failed: consolidator gave no valid response: source m09 is not an input record"
+        "Failed: consolidator gave no valid response: source record-9 is not an input record"
     )
     assert await store.get_items(newsletter_id) is None
 
@@ -686,7 +688,7 @@ async def test_judge_gives_an_entry_only_its_own_item(store: SqliteStore) -> Non
     consolidator = FunctionModel(
         reply_with(
             make_consolidator_output(
-                make_consolidator_item("m01"), make_consolidator_item("m02")
+                make_consolidator_item("record-1"), make_consolidator_item("record-2")
             ).model_dump_json()
         )
     )

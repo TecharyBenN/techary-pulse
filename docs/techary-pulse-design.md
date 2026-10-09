@@ -335,13 +335,13 @@ The extractor states only facts in the message, about what happened or will happ
     {
       "category": "customer_win",
       "facts": ["Contract signed on 22 September 2026", "Onboarding starts in October"],
-      "source_message_ids": ["AAkALg...01", "AAkALg...07"]
+      "source_record_ids": ["record-1", "record-3"]
     }
   ]
 }
 ```
 
-The consolidator merges records describing the same news and writes the headline. A restored record with no category takes the configured category its news fits. Its output checks require every source message ID to come from its input, every input record to appear in exactly one item, and every category to be configured. Code turns each merged entry into an item: it gives the item an ID of the form `item-{n}`, numbered from 1 in the order the consolidator returned them, and the people of its source records, each once. The `write` tool adds each item's sender names and received dates to the writer's input, from the item's source emails. The headline is one short line in sentence case.
+The consolidator merges records describing the same news and writes the headline. A restored record with no category takes the configured category its news fits. Code gives each input record a short ID of the form `record-{n}`, numbered from 1 in input order, in place of its message ID, so the consolidator never copies a message ID. Its output checks require every source record ID to come from its input, every input record to appear in exactly one item, and every category to be configured. Code turns each merged entry into an item: it gives the item an ID of the form `item-{n}`, numbered from 1 in the order the consolidator returned them, the message IDs of its source records, and the people of its source records, each once. The `write` tool adds each item's sender names and received dates to the writer's input, from the item's source emails. The headline is one short line in sentence case.
 
 ### Write
 

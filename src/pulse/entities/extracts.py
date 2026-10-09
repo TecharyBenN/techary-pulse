@@ -118,12 +118,18 @@ def _highest(used_ids: Collection[str]) -> int:
     return max((int(match.group(1)) for match in numbers if match), default=0)
 
 
-class ConsolidatorItem(StrictEntity):
-    """One piece of news as the consolidator merges it from the records that report it."""
+class ItemContent(StrictEntity):
+    """An item's news: its category and facts."""
 
     category: str
     facts: list[str]
-    source_message_ids: list[MessageId]
+
+
+class ConsolidatorItem(ItemContent):
+    """One piece of news as the consolidator merges it from the records that report it, named
+    by the short record IDs code gave its input."""
+
+    source_record_ids: list[str]
 
 
 class ConsolidatorOutput(StrictEntity):
@@ -133,9 +139,10 @@ class ConsolidatorOutput(StrictEntity):
     items: list[ConsolidatorItem]
 
 
-class Item(ConsolidatorItem):
-    """A consolidated item with the ID and people code gave it."""
+class Item(ItemContent):
+    """A consolidated item with its source emails, and the ID and people code gave it."""
 
+    source_message_ids: list[MessageId]
     item_id: str
     people: list[str]
 
@@ -162,19 +169,34 @@ def consolidation_input(records: Sequence[ExtractRecord]) -> list[ExtractRecord]
     return included
 
 
+def numbered_records(records: Sequence[ExtractRecord]) -> dict[str, ExtractRecord]:
+    """The consolidator's input records by the short IDs code gives them, in input order, so the
+    model never copies a message ID."""
+    return {f"record-{n}": record for n, record in enumerate(records, start=1)}
+
+
 def make_consolidation(
     output: ConsolidatorOutput, records: Sequence[ExtractRecord]
 ) -> Consolidation:
-    """Number the items in order, and give each the people of its source records.
+    """Number the items in order, and give each the message IDs and people of its source
+    records.
 
     `records` holds the consolidator's input, which includes every source.
     """
-    by_id = {record.message_id: record for record in records}
+    by_id = numbered_records(records)
     items = []
     for n, item in enumerate(output.items, start=1):
-        sources = [by_id[message_id] for message_id in item.source_message_ids]
+        sources = [by_id[record_id] for record_id in item.source_record_ids]
         people = list(dict.fromkeys(name for source in sources for name in source.people))
-        items.append(Item(**item.model_dump(), item_id=f"item-{n}", people=people))
+        items.append(
+            Item(
+                category=item.category,
+                facts=item.facts,
+                source_message_ids=[source.message_id for source in sources],
+                item_id=f"item-{n}",
+                people=people,
+            )
+        )
     return Consolidation(headline=output.headline, items=items)
 
 

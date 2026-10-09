@@ -1,6 +1,7 @@
 """Synthetic inbox messages, and the screened emails, extract records, items and drafts
 derived from them."""
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -123,11 +124,11 @@ def make_extract_record(message_id: str = "m01", **changes: object) -> ExtractRe
     return make_record(message_id, make_output(**changes), [])
 
 
-def make_consolidator_item(*source_message_ids: str, **changes: object) -> ConsolidatorItem:
+def make_consolidator_item(*source_record_ids: str, **changes: object) -> ConsolidatorItem:
     fields: dict[str, object] = {
         "category": "customer_win",
         "facts": ["Signed Northwind Retail on 22 September"],
-        "source_message_ids": list(source_message_ids or ["m01"]),
+        "source_record_ids": list(source_record_ids or ["record-1"]),
     }
     return ConsolidatorItem.model_validate(fields | changes)
 
@@ -137,7 +138,10 @@ def make_consolidator_output(*items: ConsolidatorItem) -> ConsolidatorOutput:
 
 
 def make_item(item_id: str = "item-1", **changes: object) -> Item:
-    fields: dict[str, object] = make_consolidator_item().model_dump() | {
+    fields: dict[str, object] = make_consolidator_item().model_dump(
+        include={"category", "facts"}
+    ) | {
+        "source_message_ids": ["m01"],
         "item_id": item_id,
         "people": ["Priya Shah", "Tom Evans"],
     }
@@ -180,8 +184,19 @@ def corpus_messages() -> list[dict[str, Any]]:
     return messages
 
 
-def corpus_consolidation() -> ConsolidatorOutput:
-    return ConsolidatorOutput.model_validate(_corpus()["consolidation"])
+def corpus_consolidation(record_ids: Mapping[str, str]) -> ConsolidatorOutput:
+    """The corpus's expected consolidation, naming each source email by the record ID the
+    consolidator was given for it; `record_ids` maps corpus message IDs to record IDs."""
+    expected = _corpus()["consolidation"]
+    items = [
+        ConsolidatorItem(
+            category=item["category"],
+            facts=item["facts"],
+            source_record_ids=[record_ids[m] for m in item["source_message_ids"]],
+        )
+        for item in expected["items"]
+    ]
+    return ConsolidatorOutput(headline=expected["headline"], items=items)
 
 
 def seedable_corpus_messages() -> list[dict[str, Any]]:

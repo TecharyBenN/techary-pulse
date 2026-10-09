@@ -167,8 +167,8 @@ def test_input_refuses_when_no_record_is_included() -> None:
 
 
 def test_consolidation_numbers_items_in_order_and_gives_them_their_sources_people() -> None:
-    merged = make_consolidator_item("m02", "m01")
-    single = make_consolidator_item("m01", category="shout_out")
+    merged = make_consolidator_item("record-2", "record-1")
+    single = make_consolidator_item("record-1", category="shout_out")
 
     consolidation = make_consolidation(make_consolidator_output(merged, single), [INCLUDED, SECOND])
 
@@ -176,11 +176,19 @@ def test_consolidation_numbers_items_in_order_and_gives_them_their_sources_peopl
         headline=HEADLINE,
         items=[
             Item(
-                **merged.model_dump(),
+                category=merged.category,
+                facts=merged.facts,
+                source_message_ids=["m02", "m01"],
                 item_id="item-1",
                 people=["Tom Evans", "Aisha Khan", "Priya Shah"],
             ),
-            Item(**single.model_dump(), item_id="item-2", people=["Priya Shah", "Tom Evans"]),
+            Item(
+                category=single.category,
+                facts=single.facts,
+                source_message_ids=["m01"],
+                item_id="item-2",
+                people=["Priya Shah", "Tom Evans"],
+            ),
         ],
     )
 
