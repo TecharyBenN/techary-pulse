@@ -98,7 +98,7 @@ def test_failures_and_unsupported_claims_are_named_as_reviewers_see_them() -> No
     failures = [
         CheckFailure(check="word_count", target=None, detail="420 words, limit 400"),
         CheckFailure(check="dashes", target="headline", detail="em or en dash"),
-        CheckFailure(check="digits", target="item-1", detail="12"),
+        CheckFailure(check="sentences", target="item-1", detail="3 sentences, limit 2"),
         CheckFailure(check="categories", target="customer_win", detail="not a configured category"),
     ]
     verdicts = [make_verdict("intro", claim="A record week"), make_verdict()]
@@ -110,7 +110,7 @@ def test_failures_and_unsupported_claims_are_named_as_reviewers_see_them() -> No
     assert [(f.where, f.problem) for f in review.check_failures] == [
         ("Whole newsletter", "Word count: 420 words, limit 400"),
         ("Headline", "Dashes: em or en dash"),
-        (ENTRY, "Number not in the sources or feedback: 12"),
+        (ENTRY, "Too many sentences: 3 sentences, limit 2"),
         ("Customer wins", "Section: not a configured category"),
     ]
     assert review.unsupported is not None

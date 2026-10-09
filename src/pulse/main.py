@@ -191,6 +191,7 @@ def build_orchestrator(
     return Orchestrator(
         OrchestratorAgent(model("orchestrator"), tools.toolset()),
         store,
+        operations.summary,
         config.orchestrator.max_tool_calls,
         timedelta(minutes=config.orchestrator.max_run_minutes),
         lock,

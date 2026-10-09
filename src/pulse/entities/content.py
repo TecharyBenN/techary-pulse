@@ -14,10 +14,9 @@ from pulse.entities.errors import Refusal
 from pulse.entities.extracts import ExtractRecord, Item, Sensitivity, sender_names
 from pulse.entities.mail import ScreenedEmail
 
-CheckName = Literal["word_count", "dashes", "digits", "people", "sentences", "items", "categories"]
+CheckName = Literal["word_count", "dashes", "people", "sentences", "items", "categories"]
 
 _DASHES = ("\N{EN DASH}", "\N{EM DASH}")
-_DIGITS = re.compile(r"[0-9]+")
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
 _MAX_SENTENCES = 2
 
@@ -294,20 +293,6 @@ def _dashes(context: _Context) -> Iterator[CheckFailure]:
             yield CheckFailure(check="dashes", target=target, detail="em or en dash")
 
 
-def _unsupported_digits(target: str, text: str, sources: Sequence[str]) -> Iterator[CheckFailure]:
-    for digits in dict.fromkeys(_DIGITS.findall(text)):
-        if not _in_any(sources, digits):
-            yield CheckFailure(check="digits", target=target, detail=digits)
-
-
-def _digits(context: _Context) -> Iterator[CheckFailure]:
-    all_texts = [text for item_id in context.sources for text in context.texts(item_id)]
-    yield from _unsupported_digits("intro", context.content.intro, [*all_texts, *context.feedback])
-    for entry in context.content.entries():
-        sources = [*context.texts(entry.item_id), *context.feedback]
-        yield from _unsupported_digits(entry.item_id, entry.text, sources)
-
-
 def _people(context: _Context) -> Iterator[CheckFailure]:
     for entry in context.content.entries():
         sources = [
@@ -329,7 +314,11 @@ def _sentences(context: _Context) -> Iterator[CheckFailure]:
     for entry in context.content.entries():
         count = sum(1 for part in _SENTENCE_END.split(entry.text) if part.strip())
         if count > _MAX_SENTENCES:
-            yield CheckFailure(check="sentences", target=entry.item_id, detail=f"{count} sentences")
+            yield CheckFailure(
+                check="sentences",
+                target=entry.item_id,
+                detail=f"{count} sentences, limit {_MAX_SENTENCES}",
+            )
 
 
 def _items(context: _Context) -> Iterator[CheckFailure]:
@@ -356,7 +345,6 @@ def _categories(context: _Context) -> Iterator[CheckFailure]:
 _CHECKS: tuple[Callable[[_Context], Iterator[CheckFailure]], ...] = (
     _word_count,
     _dashes,
-    _digits,
     _people,
     _sentences,
     _items,

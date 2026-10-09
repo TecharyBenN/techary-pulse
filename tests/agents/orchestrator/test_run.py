@@ -3,6 +3,7 @@ import logging
 import sqlite3
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic_ai.messages import (
@@ -40,6 +41,7 @@ from tests.fakes.models import (
     caller_call,
     gateway_error,
     make_orchestrator,
+    no_state,
     ping_call,
     present_call,
     reply_with,
@@ -109,6 +111,29 @@ async def test_records_feedback(store: SqliteStore, db_path: Path) -> None:
     assert _feedback_ids(db_path) == ["r01"]
 
 
+async def test_each_prompt_carries_the_newsletter_state_as_the_message_arrives(
+    store: SqliteStore,
+) -> None:
+    states: list[dict[str, Any]] = [
+        {"state": "in_review", "latest_version": 1},
+        {"state": "approved"},
+    ]
+
+    async def summary() -> dict[str, Any] | None:
+        return states.pop(0)
+
+    orchestrator = make_orchestrator(store, reply_with("Noted."), summary=summary)
+    first, second = make_message("r01"), make_message("r02", text="And now?")
+
+    await orchestrator.handle(first)
+    await orchestrator.handle(second)
+
+    assert _prompts([m for _, m in await _history(store)]) == [
+        OrchestratorAgent.message(first, {"state": "in_review", "latest_version": 1}),
+        OrchestratorAgent.message(second, {"state": "approved"}),
+    ]
+
+
 async def test_saves_each_step_with_the_message_id(store: SqliteStore) -> None:
     message = make_message("r01")
 
@@ -116,7 +141,7 @@ async def test_saves_each_step_with_the_message_id(store: SqliteStore) -> None:
 
     history = await _history(store)
     assert [message_id for message_id, _ in history] == ["r01", "r01"]
-    assert _prompts([m for _, m in history]) == [OrchestratorAgent.message(message)]
+    assert _prompts([m for _, m in history]) == [OrchestratorAgent.message(message, None)]
     assert isinstance(history[1][1], ModelResponse)
 
 
@@ -145,8 +170,8 @@ async def test_passes_the_stored_history(store: SqliteStore) -> None:
 
     second = seen[1]
     assert _prompts(second) == [
-        OrchestratorAgent.message(make_message("r01", text="First")),
-        OrchestratorAgent.message(make_message("r02", text="Second")),
+        OrchestratorAgent.message(make_message("r01", text="First"), None),
+        OrchestratorAgent.message(make_message("r02", text="Second"), None),
     ]
     assert any(isinstance(m, ModelResponse) and m.parts == [TextPart("Reply 1")] for m in second)
 
@@ -240,7 +265,7 @@ async def test_retried_message_resumes_from_saved_steps(store: SqliteStore, db_p
 
     assert reply == "Done."
     assert tools.calls == 1
-    assert _prompts(seen[0]) == [OrchestratorAgent.message(message)]
+    assert _prompts(seen[0]) == [OrchestratorAgent.message(message, None)]
     assert _feedback_ids(db_path) == ["r01"]
     history = await _history(store)
     assert [message_id for message_id, _ in history] == ["r01"] * 4
@@ -251,7 +276,7 @@ async def test_resumes_unprocessed_tool_calls(store: SqliteStore) -> None:
     tools = Tools()
     message = make_message("r01")
     for saved in (
-        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(message))]),
+        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(message, None))]),
         ping_call(),
     ):
         await store.append_history("n-1", "r01", ModelMessagesTypeAdapter.dump_json([saved]))
@@ -283,7 +308,7 @@ async def test_unfinished_run_is_resumed_before_a_new_message(store: SqliteStore
     ).text
 
     assert reply == "Reply 2"
-    assert _prompts(seen[0]) == [OrchestratorAgent.message(make_message("r01", text="First"))]
+    assert _prompts(seen[0]) == [OrchestratorAgent.message(make_message("r01", text="First"), None)]
     assert tools.calls == 1
     history = await _history(store)
     assert [message_id for message_id, _ in history] == ["r01"] * 4 + ["r02"] * 2
@@ -294,7 +319,7 @@ async def test_each_run_gives_its_tools_its_own_message(store: SqliteStore) -> N
     first = make_message("r01", text="First")
     await store.record_feedback("n-1", first)
     for saved in (
-        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(first))]),
+        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(first, None))]),
         caller_call(),
     ):
         await store.append_history("n-1", "r01", ModelMessagesTypeAdapter.dump_json([saved]))
@@ -327,8 +352,8 @@ async def test_runs_are_processed_one_at_a_time_in_arrival_order(store: SqliteSt
     gate.set()
     await asyncio.gather(first, second)
     assert started == [
-        OrchestratorAgent.message(make_message("r01", text="First")),
-        OrchestratorAgent.message(make_message("r02", text="Second")),
+        OrchestratorAgent.message(make_message("r01", text="First"), None),
+        OrchestratorAgent.message(make_message("r02", text="Second"), None),
     ]
 
 
@@ -381,7 +406,7 @@ async def test_exchange_that_opens_a_newsletter_becomes_its_history(
         ModelResponse(parts=[ToolCallPart("opening_tool", {})]), text_response("Started.")
     )
     agent = OrchestratorAgent(FunctionModel(model), FunctionToolset([opening_tool]))
-    orchestrator = Orchestrator(agent, store, 40, timedelta(minutes=15), asyncio.Lock())
+    orchestrator = Orchestrator(agent, store, no_state, 40, timedelta(minutes=15), asyncio.Lock())
 
     reply = (await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))).text
 
@@ -389,7 +414,7 @@ async def test_exchange_that_opens_a_newsletter_becomes_its_history(
     history = await store.load_history("n-9")
     assert [row.message_id for row in history] == ["r01"] * 4
     assert _prompts([_load(row) for row in history]) == [
-        OrchestratorAgent.message(make_message("r01", text="Please draft a newsletter."))
+        OrchestratorAgent.message(make_message("r01", text="Please draft a newsletter."), None)
     ]
     assert _feedback_ids(db_path) == ["r01"]
 
@@ -430,7 +455,9 @@ async def _seen_history(store: SqliteStore) -> list[ModelMessage]:
 async def test_results_before_the_latest_version_are_replaced_by_placeholders(
     store: SqliteStore,
 ) -> None:
-    prompt = ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(make_message("r01")))])
+    prompt = ModelRequest(
+        parts=[UserPromptPart(OrchestratorAgent.message(make_message("r01"), None))]
+    )
     await _save(
         store,
         prompt,
@@ -447,7 +474,7 @@ async def test_results_before_the_latest_version_are_replaced_by_placeholders(
         {"version": 1},
         {"content": "detail"},
     ]
-    assert _prompts(seen)[0] == OrchestratorAgent.message(make_message("r01"))
+    assert _prompts(seen)[0] == OrchestratorAgent.message(make_message("r01"), None)
     assert isinstance(seen[-2], ModelResponse)
     assert seen[-2].parts == [TextPart("Version 1 is with the reviewers.")]
     # The store keeps every result in full.
@@ -457,7 +484,7 @@ async def test_results_before_the_latest_version_are_replaced_by_placeholders(
 async def test_a_refused_present_draft_supersedes_nothing(store: SqliteStore) -> None:
     await _save(
         store,
-        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(make_message("r01")))]),
+        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(make_message("r01"), None))]),
         *_tool_exchange("get_items", "c1", {"items": ["detail"]}),
         *_tool_exchange("present_draft", "c2", "Refused: there is no working draft"),
         text_response("There is no draft yet."),
@@ -568,7 +595,7 @@ def _opening(store: SqliteStore, model: ModelFunction) -> Orchestrator:
         return "opened"
 
     agent = OrchestratorAgent(FunctionModel(model), FunctionToolset([opening_tool]))
-    return Orchestrator(agent, store, 40, timedelta(minutes=15), asyncio.Lock())
+    return Orchestrator(agent, store, no_state, 40, timedelta(minutes=15), asyncio.Lock())
 
 
 def _opening_call() -> ModelResponse:
@@ -594,8 +621,8 @@ async def test_the_conversation_continues_after_the_newsletter_closes(
 
     assert reply.text == "It was abandoned."
     assert _prompts(seen[0]) == [
-        OrchestratorAgent.message(make_message("r01")),
-        OrchestratorAgent.message(make_message("r02", text="Is it done?")),
+        OrchestratorAgent.message(make_message("r01"), None),
+        OrchestratorAgent.message(make_message("r02", text="Is it done?"), None),
     ]
     assert await _owners(store, "n-1") == ["r01", "r01", "r02", "r02"]
     assert await _feedback(store, "n-1") == ["r01", "r02"]
@@ -616,7 +643,7 @@ async def test_a_run_that_opens_a_newsletter_moves_its_exchange_to_it(
     history = [_load(row) for row in await store.load_history("n-2")]
     assert await _owners(store, "n-2") == ["r02"] * 4
     # The new newsletter's history is this run alone, from its prompt.
-    assert _prompts(history) == [OrchestratorAgent.message(message)]
+    assert _prompts(history) == [OrchestratorAgent.message(message, None)]
     assert await _feedback(store, "n-2") == ["r02"]
     # The earlier newsletter keeps its own exchange, with the run's steps before the opening.
     assert await _owners(store, "n-1") == ["r01", "r01", "r02", "r02"]
@@ -629,7 +656,7 @@ async def test_a_resumed_run_that_opens_a_newsletter_moves_its_own_exchange(
     await store.record_feedback("n-1", first)
     await _save(
         store,
-        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(first))]),
+        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(first, None))]),
         _opening_call(),
     )
     await _close(store)
@@ -642,8 +669,8 @@ async def test_a_resumed_run_that_opens_a_newsletter_moves_its_own_exchange(
     assert await _feedback(store, "n-2") == ["r01", "r02"]
     history = [_load(row) for row in await store.load_history("n-2")]
     assert _prompts(history) == [
-        OrchestratorAgent.message(first),
-        OrchestratorAgent.message(make_message("r02", text="Hello?")),
+        OrchestratorAgent.message(first, None),
+        OrchestratorAgent.message(make_message("r02", text="Hello?"), None),
     ]
 
 
@@ -660,7 +687,7 @@ async def test_a_retry_after_a_crash_following_the_opening_runs_in_the_new_newsl
     assert reply.text == "Done."
     assert await _feedback(store, "n-2") == ["r01"]
     assert _prompts([_load(row) for row in await store.load_history("n-2")]) == [
-        OrchestratorAgent.message(message)
+        OrchestratorAgent.message(message, None)
     ]
 
 
@@ -683,7 +710,7 @@ async def test_the_delivery_note_joins_the_next_prompt(store: SqliteStore) -> No
     assert isinstance(last, ModelRequest)
     assert [p.content for p in last.parts if isinstance(p, UserPromptPart)] == [
         note,
-        OrchestratorAgent.message(make_message("r02", text="Sent?")),
+        OrchestratorAgent.message(make_message("r02", text="Sent?"), None),
     ]
 
 
@@ -693,7 +720,9 @@ async def test_the_delivery_note_after_an_unfinished_run_is_not_resumed(
     first = make_message("r01")
     await store.record_feedback("n-1", first)
     await _save(
-        store, ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(first))]), ping_call()
+        store,
+        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(first, None))]),
+        ping_call(),
     )
     await store.append_history("n-1", DELIVERY_NOTE, history_note("Pulse sent version 1."))
     tools = Tools()
@@ -785,9 +814,9 @@ async def test_a_change_of_channel_asks_for_a_recap(store: SqliteStore) -> None:
     await orchestrator.handle(make_message("c03", channel="email"))
 
     assert _recorded_prompts(seen) == [
-        OrchestratorAgent.message(make_message("r01")),
-        OrchestratorAgent.message(make_message("c02", channel="email"), recap=True),
-        OrchestratorAgent.message(make_message("c03", channel="email")),
+        OrchestratorAgent.message(make_message("r01"), None),
+        OrchestratorAgent.message(make_message("c02", channel="email"), None, recap=True),
+        OrchestratorAgent.message(make_message("c03", channel="email"), None),
     ]
 
 
@@ -800,7 +829,7 @@ async def test_a_new_chat_asks_for_a_recap(store: SqliteStore) -> None:
 
     await make_orchestrator(store, model).handle(make_message(), new_chat=True)
 
-    assert _recorded_prompts(seen) == [OrchestratorAgent.message(make_message(), recap=True)]
+    assert _recorded_prompts(seen) == [OrchestratorAgent.message(make_message(), None, recap=True)]
 
 
 async def test_a_completed_run_returns_its_reply_before_resuming_another(
@@ -810,7 +839,7 @@ async def test_a_completed_run_returns_its_reply_before_resuming_another(
     await make_orchestrator(store, reply_with("First reply.")).handle(first)
     # A later run stopped with its tool call unrun.
     unfinished = (
-        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(make_message("r02")))]),
+        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(make_message("r02"), None))]),
         ping_call(),
     )
     for step in unfinished:

@@ -52,6 +52,7 @@ from tests.fakes.mailbox import FakeMailbox
 from tests.fakes.models import (
     corpus_consolidator_model,
     extractor_model,
+    no_state,
     reply_with,
     responses,
     sensitivity_model,
@@ -392,6 +393,7 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
     orchestrator = Orchestrator(
         OrchestratorAgent(FunctionModel(model), tools.toolset()),
         store,
+        no_state,
         40,
         timedelta(minutes=15),
         asyncio.Lock(),

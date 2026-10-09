@@ -1,5 +1,9 @@
 """The orchestrator agent, which runs the newsletter conversation through its tools."""
 
+import json
+from collections.abc import Mapping
+from typing import Any
+
 from pydantic_ai.models import Model
 from pydantic_ai.toolsets import AbstractToolset
 
@@ -23,11 +27,17 @@ class OrchestratorAgent(PulseAgent[ReviewerMessage, str]):
         )
 
     @staticmethod
-    def message(reviewer_message: ReviewerMessage, recap: bool = False) -> str:
+    def message(
+        reviewer_message: ReviewerMessage, state: Mapping[str, Any] | None, recap: bool = False
+    ) -> str:
         """The reviewer's text stays inside a delimited block, never in the instructions. The
-        line before it is written by code, so the orchestrator can rely on it."""
+        lines before it are written by code, so the orchestrator can rely on them: `state` is
+        the latest newsletter's summary, or None when there is none."""
         lines = [
-            f"Message from reviewer {reviewer_message.author} through {reviewer_message.channel}:"
+            f"Message from reviewer {reviewer_message.author} through {reviewer_message.channel}:",
+            "No newsletter exists yet."
+            if state is None
+            else f"The newsletter now: {json.dumps(state, ensure_ascii=False)}",
         ]
         if recap:
             lines.append("Start your reply with a short recap of where the newsletter stands.")

@@ -110,7 +110,9 @@ VERSION = Version(
     not_applied=[NotApplied(feedback="Add the contract value", reason="It is not in the facts")],
     version=2,
     created_at=datetime(2026, 9, 26, 9, 0, tzinfo=UTC),
-    check_failures=[CheckFailure(check="digits", target="item-2", detail="3")],
+    check_failures=[
+        CheckFailure(check="sentences", target="item-2", detail="3 sentences, limit 2")
+    ],
     verdicts=[
         make_verdict("intro"),
         make_verdict(),

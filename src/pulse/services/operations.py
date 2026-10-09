@@ -3,6 +3,7 @@
 import uuid
 from collections.abc import Callable, Collection
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import AwareDatetime
@@ -25,7 +26,7 @@ from pulse.entities.content import (
     version_of,
 )
 from pulse.entities.errors import Refusal
-from pulse.entities.extracts import restored
+from pulse.entities.extracts import items_up_to_date, restored
 from pulse.entities.lifecycle import (
     Newsletter,
     OnApproval,
@@ -41,7 +42,7 @@ from pulse.entities.lifecycle import (
     update,
 )
 from pulse.entities.mail import Body, InboundEmail, Mailbox, MessageId, ScreenedEmail
-from pulse.entities.review import Review, build_review
+from pulse.entities.review import Finding, Review, build_review
 from pulse.entities.store import Store
 from pulse.services.outbox import Outbox
 
@@ -59,11 +60,24 @@ class StartResult(Entity):
     rejected: int
 
 
+_SUMMARY_FIELDS = {
+    "newsletter_id",
+    "state",
+    "latest_version",
+    "approved_version",
+    "send_time",
+    "sent_at",
+}
+
+
 class PresentResult(Entity):
-    """The version present_draft emailed, how many of its entries are flagged, and whether it
-    resent it or withdrew an approval."""
+    """The version present_draft emailed, its problems, how many of its entries are flagged,
+    and whether it resent it or withdrew an approval."""
 
     version: int
+    # The check failures and unsupported claims it was presented with, worded as the reviewer
+    # email words them.
+    problems: list[Finding]
     # How many of the version's entries are flagged for review.
     flagged: int
     # Whether the draft was unchanged, so the latest version was emailed again as it was.
@@ -189,13 +203,15 @@ class Operations:
             await entry_notes(self._store, newsletter_id, draft.content),
         )
         presented = present(newsletter)
+        review = await self._review(newsletter_id, version)
         if email_reviewers:
-            body = await self.reviewer_email(newsletter, version)
+            body = self._body(version, review)
             sent_id = await self._outbox.to_reviewers(newsletter, body)
             presented = presented.model_copy(update={"thread_message_id": sent_id})
         await self._store.save_version(presented, version)
         return PresentResult(
             version=version.version,
+            problems=review.problems(),
             flagged=_flagged(version),
             approval_withdrawn=withdrawn is not None,
             notice_sent=withdrawn,
@@ -231,16 +247,43 @@ class Operations:
     ) -> PresentResult:
         """Email the latest version again as it was presented, changing nothing else."""
         require_changeable(newsletter)
+        review = await self._review(newsletter.newsletter_id, latest)
         if email_reviewers:
-            await self._outbox.thread(newsletter, await self.reviewer_email(newsletter, latest))
-        return PresentResult(version=latest.version, flagged=_flagged(latest), resent=True)
+            await self._outbox.thread(newsletter, self._body(latest, review))
+        return PresentResult(
+            version=latest.version,
+            problems=review.problems(),
+            flagged=_flagged(latest),
+            resent=True,
+        )
 
     async def reviewer_email(
         self, newsletter: Newsletter, version: Version, reply: str | None = None
     ) -> Body:
         """The version's reviewer email, after the orchestrator's reply when there is one."""
-        review = await self._review(newsletter.newsletter_id, version)
+        return self._body(version, await self._review(newsletter.newsletter_id, version), reply)
+
+    def _body(self, version: Version, review: Review, reply: str | None = None) -> Body:
         return Body(content=self._render_review(version, review, reply), content_type="html")
+
+    async def summary(self) -> dict[str, Any] | None:
+        """The latest newsletter, open, sent or abandoned: its state, versions presented, item
+        and excluded record counts, whether the items are up to date with the included records,
+        whether the working draft has changed since the latest version, approved version, send
+        time and sent time. None when no newsletter exists yet."""
+        newsletter = await self._store.get_latest_newsletter()
+        if newsletter is None:
+            return None
+        newsletter_id = newsletter.newsletter_id
+        consolidated = await self._store.get_items(newsletter_id)
+        records = await self._store.list_extract_records(newsletter_id)
+        draft = await self._store.get_draft(newsletter_id)
+        return newsletter.model_dump(mode="json", include=_SUMMARY_FIELDS) | {
+            "items": len(consolidated.items) if consolidated else 0,
+            "items_up_to_date": items_up_to_date(consolidated, records),
+            "excluded_records": sum(1 for record in records if record.exclusion is not None),
+            "draft_changed": draft_changed(draft, await self.latest_version(newsletter)),
+        }
 
     async def latest_version(self, newsletter: Newsletter) -> Version | None:
         latest = newsletter.latest_version

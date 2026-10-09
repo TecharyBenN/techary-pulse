@@ -5,6 +5,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
+from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai import RunContext
@@ -50,7 +51,7 @@ class Tools:
 
     def present_draft(self) -> PresentResult:
         """Stands in for the real tool, presenting version 1, which the test stores."""
-        return PresentResult(version=1, flagged=0)
+        return PresentResult(problems=[], version=1, flagged=0)
 
     def show_draft(self) -> ShowResult:
         """Stands in for the real tool, showing the working draft, which the test stores."""
@@ -64,12 +65,15 @@ def make_orchestrator(
     max_tool_calls: int = 40,
     max_run_time: timedelta = timedelta(minutes=15),
     lock: asyncio.Lock | None = None,
+    summary: Callable[[], Awaitable[dict[str, Any] | None]] | None = None,
 ) -> Orchestrator:
     toolset = FunctionToolset(
         [tools.ping, tools.caller, tools.present_draft, tools.show_draft] if tools else []
     )
     agent = OrchestratorAgent(FunctionModel(model), toolset)
-    return Orchestrator(agent, store, max_tool_calls, max_run_time, lock or asyncio.Lock())
+    return Orchestrator(
+        agent, store, summary or no_state, max_tool_calls, max_run_time, lock or asyncio.Lock()
+    )
 
 
 def text_response(text: str) -> ModelResponse:
@@ -158,3 +162,8 @@ def corpus_consolidator_model() -> FunctionModel:
         return text_response(corpus_consolidation(record_ids).model_dump_json())
 
     return FunctionModel(model)
+
+
+async def no_state() -> dict[str, Any] | None:
+    """A newsletter summary for runs whose prompts do not depend on the newsletter's state."""
+    return None

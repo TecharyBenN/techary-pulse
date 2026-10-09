@@ -46,6 +46,10 @@ class Review(Entity):
     with_attachments: list[ScreenedEmail]
     source_map: list[SourceLink]
 
+    def problems(self) -> list[Finding]:
+        """The check failures and unsupported claims, which reviewers decide on."""
+        return [*self.check_failures, *(self.unsupported or [])]
+
 
 def build_review(
     version: Version,
@@ -104,7 +108,6 @@ def build_review(
 _CHECK_TITLES: dict[CheckName, str] = {
     "word_count": "Word count",
     "dashes": "Dashes",
-    "digits": "Number not in the sources or feedback",
     "people": "Name",
     "sentences": "Too many sentences",
     "items": "Item",

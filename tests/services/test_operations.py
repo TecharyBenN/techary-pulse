@@ -8,6 +8,7 @@ from pulse.entities.content import CheckFailure, EntryNotes, Version, WriterOutp
 from pulse.entities.errors import MailboxError, Refusal, StoreError
 from pulse.entities.extracts import Sensitivity
 from pulse.entities.lifecycle import Newsletter, Scheduled, abandon, start_send
+from pulse.entities.review import Finding
 from pulse.services.operations import ApproveResult, NoticeResult, Operations, PresentResult
 from tests.emails import (
     ENTRY,
@@ -196,7 +197,7 @@ async def test_present_without_emailing_saves_the_version_and_leaves_the_thread(
 
     result = await operations.present_draft(email_reviewers=False)
 
-    assert result == PresentResult(version=1, flagged=0)
+    assert result == PresentResult(problems=[], version=1, flagged=0)
     assert [v.version for v in await _versions(store)] == [1]
     assert (conversation.sent, conversation.replies) == ([], [])
     newsletter = await _newsletter(store)
@@ -247,7 +248,7 @@ async def test_an_unchanged_draft_resends_the_latest_version(
 
     result = await operations.present_draft()
 
-    assert result == PresentResult(version=2, flagged=0, resent=True)
+    assert result == PresentResult(problems=[], version=2, flagged=0, resent=True)
     assert [v.version for v in await _versions(store)] == [1, 2]
     first, again = conversation.replies
     assert again.message_id == first.reply_id
@@ -266,7 +267,7 @@ async def test_present_saves_the_entry_flags_and_returns_how_many_are_flagged(
 
     result = await operations.present_draft()
 
-    assert result == PresentResult(version=1, flagged=1)
+    assert result == PresentResult(problems=[], version=1, flagged=1)
     [version] = await _versions(store)
     assert version.notes == EntryNotes(
         credits={"item-1": ["Priya Shah"]}, flags={"item-1": [PRICE]}
@@ -290,7 +291,9 @@ async def test_a_version_keeps_its_flags_when_the_items_change(
     [version] = await _versions(store)
     assert version.notes.flags == {"item-1": [PRICE]}
     # Resending shows the version as it was presented.
-    assert await operations.present_draft() == PresentResult(version=1, flagged=1, resent=True)
+    assert await operations.present_draft() == PresentResult(
+        problems=[], version=1, flagged=1, resent=True
+    )
 
 
 async def test_a_draft_differing_only_in_its_reported_changes_is_unchanged(
@@ -300,7 +303,9 @@ async def test_a_draft_differing_only_in_its_reported_changes_is_unchanged(
     await operations.present_draft()
     await store.save_draft("n-1", make_draft(changes=["Checked the facts"]))
 
-    assert await operations.present_draft() == PresentResult(version=1, flagged=0, resent=True)
+    assert await operations.present_draft() == PresentResult(
+        problems=[], version=1, flagged=0, resent=True
+    )
 
 
 async def test_resending_keeps_an_approval(
@@ -310,7 +315,7 @@ async def test_resending_keeps_an_approval(
 
     result = await operations.present_draft()
 
-    assert result == PresentResult(version=1, flagged=0, resent=True)
+    assert result == PresentResult(problems=[], version=1, flagged=0, resent=True)
     newsletter = await _newsletter(store)
     assert (newsletter.state, newsletter.approved_version) == ("approved", 1)
     [again] = conversation.replies
@@ -326,7 +331,7 @@ async def test_resending_in_the_email_channel_sends_nothing(
 
     result = await operations.present_draft(email_reviewers=False)
 
-    assert result == PresentResult(version=1, flagged=0, resent=True)
+    assert result == PresentResult(problems=[], version=1, flagged=0, resent=True)
     assert conversation.replies == []
     assert (await _newsletter(store)).thread_message_id == "sent-1"
 
@@ -395,6 +400,27 @@ async def test_present_saves_the_check_failures_and_the_latest_verdicts(
     [email] = conversation.sent
     assert "Dashes: em or en dash" in email.body.content
     assert "Signed two customers" in email.body.content
+
+
+async def test_present_returns_the_problems_as_the_reviewer_email_words_them(
+    operations: Operations, store: SqliteStore
+) -> None:
+    await _drafted(store)
+    await store.save_draft("n-1", DASHED)
+    await store.save_verdicts("n-1", [make_verdict("intro"), make_verdict(claim="Signed two")])
+
+    result = await operations.present_draft()
+
+    assert result.problems == [
+        Finding(where="Intro", problem="Dashes: em or en dash"),
+        Finding(where=ENTRY, problem="Signed two"),
+    ]
+    # Emailing the unchanged version again returns the same problems.
+    assert (await operations.present_draft()).problems == result.problems
+
+
+async def test_summary_is_none_before_any_newsletter(operations: Operations) -> None:
+    assert await operations.summary() is None
 
 
 async def test_a_draft_rewritten_since_it_was_judged_is_presented_not_judged(
@@ -669,7 +695,9 @@ async def test_present_over_an_approval_withdraws_it_first(
 
     result = await operations.present_draft()
 
-    assert result == PresentResult(version=2, flagged=0, approval_withdrawn=True, notice_sent=True)
+    assert result == PresentResult(
+        problems=[], version=2, flagged=0, approval_withdrawn=True, notice_sent=True
+    )
     newsletter = await _newsletter(store)
     assert (newsletter.state, newsletter.latest_version, newsletter.approved_version) == (
         "in_review",
@@ -687,7 +715,7 @@ async def test_present_without_an_approval_withdraws_nothing(
 ) -> None:
     await _drafted(store)
 
-    assert await operations.present_draft() == PresentResult(version=1, flagged=0)
+    assert await operations.present_draft() == PresentResult(problems=[], version=1, flagged=0)
 
 
 async def test_check_works_on_a_closed_newsletter(

@@ -174,43 +174,6 @@ def _entry_one(text: str, people: list[str] | None = None) -> Content:
     )
 
 
-def test_digit_not_in_sources_fails() -> None:
-    failures = _check(_entry_one("Priya Shah signed a 3 year deal."))
-
-    assert _checks(failures) == [("digits", "item-1")]
-    assert "3" in failures[0].detail
-
-
-def test_digit_from_another_item_fails() -> None:
-    sources = SOURCES | {"item-2": [_source("Dan Wood", "Thanks", "Sam Patel covered 3 shifts.")]}
-
-    failures = _check(_entry_one("Priya Shah signed a 3 year deal."), sources=sources)
-
-    assert _checks(failures) == [("digits", "item-1")]
-
-
-def test_digit_inside_a_longer_source_number_passes() -> None:
-    assert _check(_entry_one("Priya Shah signed on 22 Sept, the 2nd deal.")) == []
-
-
-def test_digit_in_feedback_passes() -> None:
-    feedback = ["Please say it is a 3 year deal"]
-
-    assert _check(_entry_one("Priya Shah signed a 3 year deal."), feedback=feedback) == []
-
-
-def test_numbers_as_words_are_not_checked() -> None:
-    assert _check(_entry_one("Priya Shah signed a three year deal.")) == []
-
-
-def test_intro_digit_from_any_item_passes() -> None:
-    assert _check(_content(intro="Big news on 22 September.")) == []
-
-
-def test_intro_digit_not_in_sources_fails() -> None:
-    assert _checks(_check(_content(intro="Big news for 2027."))) == [("digits", "intro")]
-
-
 def test_name_missing_from_entry_text_is_left_to_the_writer() -> None:
     # The writer's output checks ensure every name in people is in the text.
     assert _check(_entry_one("Priya Shah signed a deal.", ["Priya Shah", "Tom Evans"])) == []
@@ -261,7 +224,11 @@ def test_two_sentences_pass(text: str) -> None:
     ],
 )
 def test_three_sentences_fail(text: str) -> None:
-    assert _checks(_check(_entry_one(text))) == [("sentences", "item-1")]
+    failures = _check(_entry_one(text))
+
+    assert _checks(failures) == [("sentences", "item-1")]
+    # The limit is in the detail, so whoever fixes the entry knows the target.
+    assert [failure.detail for failure in failures] == ["3 sentences, limit 2"]
 
 
 def test_an_entry_need_not_name_its_sender() -> None:
@@ -330,7 +297,6 @@ def test_every_failure_is_returned() -> None:
     assert _checks(_check(content, max_words=5)) == [
         ("word_count", None),
         ("dashes", "intro"),
-        ("digits", "intro"),
     ]
 
 
@@ -376,7 +342,7 @@ def test_source_text_of_rejected_screened_email_is_subject_only() -> None:
     assert source_text(screen(email, ["example.org"], [], [])) == "Signed Northwind Retail"
 
 
-def test_names_and_digits_in_a_forwarded_message_are_in_the_sources() -> None:
+def test_names_in_a_forwarded_message_are_in_the_sources() -> None:
     email = make_email(
         sender_name="Ben Carter",
         subject="FW: Price changes",

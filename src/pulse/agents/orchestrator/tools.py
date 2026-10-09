@@ -25,7 +25,6 @@ from pulse.entities.extracts import (
     ExtractRecord,
     SourcedItem,
     consolidation_input,
-    items_up_to_date,
     make_consolidation,
     with_sources,
 )
@@ -73,14 +72,6 @@ def progress_note(tool: str) -> str:
 # Subjects and bodies stay with the extractor and the sensitivity agent, the only agents that
 # read them.
 _LISTED_FIELDS = {"message_id", "sender_name", "received", "has_attachments", "rejection"}
-_SUMMARY_FIELDS = {
-    "newsletter_id",
-    "state",
-    "latest_version",
-    "approved_version",
-    "send_time",
-    "sent_at",
-}
 _CONSOLIDATED_FIELDS = {"item_id", "category", "source_message_ids"}
 
 
@@ -192,23 +183,8 @@ class Tools:
         presented, item and excluded record counts, whether the items are up to date with the
         included records, whether the working draft has changed since the latest version,
         approved version, send time and sent time."""
-        newsletter = await self._store.get_latest_newsletter()
-        if newsletter is None:
-            return "No newsletter exists yet."
-        newsletter_id = newsletter.newsletter_id
-        consolidated = await self._store.get_items(newsletter_id)
-        records = await self._store.list_extract_records(newsletter_id)
-        excluded = sum(1 for record in records if record.exclusion is not None)
-        draft = await self._store.get_draft(newsletter_id)
-        summary = newsletter.model_dump(mode="json", include=_SUMMARY_FIELDS)
-        return summary | {
-            "items": len(consolidated.items) if consolidated else 0,
-            "items_up_to_date": items_up_to_date(consolidated, records),
-            "excluded_records": excluded,
-            "draft_changed": draft_changed(
-                draft, await self._operations.latest_version(newsletter)
-            ),
-        }
+        summary = await self._operations.summary()
+        return "No newsletter exists yet." if summary is None else summary
 
     @_reported
     async def list_screened_emails(self) -> list[dict[str, Any]]:
@@ -399,9 +375,11 @@ class Tools:
         """Save the working draft as the next version and email it to the reviewers,
         withdrawing any approval first. When the working draft is unchanged since the latest
         version, email that version again instead, with the same number and no other change.
-        Returns the version number, how many of its entries are flagged for review, whether it
-        was resent, whether an approval was withdrawn and, if so, whether the reviewers were
-        told."""
+        Returns the version number; `problems`, the check failures and unsupported claims it was
+        presented with, worded as the reviewers see them; `flagged`, how many of its entries hold
+        sensitive content that the reviewers check before approving, which is not a problem with
+        the text; whether it was resent; and whether an approval was withdrawn and, if so,
+        whether the reviewers were told."""
         # In the email channel, the reply carries the version, so reviewers get one email.
         email_reviewers = ctx.deps.channel != "email"
         return await self._operations.present_draft(email_reviewers=email_reviewers)

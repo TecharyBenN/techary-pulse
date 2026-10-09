@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from pydantic_ai import Agent, AgentRun, CallToolsNode, UsageLimits
 from pydantic_ai.exceptions import AgentRunError, UnexpectedModelBehavior
@@ -183,14 +183,17 @@ class Orchestrator:
         self,
         agent: OrchestratorAgent,
         store: Store,
+        summary: Callable[[], Awaitable[dict[str, Any] | None]],
         max_tool_calls: int,
         max_run_time: timedelta,
         lock: asyncio.Lock,
     ) -> None:
-        """`lock` is the run lock, which delivery also takes, so a run and a delivery never
-        change a newsletter at the same time."""
+        """`summary` gives the latest newsletter's state for each message. `lock` is the run
+        lock, which delivery also takes, so a run and a delivery never change a newsletter at the
+        same time."""
         self._agent = agent
         self._store = store
+        self._summary = summary
         self._max_tool_calls = max_tool_calls
         self._max_run_time = max_run_time
         # asyncio.Lock wakes its waiters first in, first out, which keeps arrival order.
@@ -283,7 +286,8 @@ class Orchestrator:
             await self._store.list_feedback(history.newsletter_id) if history.newsletter_id else []
         )
         # The reviewer's screen shows nothing of the conversation in either case.
-        prompt = self._agent.message(message, recap=new_chat or channel_changed(feedback, message))
+        recap = new_chat or channel_changed(feedback, message)
+        prompt = self._agent.message(message, await self._summary(), recap=recap)
         return await self._run(prompt, message, history, on_progress)
 
     async def _run(
