@@ -3,7 +3,7 @@
 import asyncio
 import functools
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, Self
 
 from pydantic_ai import RunContext
@@ -126,6 +126,16 @@ def _reported[**P, T](tool: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[
     return wrapper
 
 
+async def _all_finished[T](calls: Iterable[Awaitable[T]]) -> list[T]:
+    """Await every call, then raise the first error, so no call is still running, or writing to
+    the store, once the tool has failed."""
+    results = await asyncio.gather(*calls, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return [result for result in results if not isinstance(result, BaseException)]
+
+
 class Tools:
     """The orchestrator's toolset. Each tool reads the store, runs a specialist agent or calls
     Operations, and returns a refusal's reason as its result."""
@@ -220,10 +230,8 @@ class Tools:
             for email in await self._store.list_screened_emails(newsletter_id)
             if email.rejection is None and email.message_id not in extracted
         ]
-        outcomes = await asyncio.gather(
-            *(self._extract_one(newsletter_id, email) for email in pending)
-        )
-        return ExtractResult.of(list(outcomes))
+        outcomes = await _all_finished(self._extract_one(newsletter_id, email) for email in pending)
+        return ExtractResult.of(outcomes)
 
     async def _extract_one(self, newsletter_id: str, email: ScreenedEmail) -> ExtractOutcome:
         message_id = email.message_id

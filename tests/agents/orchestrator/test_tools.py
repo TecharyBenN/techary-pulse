@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from pydantic_ai import RunContext
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -52,6 +53,7 @@ from tests.fakes.mailbox import FakeMailbox
 from tests.fakes.models import (
     corpus_consolidator_model,
     extractor_model,
+    gateway_error,
     no_state,
     reply_with,
     responses,
@@ -375,6 +377,28 @@ async def test_extract_fails_an_email_when_the_sensitivity_agent_fails_and_retri
     assert not isinstance(retried, str)
     assert retried.failed == 0
     assert {o.message_id for o in retried.outcomes} == {"m01", "m02", "m03"}
+
+
+async def test_a_gateway_error_fails_extract_once_every_other_email_has_finished(
+    store: SqliteStore,
+) -> None:
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if INBOX[0].body in str(messages[0]):
+            raise gateway_error()
+        await asyncio.sleep(0.05)
+        return text_response('{"sensitivity": []}')
+
+    tools = _tools(store, sensitivity=FunctionModel(model))
+    started = await tools.start_newsletter()
+    assert not isinstance(started, str)
+
+    with pytest.raises(ModelHTTPError):
+        await tools.extract()
+
+    # The other emails' records were saved before the tool failed, so none is saved after the
+    # run has failed; the failed email has none, so the next call retries it.
+    records = await store.list_extract_records(started.newsletter_id)
+    assert {r.message_id for r in records} == {"m02", "m03"}
 
 
 async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteStore) -> None:
