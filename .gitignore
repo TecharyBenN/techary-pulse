@@ -11,6 +11,9 @@ config.yaml
 runs/
 state/
 
+# Agent evaluation results
+evaluations/
+
 # Python and tooling
 .venv/
 __pycache__/

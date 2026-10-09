@@ -32,7 +32,7 @@ from pulse.adapters.graph import GraphMailbox, graph_client
 from pulse.adapters.render import Renderer
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.config import Config
-from pulse.entities.mail import InboundEmail, Mailbox, address_in
+from pulse.entities.mail import InboundEmail, Mailbox, ScreenedEmail, address_in
 from pulse.entities.store import Store
 from pulse.main import build_operations, build_orchestrator, build_outbox, build_screen
 from tests.emails import STAFF_DOMAIN, seedable_corpus_messages
@@ -133,6 +133,15 @@ async def place_in_inbox(
         ]
     inbox = client.users.by_user_id(address).mail_folders.by_mail_folder_id("inbox")
     await inbox.messages.post(created)
+
+
+def as_corpus_email(config: Config, email: ScreenedEmail, corpus_id: str) -> ScreenedEmail:
+    """A corpus email as Graph returned it, named by its corpus ID, with a staff sender back at
+    the corpus's own domain, undoing `place_in_inbox`."""
+    local, _, domain = email.sender_address.rpartition("@")
+    if domain == config.allowed_sender_domains[0]:
+        domain = STAFF_DOMAIN
+    return email.model_copy(update={"message_id": corpus_id, "sender_address": f"{local}@{domain}"})
 
 
 async def sent_to(client: GraphServiceClient, mailbox: str, recipient: str, since: datetime) -> str:

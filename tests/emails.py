@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 from pulse.entities.content import (
     Claim,
@@ -34,6 +34,9 @@ from pulse.entities.store import Store
 STAFF_DOMAIN = "example.org"
 ALLOWED_DOMAINS = [STAFF_DOMAIN]
 CORPUS = Path(__file__).parent / "corpus" / "corpus.yaml"
+# The seeded corpus emails that pass the pre-filter, as Graph returned them, named by corpus ID.
+GRAPH_CORPUS = Path(__file__).parent / "corpus" / "graph_corpus.json"
+SCREENED_EMAILS = TypeAdapter(list[ScreenedEmail])
 HEADLINE = "A new retail customer"
 
 # Written out by hand from the corpus cases, not derived from the rules under test.
@@ -197,6 +200,10 @@ def corpus_consolidation(record_ids: Mapping[str, str]) -> ConsolidatorOutput:
         for item in expected["items"]
     ]
     return ConsolidatorOutput(headline=expected["headline"], items=items)
+
+
+def graph_corpus_emails() -> list[ScreenedEmail]:
+    return SCREENED_EMAILS.validate_json(GRAPH_CORPUS.read_bytes())
 
 
 def seedable_corpus_messages() -> list[dict[str, Any]]:
