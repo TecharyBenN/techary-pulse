@@ -393,7 +393,10 @@ def test_an_entry_carries_every_flag_of_its_items_source_records() -> None:
 
 def test_a_restored_record_keeps_the_flags_it_was_excluded_for() -> None:
     record = restored(
-        [make_extract_record("m04", sensitivity=[PRIVATE])], "excluded-1", "reviewer-oid"
+        [make_extract_record("m04", sensitivity=[PRIVATE])],
+        "excluded-1",
+        "reviewer-oid",
+        sections={},
     )
 
     flags = entry_flags(_content(), FLAG_ITEMS, [*FLAG_RECORDS[:3], record])

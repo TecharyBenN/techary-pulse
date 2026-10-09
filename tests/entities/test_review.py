@@ -42,6 +42,7 @@ RECORDS = [
         [make_record("m06", make_output(sensitivity=[SENSITIVE]), ["excluded-2"])],
         "excluded-3",
         "reviewer-oid",
+        sections={},
     ),
 ]
 CONSOLIDATION = make_consolidation(

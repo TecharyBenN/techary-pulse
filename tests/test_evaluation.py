@@ -282,15 +282,6 @@ def test_a_merged_item_with_the_wrong_category_or_missing_facts_is_a_problem() -
     ]
 
 
-def test_an_item_with_no_set_category_may_take_any() -> None:
-    expected = ConsolidatorExpectation.model_validate(
-        {"items": [{"sources": ["m01", "m02", "m03"], "category": None}]}
-    )
-    output = _items((["record-1", "record-2", "record-3"], "team_news", ["Dan Wood is in Leeds."]))
-
-    assert consolidator_problems(output, SOURCES, expected) == []
-
-
 def test_each_consolidator_input_has_expected_items_holding_every_record_once() -> None:
     inputs = {item.input_id: item for item in consolidator_inputs()}
     expected = consolidator_expectations()
@@ -304,7 +295,6 @@ def test_each_consolidator_input_has_expected_items_holding_every_record_once() 
     restored = [record.message_id for record in inputs["restored"].task.records]
     assert restored == sorted(restored)
     assert set(restored) - {r.message_id for r in inputs["included"].task.records} == {
-        "m12",
         "m22",
         "m23",
     }

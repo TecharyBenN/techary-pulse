@@ -278,8 +278,8 @@ expect:
       - {sources: [m19], category: company_notices, mention: [Litware Supplies, '5', 1 November, 31 October]}
       - {sources: [m20], category: team_news, mention: [Dan Wood, birthday, 2 October]}
       - {sources: [m21], category: team_news, mention: [Tom Evans, Ava, 25 September]}
-    # A reviewer restored these; each stays its own item, and one with no category takes any.
+    # A reviewer restored these, Lucy's operation into the section they named; each stays its
+    # own item.
     restored_items:
-      - {sources: [m12], category: null}
-      - {sources: [m22], category: null, mention: [Lucy Grey, operation]}
+      - {sources: [m22], category: team_news, mention: [Lucy Grey, operation]}
       - {sources: [m23], category: company_notices, mention: [budget, cashflow, redundancies]}

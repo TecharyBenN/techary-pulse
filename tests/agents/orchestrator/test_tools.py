@@ -800,11 +800,12 @@ async def test_restore_includes_the_record_for_the_reviewer(store: SqliteStore) 
     newsletter_id = await _consolidated(tools)
     excluded_id = await _excluded_id(store, newsletter_id, "m02")
 
-    result = await tools.restore(_run_for(make_message()), excluded_id)
+    result = await tools.restore(_run_for(make_message()), excluded_id, "Customer wins")
 
     assert result == RestoreResult(excluded_id=excluded_id, message_id="m02")
     records = {r.message_id: r for r in await store.list_extract_records(newsletter_id)}
     assert (records["m02"].exclusion, records["m02"].restored_by) == (None, REVIEWER)
+    assert records["m02"].category == "customer_win"
     # The restored record is not in the items until consolidate runs again.
     summary = await tools.get_newsletter()
     assert isinstance(summary, dict)
@@ -815,10 +816,21 @@ async def test_restore_refuses_an_id_that_names_no_excluded_record(store: Sqlite
     tools = _tools(store)
     newsletter_id = await _consolidated(tools)
     excluded_id = await _excluded_id(store, newsletter_id, "m02")
-    await tools.restore(_run_for(make_message()), excluded_id)
+    await tools.restore(_run_for(make_message()), excluded_id, "Customer wins")
+
+    assert await tools.restore(_run_for(make_message()), excluded_id, "Customer wins") == (
+        f"Refused: {excluded_id} names no excluded record in the open newsletter"
+    )
+
+
+async def test_restore_asks_for_a_section_for_a_record_with_none(store: SqliteStore) -> None:
+    tools = _tools(store)
+    newsletter_id = await _consolidated(tools)
+    excluded_id = await _excluded_id(store, newsletter_id, "m02")
 
     assert await tools.restore(_run_for(make_message()), excluded_id) == (
-        f"Refused: {excluded_id} names no excluded record in the open newsletter"
+        f"Refused: {excluded_id} fits no section, so the reviewer must name one of: "
+        "Customer wins, Shout-outs"
     )
 
 

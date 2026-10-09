@@ -1,7 +1,7 @@
 """Extract records and the exclusion rules, and the items consolidated from them."""
 
 import re
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Literal
 
 from pydantic import AwareDatetime, ConfigDict
@@ -100,17 +100,41 @@ def make_record(
 
 
 def restored(
-    records: Sequence[ExtractRecord], excluded_id: str, caller: str | None
+    records: Sequence[ExtractRecord],
+    excluded_id: str,
+    caller: str | None,
+    *,
+    section: str | None = None,
+    sections: Mapping[str, str],
 ) -> ExtractRecord:
     """The excluded record a reviewer named, now included; `caller` comes from the run, never
-    from the model."""
+    from the model. A record with no category takes the category of `section`, the section the
+    reviewer named; `sections` maps each configured category to its section title."""
     caller = require_reviewer(caller)
     record = next(
         (r for r in records if r.excluded_id == excluded_id and r.exclusion is not None), None
     )
     if record is None:
         raise Refusal(f"{excluded_id} names no excluded record in the open newsletter")
-    return record.model_copy(update={"exclusion": None, "restored_by": caller})
+    if not record.facts:
+        raise Refusal(
+            f"{excluded_id} has no facts to write from; the reviewer can give the news in their "
+            "feedback instead"
+        )
+    category = record.category
+    if category is None:
+        titles = ", ".join(sections.values())
+        if section is None:
+            raise Refusal(
+                f"{excluded_id} fits no section, so the reviewer must name one of: {titles}"
+            )
+        by_title = {title.casefold(): category for category, title in sections.items()}
+        category = by_title.get(section.strip().casefold())
+        if category is None:
+            raise Refusal(f"{section} is not a section; name one of: {titles}")
+    return record.model_copy(
+        update={"exclusion": None, "restored_by": caller, "category": category}
+    )
 
 
 def _highest(used_ids: Collection[str]) -> int:

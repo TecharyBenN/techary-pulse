@@ -159,7 +159,7 @@ def build_operations(
         clock,
         send_rule=config.send,
         timezone=config.timezone,
-        categories=list(config.categories),
+        section_titles=config.section_titles,
         max_words=config.limits.max_words,
     )
 
@@ -182,7 +182,7 @@ def build_orchestrator(
         WriterAgent(
             model("writer"),
             categories,
-            {section.category: section.title for section in config.sections},
+            config.section_titles,
             config.headline_title,
             config.limits.max_words,
         ),

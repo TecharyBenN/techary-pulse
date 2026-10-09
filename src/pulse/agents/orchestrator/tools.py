@@ -253,11 +253,15 @@ class Tools:
         )
 
     @_reported
-    async def restore(self, ctx: RunContext[ReviewerMessage], excluded_id: str) -> RestoreResult:
-        """Include the named excluded record, only when a reviewer's feedback asks for it. The
+    async def restore(
+        self, ctx: RunContext[ReviewerMessage], excluded_id: str, section: str | None = None
+    ) -> RestoreResult:
+        """Include the named excluded record, only when a reviewer's feedback asks for it. A
+        record that fits no section needs `section`, the title of the section the reviewer
+        wants it in; without one, the refusal lists the sections to ask the reviewer about. The
         items are then out of date, so call consolidate next with every included record."""
         # The caller comes from the run, never from the model.
-        return await self._operations.restore(excluded_id, ctx.deps.author)
+        return await self._operations.restore(excluded_id, ctx.deps.author, section)
 
     @_reported
     async def consolidate(self) -> dict[str, Any]:

@@ -43,6 +43,7 @@ CASHFLOW = Sensitivity(kind="financial", withheld=True, evidence="an internal ca
 COMMERCIAL = Sensitivity(kind="financial", withheld=False, evidence="a supplier's prices")
 NAMED = Sensitivity(kind="named_person", withheld=False, evidence="thanks a colleague by name")
 REVIEWER = "reviewer-oid"
+SECTIONS = {"customer_win": "Customer wins", "shout_out": "Shout-outs"}
 
 
 def test_included_record_has_no_outcome() -> None:
@@ -128,25 +129,85 @@ def test_next_excluded_record_follows_the_highest_number() -> None:
     assert record.excluded_id == "excluded-4"
 
 
-def test_restoring_includes_the_record_and_records_the_reviewer() -> None:
+def test_restoring_includes_the_record_in_the_section_named_and_records_the_reviewer() -> None:
     excluded = _record(make_output(category=None))
 
-    record = restored([_record(make_output()), excluded], "excluded-1", REVIEWER)
+    record = restored(
+        [_record(make_output()), excluded],
+        "excluded-1",
+        REVIEWER,
+        section="shout-outs",
+        sections=SECTIONS,
+    )
+
+    assert record == excluded.model_copy(
+        update={"exclusion": None, "restored_by": REVIEWER, "category": "shout_out"}
+    )
+
+
+def test_restoring_a_record_with_a_category_keeps_it() -> None:
+    withheld = make_output(sensitivity=[Sensitivity(kind="financial", withheld=True, evidence="e")])
+    excluded = _record(withheld)
+
+    record = restored([excluded], "excluded-1", REVIEWER, section="Shout-outs", sections=SECTIONS)
 
     assert record == excluded.model_copy(update={"exclusion": None, "restored_by": REVIEWER})
 
 
+@pytest.mark.parametrize(
+    ("output", "section", "reason"),
+    [
+        (
+            make_output(category=None),
+            None,
+            "excluded-1 fits no section, so the reviewer must name one of: Customer wins, "
+            "Shout-outs",
+        ),
+        (
+            make_output(category=None),
+            "Gossip",
+            "Gossip is not a section; name one of: Customer wins, Shout-outs",
+        ),
+        (
+            make_output(category=None, facts=[]),
+            "Shout-outs",
+            "excluded-1 has no facts to write from; the reviewer can give the news in their "
+            "feedback instead",
+        ),
+    ],
+)
+def test_restoring_refuses_a_record_it_cannot_place(
+    output: Extraction, section: str | None, reason: str
+) -> None:
+    with pytest.raises(Refusal) as refused:
+        restored([_record(output)], "excluded-1", REVIEWER, section=section, sections=SECTIONS)
+
+    assert str(refused.value) == reason
+
+
 def test_restoring_refuses_without_a_reviewer() -> None:
     with pytest.raises(Refusal, match="no reviewer is present in this run"):
-        restored([_record(make_output(category=None))], "excluded-1", None)
+        restored(
+            [_record(make_output(category=None))],
+            "excluded-1",
+            None,
+            section="Shout-outs",
+            sections=SECTIONS,
+        )
 
 
 def test_restoring_refuses_an_id_that_names_no_excluded_record() -> None:
-    record = restored([_record(make_output(category=None))], "excluded-1", REVIEWER)
+    record = restored(
+        [_record(make_output(category=None))],
+        "excluded-1",
+        REVIEWER,
+        section="Shout-outs",
+        sections=SECTIONS,
+    )
 
     for records, excluded_id in (([record], "excluded-1"), ([], "excluded-2")):
         with pytest.raises(Refusal) as refused:
-            restored(records, excluded_id, REVIEWER)
+            restored(records, excluded_id, REVIEWER, section="Shout-outs", sections=SECTIONS)
         assert str(refused.value) == (
             f"{excluded_id} names no excluded record in the open newsletter"
         )
@@ -242,7 +303,7 @@ def test_item_from_a_record_now_excluded_makes_items_out_of_date() -> None:
 
 
 def test_restored_record_is_included_in_the_items() -> None:
-    record = restored([EXCLUDED], "excluded-1", REVIEWER)
+    record = restored([EXCLUDED], "excluded-1", REVIEWER, section="Shout-outs", sections=SECTIONS)
 
     assert not items_up_to_date(_stored(make_item(source_message_ids=["m01"])), [INCLUDED, record])
     assert consolidation_input([INCLUDED, record]) == [INCLUDED, record]

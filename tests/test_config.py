@@ -47,6 +47,15 @@ def test_categories_map_each_section_to_its_definition_in_order(tmp_path: Path) 
     assert list(config.categories) == [s["category"] for s in data["sections"]]
 
 
+def test_section_titles_map_each_category_to_its_title_in_order(tmp_path: Path) -> None:
+    data = _example()
+    config = _load(tmp_path, data)
+
+    assert list(config.section_titles.items()) == [
+        (s["category"], s["title"]) for s in data["sections"]
+    ]
+
+
 def test_draft_cron_can_be_unset(tmp_path: Path) -> None:
     data = _example()
     del data["schedule"]["draft_cron"]

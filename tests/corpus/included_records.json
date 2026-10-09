@@ -226,18 +226,6 @@
   ],
   "restored": [
     {
-      "sensitivity": [],
-      "category": null,
-      "exclusion_reason": "A colleague's office location for one day is not news for the staff newsletter.",
-      "summary": "Dan Wood will work from the Leeds office tomorrow.",
-      "facts": [],
-      "people": [],
-      "message_id": "m12",
-      "exclusion": null,
-      "excluded_id": "excluded-5",
-      "restored_by": "reviewer@example.org"
-    },
-    {
       "sensitivity": [
         {
           "kind": "named_person",
@@ -255,7 +243,7 @@
           "evidence": "sender asks to keep the news confidential"
         }
       ],
-      "category": null,
+      "category": "team_news",
       "exclusion_reason": "A colleague's medical leave fits no category.",
       "summary": "Lucy Grey will be off for a month next week for an operation.",
       "facts": [

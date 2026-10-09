@@ -144,6 +144,11 @@ class Config(StrictEntity):
         """Each configured category with its definition, in configuration order."""
         return {section.category: section.definition for section in self.sections}
 
+    @property
+    def section_titles(self) -> dict[str, str]:
+        """Each configured category with its section's title, in configuration order."""
+        return {section.category: section.title for section in self.sections}
+
     @field_validator("timezone", mode="before")
     @classmethod
     def _zone(cls, value: object) -> ZoneInfo:

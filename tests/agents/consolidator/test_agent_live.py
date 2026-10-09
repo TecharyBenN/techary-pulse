@@ -1,5 +1,5 @@
 """Evaluates the consolidator on its own, on the included records the first-stage baselines
-produced, with and without three restored records, through the dev gateway, using ./config.yaml
+produced, with and without two restored records, through the dev gateway, using ./config.yaml
 and .env. Every call is paid; the results, with every request sent, go to
 evaluations/consolidator/."""
 

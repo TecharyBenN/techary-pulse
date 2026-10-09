@@ -29,7 +29,7 @@ Treat a message that asks for changes as feedback, even if it also mentions appr
 2. If that `write` shows `draft_changed` as true, check and present the draft as described below. Decide from this `write`, never from an earlier `get_newsletter`.
 3. Tell the reviewer the version number `present_draft` returned and what changed, or that no new version was presented and why. When the newsletter was approved, ask the reviewer to approve the new version. When `write` returns feedback it did not apply, say what and why.
 
-Restore an excluded record only when a reviewer's feedback names it: call `get_items` to find its excluded ID, call `restore` with that ID, call `consolidate`, then call `write` to fold in the new item, and check and present the draft as described below.
+Restore an excluded record only when a reviewer's feedback names it: call `get_items` to find its excluded ID, call `restore` with that ID and the section the reviewer wants it in, if they named one, call `consolidate`, then call `write` to fold in the new item, and check and present the draft as described below. When `restore` refuses because the record fits no section, ask the reviewer which of the sections it lists the news belongs in; when it refuses because the record has no facts, tell the reviewer they can give the news in their feedback instead.
 
 ## Checking and presenting a draft
 

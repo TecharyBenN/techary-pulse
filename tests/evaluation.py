@@ -44,7 +44,7 @@ from tests.emails import (
 
 EVALUATIONS = Path("evaluations")
 # The included records the first-stage baselines produced, which the consolidator is given, and
-# three of their excluded records as a reviewer restored them.
+# two of their excluded records as a reviewer restored them.
 INCLUDED_RECORDS = Path(__file__).parent / "corpus" / "included_records.json"
 _RECORDS = TypeAdapter(list[ExtractRecord])
 
@@ -83,7 +83,7 @@ def corpus_inputs() -> list[Input[ScreenedEmail]]:
 
 def consolidator_inputs() -> list[Input[ConsolidatorTask]]:
     """The newsletter's included records, as the first-stage baselines produced them, each named by
-    the corpus ID of its email; then the same with three restored records among them, in corpus
+    the corpus ID of its email; then the same with the restored records among them, in corpus
     order, as the store lists them."""
     saved = json.loads(INCLUDED_RECORDS.read_text(encoding="utf-8"))
     included = _RECORDS.validate_python(saved["records"])
@@ -198,8 +198,7 @@ class ItemExpectation(StrictEntity):
     """One item the consolidator should return: the corpus emails merged into it."""
 
     sources: list[str]
-    # None when any configured category will do, as for a restored record that fits none.
-    category: str | None
+    category: str
     # Words the item's facts must contain.
     mention: tuple[str, ...] = ()
 
@@ -238,7 +237,7 @@ def consolidator_problems(
         if item is None:
             problems.append(f"no item merging {name}")
             continue
-        if wanted.category is not None and item.category != wanted.category:
+        if item.category != wanted.category:
             problems.append(f"{name}: category {item.category} instead of {wanted.category}")
         problems += [
             f"{name}: the facts do not mention {word}"

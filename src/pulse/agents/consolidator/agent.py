@@ -23,8 +23,7 @@ class ConsolidatorTask(Entity):
 
 class ConsolidatorAgent(SpecialistAgent[ConsolidatorTask, ConsolidatorOutput]):
     def __init__(self, model: Model, categories: Mapping[str, str]) -> None:
-        """`categories` maps each configured category to its definition, so the consolidator
-        can place a restored record that has none."""
+        """`categories` maps each configured category to its definition."""
         super().__init__(
             model,
             name="consolidator",

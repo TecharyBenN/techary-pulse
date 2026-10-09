@@ -275,7 +275,8 @@ async def test_restored_record_is_saved_in_place(store: SqliteStore) -> None:
     await store.save_start(make_newsletter(), [])
     first = await store.save_extract("n-1", "m01", make_output(category=None))
     second = await store.save_extract("n-1", "m02", make_output())
-    record = restored([first], "excluded-1", REVIEWER)
+    sections = {"customer_win": "Customer wins"}
+    record = restored([first], "excluded-1", REVIEWER, section="Customer wins", sections=sections)
 
     await store.save_restored("n-1", record)
 

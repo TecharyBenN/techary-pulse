@@ -21,7 +21,7 @@ REVIEWERS = "pulse-reviewers@example.org"
 OPERATORS = ["pulse-operator@example.org"]
 ALL_STAFF = "all-staff@example.org"
 SUBMISSIONS = "pulse-submissions@example.org"
-CATEGORIES = ("customer_win", "shout_out")
+SECTIONS = {"customer_win": "Customer wins", "shout_out": "Shout-outs"}
 MAX_WORDS = 400
 SUBJECT_TEMPLATE = "Pulse: {date}"
 TIMEZONE = ZoneInfo("Europe/London")
@@ -60,7 +60,7 @@ def make_operations(
         clock or ControlledClock(OPENED),
         send_rule=send_rule,
         timezone=TIMEZONE,
-        categories=CATEGORIES,
+        section_titles=SECTIONS,
         max_words=MAX_WORDS,
     )
 

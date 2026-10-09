@@ -1,7 +1,7 @@
 """Operations: the newsletter actions that change the store, and the draft checks."""
 
 import uuid
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -123,9 +123,10 @@ class Operations:
         *,
         send_rule: OnApproval | Scheduled,
         timezone: ZoneInfo,
-        categories: Collection[str],
+        section_titles: Mapping[str, str],
         max_words: int,
     ) -> None:
+        """`section_titles` maps each configured category to its section's title."""
         self._store = store
         self._submissions = submissions_mailbox
         self._outbox = outbox
@@ -134,7 +135,7 @@ class Operations:
         self._clock = clock
         self._send_rule = send_rule
         self._timezone = timezone
-        self._categories = categories
+        self._section_titles = section_titles
         self._max_words = max_words
 
     async def start_newsletter(self) -> StartResult:
@@ -159,11 +160,16 @@ class Operations:
             rejected=sum(1 for s in added if s.rejection is not None),
         )
 
-    async def restore(self, excluded_id: str, caller: str | None) -> RestoreResult:
-        """Include the named excluded record, recording the reviewer who asked."""
+    async def restore(
+        self, excluded_id: str, caller: str | None, section: str | None = None
+    ) -> RestoreResult:
+        """Include the named excluded record, recording the reviewer who asked; one with no
+        category goes in `section`, the section the reviewer named."""
         newsletter_id = require_open(await self._store.get_open_newsletter()).newsletter_id
         records = await self._store.list_extract_records(newsletter_id)
-        record = restored(records, excluded_id, caller)
+        record = restored(
+            records, excluded_id, caller, section=section, sections=self._section_titles
+        )
         await self._store.save_restored(newsletter_id, record)
         return RestoreResult(excluded_id=excluded_id, message_id=record.message_id)
 
@@ -325,7 +331,7 @@ class Operations:
             content,
             item_sources(content, consolidation.items if consolidation else [], emails),
             [message.text for message in feedback],
-            self._categories,
+            self._section_titles,
             self._max_words,
         )
 
