@@ -8,19 +8,24 @@ import json
 import os
 import re
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, Self
+from typing import Any, Literal, NamedTuple, Self, get_args
 
 import httpx2
 from pydantic import AwareDatetime, BaseModel
 from pydantic_ai.exceptions import AgentRunError
+from pydantic_ai.models import Model
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
 
+from pulse.agents.base import EmailAgent
+from pulse.config import Config, load_config
 from pulse.entities.base import Entity, StrictEntity
 from pulse.entities.errors import SpecialistFailed
-from pulse.entities.extracts import ExtractorOutput
+from pulse.entities.extracts import ExtractorOutput, SensitivityKind, SensitivityOutput
 from pulse.entities.mail import ScreenedEmail
 from tests.emails import corpus_email, corpus_messages, graph_corpus_emails, screen_email
 
@@ -68,11 +73,12 @@ class ExtractorExpectation(StrictEntity):
     omit: tuple[str, ...] = ()
 
 
-def extractor_expectations() -> dict[str, ExtractorExpectation]:
+def expectations[E: BaseModel](agent: str, model: type[E]) -> dict[str, E]:
+    """The test's expected answers for the agent, by corpus ID."""
     return {
-        m["id"]: ExtractorExpectation.model_validate(m["expect"]["extractor"])
+        m["id"]: model.model_validate(m["expect"][agent])
         for m in corpus_messages()
-        if "extractor" in m.get("expect", {})
+        if agent in m.get("expect", {})
     }
 
 
@@ -103,6 +109,47 @@ def extractor_problems(output: ExtractorOutput, expected: ExtractorExpectation) 
         if any(f" {_words(word)} " in fact for fact in facts)
     ]
     return problems
+
+
+class SensitivityExpectation(StrictEntity):
+    """The sensitivity agent's right answer for one email: each flag kind it raises, and whether
+    that kind is withheld."""
+
+    # None for a kind that may be raised or not, withheld or not: either answer is reliable
+    # enough, so it never decides whether the email is withheld.
+    flags: dict[SensitivityKind, bool | None]
+
+
+def sensitivity_problems(output: SensitivityOutput, expected: SensitivityExpectation) -> list[str]:
+    """How the flags depart from the expected ones; empty when they are right. The withheld
+    decision, which keeps the email out of the draft, comes first. A kind is withheld when any of
+    its flags is."""
+    given: dict[str, bool] = {}
+    for flag in output.sensitivity:
+        given[flag.kind] = given.get(flag.kind, False) or flag.withheld
+    problems = []
+    withheld = any(given.values())
+    if withheld != any(value is True for value in expected.flags.values()):
+        problems.append(
+            "withheld instead of included" if withheld else "included instead of withheld"
+        )
+    for kind in get_args(SensitivityKind):
+        if kind not in expected.flags:
+            if kind in given:
+                problems.append(f"an extra {kind} flag")
+            continue
+        wanted = expected.flags[kind]
+        if wanted is None:
+            continue
+        if kind not in given:
+            problems.append(f"no {kind} flag")
+        elif given[kind] != wanted:
+            problems.append(f"{kind} {_held(given[kind])} instead of {_held(wanted)}")
+    return problems
+
+
+def _held(withheld: bool) -> str:
+    return "withheld" if withheld else "not withheld"
 
 
 def _words(text: str) -> str:
@@ -270,6 +317,67 @@ def save_results(results: Results, folder: Path = EVALUATIONS) -> Path:
     with os.fdopen(descriptor, "w", encoding="utf-8") as file:
         file.write(results.model_dump_json(indent=2))
     return path
+
+
+async def run_live[O: BaseModel](
+    agent: str,
+    build: Callable[[Model, Config], EmailAgent[O]],
+    problems: Callable[[str, O], list[str]],
+    details: Callable[[dict[str, Any]], list[str]],
+    samples: int,
+) -> list[Answer]:
+    """Run the agent, built by `build` as main builds it, on every corpus input through the dev
+    gateway, using ./config.yaml and .env. Save the results and print a report for each email;
+    `details` gives the lines worth reading from one answer."""
+    config = load_config(Path("config.yaml"))
+    model = config.llm.models[agent]
+    recorder = Recorder()
+    provider = OpenAIProvider(
+        base_url=config.llm.base_url,
+        api_key=os.environ[config.llm.api_key_env],
+        http_client=recorder.client(),
+    )
+    evaluated = build(OpenAIChatModel(model, provider=provider), config)
+    inputs = corpus_inputs()
+    started = datetime.now(UTC)
+    answers = await evaluate(evaluated.answer, problems, inputs, samples, recorder)
+    results = Results.of(
+        agent=agent,
+        model=model,
+        base_url=config.llm.base_url,
+        samples=samples,
+        started=started,
+        finished=datetime.now(UTC),
+        answers=answers,
+        recorder=recorder,
+    )
+    path = save_results(results)
+    for item in inputs:
+        _report(item, [a for a in answers if a.corpus_id == item.corpus_id], details)
+    exchanges = [exchange for answer in answers for exchange in answer.exchanges]
+    tokens = Counter[str]()
+    for exchange in exchanges:
+        tokens.update(exchange.usage or {})
+    right = sum(1 for answer in answers if not answer.problems)
+    print(
+        f"\n{right}/{len(answers)} answers right; {len(exchanges)} calls, "
+        f"{tokens['prompt_tokens']} input and {tokens['completion_tokens']} output tokens; "
+        f"results in {path}"
+    )
+    return answers
+
+
+def _report(
+    item: Input, answers: list[Answer], details: Callable[[dict[str, Any]], list[str]]
+) -> None:
+    right = sum(1 for answer in answers if not answer.problems)
+    retried = sum(1 for answer in answers if len(answer.exchanges) > 1)
+    heading = f"{item.corpus_id} {item.email.subject!r}"
+    print(f"\n{heading}: {right}/{len(answers)} right, {retried} retried")
+    lines = [problem for answer in answers for problem in answer.problems]
+    lines += [line for answer in answers if answer.output for line in details(answer.output)]
+    for line, count in Counter(lines).items():
+        print(f"    {count}x {line}")
 
 
 def _git(*args: str) -> str:

@@ -9,7 +9,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from pulse.agents.extractor.agent import ExtractorAgent
-from pulse.entities.extracts import ExtractorOutput
+from pulse.entities.extracts import ExtractorOutput, SensitivityOutput
 from tests.emails import corpus_email, corpus_messages, make_output, make_screened_email, share
 from tests.emails import screen_email as screened
 from tests.evaluation import (
@@ -17,11 +17,13 @@ from tests.evaluation import (
     Input,
     Recorder,
     Results,
+    SensitivityExpectation,
     corpus_inputs,
     evaluate,
-    extractor_expectations,
+    expectations,
     extractor_problems,
     save_results,
+    sensitivity_problems,
 )
 
 pytestmark = pytest.mark.anyio
@@ -132,10 +134,84 @@ def test_every_corpus_email_that_passes_the_pre_filter_is_an_input_with_an_expec
     inputs = corpus_inputs()
 
     assert sorted(i.corpus_id for i in inputs) == sorted(passing)
-    assert set(extractor_expectations()) == passing
+    assert set(expectations("extractor", ExtractorExpectation)) == passing
+    assert set(expectations("sensitivity", SensitivityExpectation)) == passing
     # Only emails kept out of the dev inbox are built locally; the rest are as Graph returned them.
     local = {m["id"] for m in messages if not m.get("seed", True)}
     assert {i.corpus_id for i in inputs if i.form == "local"} == local & passing
+
+
+FLAGGED = SensitivityExpectation(flags={"named_person": False, "personal_information": False})
+
+
+def _flags(*flags: tuple[str, bool]) -> SensitivityOutput:
+    return SensitivityOutput.model_validate(
+        {"sensitivity": [{"kind": k, "withheld": w, "evidence": "e"} for k, w in flags]}
+    )
+
+
+def test_a_right_set_of_flags_has_no_problems() -> None:
+    output = _flags(("named_person", False), ("personal_information", False))
+
+    assert sensitivity_problems(output, FLAGGED) == []
+
+
+def test_several_flags_of_one_kind_count_once() -> None:
+    output = _flags(
+        ("named_person", False), ("named_person", False), ("personal_information", False)
+    )
+
+    assert sensitivity_problems(output, FLAGGED) == []
+
+
+@pytest.mark.parametrize(
+    ("flags", "problems"),
+    [
+        ((("named_person", False),), ["no personal_information flag"]),
+        (
+            (("named_person", False), ("personal_information", False), ("financial", False)),
+            ["an extra financial flag"],
+        ),
+        (
+            (("named_person", False), ("personal_information", True)),
+            [
+                "withheld instead of included",
+                "personal_information withheld instead of not withheld",
+            ],
+        ),
+    ],
+)
+def test_each_flag_departure_is_a_problem(
+    flags: tuple[tuple[str, bool], ...], problems: list[str]
+) -> None:
+    assert sensitivity_problems(_flags(*flags), FLAGGED) == problems
+
+
+def test_a_missed_withheld_flag_is_an_included_email() -> None:
+    expected = SensitivityExpectation(flags={"personal_information": True, "confidential": True})
+    output = _flags(("personal_information", False))
+
+    assert sensitivity_problems(output, expected) == [
+        "included instead of withheld",
+        "personal_information not withheld instead of withheld",
+        "no confidential flag",
+    ]
+
+
+def test_an_optional_flag_may_be_raised_or_not() -> None:
+    expected = SensitivityExpectation(flags={"financial": True, "personal_information": None})
+
+    assert sensitivity_problems(_flags(("financial", True)), expected) == []
+    raised = _flags(("financial", True), ("personal_information", True))
+    assert sensitivity_problems(raised, expected) == []
+
+
+def test_an_optional_flag_alone_does_not_withhold_the_email() -> None:
+    expected = SensitivityExpectation(flags={"personal_information": None})
+
+    assert sensitivity_problems(_flags(("personal_information", True)), expected) == [
+        "withheld instead of included"
+    ]
 
 
 def _completion(content: str) -> dict[str, object]:
