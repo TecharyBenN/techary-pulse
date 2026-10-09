@@ -26,7 +26,7 @@ messages:
     sender_address: aisha.khan@example.org
     subject: Contoso migration live
     body: The Contoso migration went live on 20 September, two days early.
-    extract: {category: delivery_highlight, exclusion_reason: null, summary: Contoso migration live., facts: [Contoso migration went live on 20 September], people: [Aisha Khan], sensitivity: []}
+    extract: {category: delivery_highlight, exclusion_reason: null, summary: Contoso migration live., facts: [Contoso migration went live on 20 September], people: [], sensitivity: []}
   - id: m04
     case: genuine update, team news, with an attachment
     sender_name: Ben Carter
@@ -56,7 +56,7 @@ messages:
       Subject: Contoso migration live
 
       The Contoso migration went live on 20 September, two days early.
-    extract: {category: delivery_highlight, exclusion_reason: null, summary: Contoso training finished., facts: [Contoso user training finished on 24 September], people: [Aisha Khan], sensitivity: []}
+    extract: {category: delivery_highlight, exclusion_reason: null, summary: Contoso training finished., facts: [Contoso user training finished on 24 September], people: [], sensitivity: []}
   - id: m07
     case: out-of-office reply
     sender_name: Sam Patel
@@ -179,7 +179,7 @@ messages:
     sender_address: sam.patel@example.org
     subject: Lucy's news
     body: Lucy Grey is having an operation next week and will be off for a month. Please keep this between us.
-    extract: {category: team_news, exclusion_reason: null, summary: Lucy Grey will be off for an operation., facts: [Lucy Grey is having an operation next week, Lucy Grey will be off for a month], people: [Lucy Grey], sensitivity: [{kind: personal_information, withheld: true, evidence: a colleague's health}]}
+    extract: {category: null, exclusion_reason: A colleague's absence fits no category., summary: Lucy Grey will be off for an operation., facts: [Lucy Grey is having an operation next week, Lucy Grey will be off for a month], people: [Lucy Grey], sensitivity: [{kind: personal_information, withheld: true, evidence: a colleague's health}]}
   - id: m23
     case: internal memo shared by mistake, financial and withheld
     sender_name: Tom Evans

@@ -70,7 +70,8 @@ def progress_note(tool: str) -> str:
     return f"{PROGRESS_NOTES.get(tool, _DEFAULT_NOTE)} ({tool})"
 
 
-# Subjects and bodies stay with the extractor, the only agent that reads them.
+# Subjects and bodies stay with the extractor and the sensitivity agent, the only agents that
+# read them.
 _LISTED_FIELDS = {"message_id", "sender_name", "received", "has_attachments", "rejection"}
 _SUMMARY_FIELDS = {
     "newsletter_id",
@@ -227,11 +228,11 @@ class Tools:
 
     @_reported
     async def extract(self) -> ExtractResult:
-        """Run the extractor, in parallel, on every screened email of the open newsletter that
-        passed the pre-filter and has no extract record yet, and store each extract record with
-        its exclusion outcome. An email that failed has no record, so calling this again retries
-        it. Returns each email's outcome and the totals included, excluded by reason, and
-        failed."""
+        """Run the extractor and the sensitivity agent, in parallel, on every screened email of
+        the open newsletter that passed the pre-filter and has no extract record yet, and store
+        each extract record with its exclusion outcome. An email that failed has no record, so
+        calling this again retries it. Returns each email's outcome and the totals included,
+        excluded by reason, and failed."""
         newsletter = await self._open()
         newsletter_id = newsletter.newsletter_id
         extracted = {r.message_id for r in await self._store.list_extract_records(newsletter_id)}

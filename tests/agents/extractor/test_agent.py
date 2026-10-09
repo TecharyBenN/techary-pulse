@@ -66,3 +66,7 @@ async def test_extractor_has_no_tools_and_lists_the_categories() -> None:
     assert [p.content for p in request.parts if isinstance(p, UserPromptPart)] == [
         agent.message(EMAIL)
     ]
+    # Each field says what it holds in the schema the model is given.
+    schema = info.model_request_parameters.output_object
+    assert schema is not None
+    assert all(field.get("description") for field in schema.json_schema["properties"].values())

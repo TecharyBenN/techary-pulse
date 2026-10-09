@@ -144,7 +144,8 @@ class SpecialistAgent[T, O](PulseAgent[T, O]):
     def _categories_instruction(cls, categories: Mapping[str, str]) -> str:
         """`categories` maps each configured category to its definition, from configuration, so
         it may sit in the instructions."""
-        return f"The configured categories are:\n{cls._listed(categories)}"
+        listed = cls._listed(categories)
+        return f"The configured categories are:\n<categories>\n{listed}\n</categories>"
 
 
 class EmailAgent[O](SpecialistAgent[ScreenedEmail, O]):

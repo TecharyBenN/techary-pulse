@@ -31,7 +31,7 @@ from tests.emails import (
     share,
 )
 
-# The same kinds can be fine to share or withheld; only the extractor's judgement decides.
+# The same kinds can be fine to share or withheld; only the sensitivity agent's judgement decides.
 FLAG = Sensitivity(
     kind="personal_information", withheld=True, evidence="mentions a colleague's health"
 )

@@ -202,7 +202,7 @@ Scope:
 - listing the inbox with Graph's `body` as well as `uniqueBody`, and the screened email keeping both when it passes the pre-filter, with the `screened_emails` table to match;
 - the extractor receiving both, and its instructions for forwarded and quoted messages as the design's extract section states them;
 - the draft checks matching names and digit sequences against a source message's whole body;
-- the extractor's sensitivity flags as the design states them: each with its kind, whether it is withheld, and its evidence, the extractor judging whether it is withheld;
+- sensitivity flags as the design states them: each with its kind, whether it is withheld, and its evidence, the sensitivity agent judging whether it is withheld;
 - the exclusion rules: exclude records with a withheld flag, or with no category, and include records with no withheld flag;
 - the `company_notices` section in the example configurations, and the `team_news` definition covering celebrations;
 - flagged entries as the design's flagged entries section states them: working them out from the items and extract records, saving them with each version, and returning the count from `present_draft`;
@@ -213,6 +213,7 @@ Scope:
 - the extractor's `people` limited to the people the facts name, the writer's output check that every name in an entry's `people` appears in its text, and the `people` draft check reduced to the sources;
 - `confidential` covering a partner's or supplier's email marked for partners only or asking not to distribute it further, flagged and not withheld;
 - the sensitivity agent, split from the extractor, run alongside it on each screened email;
+- the extractor's prompt rewritten to Anthropic's prompting practices, with its output fields described in the schema, and an email with real news that fits no category keeping its facts;
 - the orchestrator instructions for reporting flagged entries;
 - the synthetic corpus updated to the new rules, with a forwarded email, a pricing email, a shout-out, a birthday, a new joiner's welcome, a celebration such as a new baby, an email that credits people for their work, and a private personal email.
 

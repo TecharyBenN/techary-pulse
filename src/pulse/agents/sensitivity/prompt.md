@@ -10,8 +10,8 @@ Return `sensitivity`: one flag for each sensitive thing in the email; an empty l
 
 Each flag has a `kind`, `withheld` and `evidence`. `kind` says what the content is:
 
-- `named_person`: a named person is congratulated, recognised, thanked, welcomed or credited, or has a birthday;
-- `personal_information`: details of a person's private life, such as a new baby, a wedding, health, family matters, or performance or HR issues;
+- `named_person`: a named person is congratulated, recognised, thanked, welcomed or credited, or has a birthday. A team or a company is not a named person;
+- `personal_information`: details of a person's private life, such as a new baby, a wedding, health, family matters, or performance or HR issues. Good news counts: congratulating someone on a wedding is both `named_person` and `personal_information`;
 - `financial`: any pricing, deal value, margin, revenue, profit, budget or cash figure or situation, including a partner's or supplier's;
 - `confidential`: the email is marked confidential or draft, says its news must not be shared yet or only with certain people, or gives a date before which it must not be announced. This includes a partner's or supplier's email marked for partners only, or asking not to distribute it further;
 - `inappropriate`: offensive, discriminatory or harassing content, profanity, or criticism of named colleagues or customers.
@@ -33,9 +33,15 @@ Techary is the partner on a partner's email, and the newsletter rewords it for T
 
 These emails are made up to show the rules; they are not in the input.
 
+<examples>
 <example>
 <email_text>The Tailspin Toys backup rollout finished on Tuesday, a week ahead of plan. Thanks to Omar Reid for the late nights.</email_text>
 <sensitivity>[{"kind": "named_person", "withheld": false, "evidence": "Omar Reid thanked for the rollout"}]</sensitivity>
+</example>
+
+<example>
+<email_text>Congratulations to Nina Shaw, who got married on Saturday.</email_text>
+<sensitivity>[{"kind": "named_person", "withheld": false, "evidence": "Nina Shaw congratulated"}, {"kind": "personal_information", "withheld": false, "evidence": "a colleague's wedding"}]</sensitivity>
 </example>
 
 <example>
@@ -52,5 +58,6 @@ These emails are made up to show the rules; they are not in the input.
 <email_text>Hannah Moss has handed in her notice after a dispute with her manager. Keep it quiet for now.</email_text>
 <sensitivity>[{"kind": "personal_information", "withheld": true, "evidence": "a named colleague's resignation and HR dispute"}, {"kind": "confidential", "withheld": true, "evidence": "asked to keep the news quiet"}]</sensitivity>
 </example>
+</examples>
 
 Write in British English.

@@ -4,7 +4,7 @@ import re
 from collections.abc import Collection, Iterable, Sequence
 from typing import Literal
 
-from pydantic import AwareDatetime
+from pydantic import AwareDatetime, ConfigDict
 
 from pulse.entities.base import StrictEntity
 from pulse.entities.errors import Refusal
@@ -30,14 +30,27 @@ class Sensitivity(StrictEntity):
 
 
 class ExtractorOutput(StrictEntity):
-    """What the extractor finds in one screened email."""
+    """The news in one email that a member of staff sent to Techary's newsletter."""
+
+    # Each field's docstring is its description in the schema the extractor is given.
+    model_config = ConfigDict(use_attribute_docstrings=True)
 
     category: str | None
-    # Free text for reviewers, given only when there is no category.
+    """The category in <categories> that the news fits, or null when it fits none."""
+
     exclusion_reason: str | None
+    """One short sentence for the newsletter's reviewers saying why the email has no category;
+    null when it has one."""
+
     summary: str
+    """One short sentence stating the news, which makes sense without the email."""
+
     facts: list[str]
+    """The facts of the news, one short sentence each, with names, dates and numbers as
+    written."""
+
     people: list[str]
+    """The full name of every person the facts name."""
 
 
 class SensitivityOutput(StrictEntity):
