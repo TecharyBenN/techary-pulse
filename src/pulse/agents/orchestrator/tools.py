@@ -151,6 +151,8 @@ class Tools:
         self._writes: Counter[str] = Counter()
 
     def toolset(self) -> FunctionToolset[ReviewerMessage]:
+        # A tool can read what an earlier tool in the same response stored, such as consolidate
+        # reading extract's records, so tools called together run one at a time, in call order.
         return FunctionToolset(
             [
                 self.start_newsletter,
@@ -169,7 +171,8 @@ class Tools:
                 self.approve,
                 self.withdraw_approval,
                 self.abandon,
-            ]
+            ],
+            sequential=True,
         )
 
     @_reported

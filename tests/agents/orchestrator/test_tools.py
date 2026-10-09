@@ -174,6 +174,29 @@ async def test_toolset_offers_each_tool(store: SqliteStore) -> None:
     }
 
 
+async def test_tools_called_together_run_one_at_a_time_in_call_order(store: SqliteStore) -> None:
+    model = responses(
+        _call("start_newsletter"),
+        ModelResponse(parts=[ToolCallPart("extract", {}), ToolCallPart("consolidate", {})]),
+        text_response("Done."),
+    )
+    orchestrator = Orchestrator(
+        OrchestratorAgent(FunctionModel(model), _tools(store).toolset()),
+        store,
+        no_state,
+        40,
+        timedelta(minutes=15),
+        asyncio.Lock(),
+    )
+
+    await orchestrator.handle(make_message(text="Please draft a newsletter."))
+
+    newsletter = await store.get_open_newsletter()
+    assert newsletter is not None
+    # consolidate ran after extract had stored the records it reads.
+    assert await store.get_items(newsletter.newsletter_id) == CONSOLIDATION
+
+
 async def test_every_tool_has_a_progress_note(store: SqliteStore) -> None:
     assert set(PROGRESS_NOTES) == set(_tools(store).toolset().tools)
     assert progress_note("get_newsletter") == "Checking the current newsletter (get_newsletter)"

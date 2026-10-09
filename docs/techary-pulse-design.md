@@ -220,7 +220,7 @@ The orchestrator's rules are set with `instructions`, which Pydantic AI sends wi
 | `withdraw_approval` | Action | Returns an approved newsletter to `in_review`. |
 | `abandon` | Action | Closes the newsletter unsent and emails the reviewers that it was abandoned. |
 
-Read tools work on the latest newsletter, so reviewers can still ask about it once it is sent or abandoned; every other tool works on the open newsletter. Tools return IDs, counts and short summaries, with totals wherever the orchestrator would otherwise have to count; `get_draft` and `get_items` return detail when the orchestrator needs it.
+When one model response calls several tools, they run one at a time, in the order called, because a tool can depend on what an earlier one stored, as `consolidate` depends on `extract`. Read tools work on the latest newsletter, so reviewers can still ask about it once it is sent or abandoned; every other tool works on the open newsletter. Tools return IDs, counts and short summaries, with totals wherever the orchestrator would otherwise have to count; `get_draft` and `get_items` return detail when the orchestrator needs it.
 
 Every tool checks its preconditions in code, records its effect in the store as it happens, and returns the reason when it refuses:
 
