@@ -23,10 +23,18 @@ class Sensitivity(StrictEntity):
     """A sensitivity flag the sensitivity agent raised: what it is, whether it must be withheld
     from all staff, and its evidence."""
 
+    # Each field's docstring is its description in the schema the sensitivity agent is given.
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
     kind: SensitivityKind
+    """What the flagged content is."""
+
     # The sensitivity agent's judgement; the kind never decides it.
     withheld: bool
+    """Whether the content must be kept from all staff until a reviewer decides otherwise."""
+
     evidence: str
+    """A short phrase, in your own words, saying what triggered the flag."""
 
 
 class ExtractorOutput(StrictEntity):
@@ -56,7 +64,10 @@ class ExtractorOutput(StrictEntity):
 class SensitivityOutput(StrictEntity):
     """What the sensitivity agent flags in one screened email."""
 
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
     sensitivity: list[Sensitivity]
+    """One flag for each sensitive thing in the email; empty when there is none."""
 
 
 class Extraction(ExtractorOutput, SensitivityOutput):

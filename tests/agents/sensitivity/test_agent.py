@@ -35,3 +35,11 @@ async def test_sensitivity_agent_has_no_tools_and_keeps_the_email_out_of_its_ins
     assert [p.content for p in request.parts if isinstance(p, UserPromptPart)] == [
         agent.message(EMAIL)
     ]
+    # Each field says what it holds in the schema the model is given, the flag's fields too.
+    schema = info.model_request_parameters.output_object
+    assert schema is not None
+    fields = [
+        *schema.json_schema["properties"].values(),
+        *schema.json_schema["$defs"]["Sensitivity"]["properties"].values(),
+    ]
+    assert all(field.get("description") for field in fields)
