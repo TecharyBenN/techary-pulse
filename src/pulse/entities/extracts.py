@@ -46,8 +46,8 @@ class ExtractorOutput(StrictEntity):
     """One short sentence stating the news, which makes sense without the email."""
 
     facts: list[str]
-    """The facts of the news, one short sentence each, with names, dates and numbers as
-    written."""
+    """The facts of the news, one short sentence each, keeping the email's names, dates and
+    numbers, written in British English."""
 
     people: list[str]
     """The full name of every person the facts name."""
