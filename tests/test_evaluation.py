@@ -10,7 +10,14 @@ from pydantic_ai.providers.openai import OpenAIProvider
 
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.writer.agent import WriterTask
-from pulse.entities.content import Claim, Content, Entry, JudgeOutput, Section, WriterOutput
+from pulse.entities.content import (
+    Content,
+    Entry,
+    JudgeOutput,
+    Section,
+    UnsupportedText,
+    WriterOutput,
+)
 from pulse.entities.extracts import (
     ConsolidatorItem,
     ConsolidatorOutput,
@@ -630,28 +637,53 @@ def test_token_totals_add_input_and_output_tokens_across_every_exchange() -> Non
     assert token_totals([answer]) == (200, 20)
 
 
-def _claims(*claims: tuple[str, str | None]) -> JudgeOutput:
-    return JudgeOutput(claims=[Claim(claim=claim, source=source) for claim, source in claims])
+def _found(*texts: str) -> JudgeOutput:
+    return JudgeOutput(unsupported=[UnsupportedText(text=t, reason="Not stated.") for t in texts])
 
 
-def test_a_supported_text_with_an_unsupported_claim_is_a_problem() -> None:
+def test_a_supported_text_found_unsupported_is_a_problem() -> None:
     expected = JudgeExpectation(supported=True)
 
-    assert judge_problems(_claims(("Dan Wood's birthday", "Dan Wood's birthday")), expected) == []
-    assert judge_problems(_claims(("a significant win", None)), expected) == [
-        "unsupported claim: a significant win"
+    assert judge_problems(_found(), expected) == []
+    assert judge_problems(_found("a significant win"), expected) == [
+        "unsupported: a significant win (Not stated.)"
     ]
+
+
+def test_a_borderline_text_accepts_either_verdict() -> None:
+    expected = JudgeExpectation(supported=None)
+
+    assert judge_problems(_found(), expected) == []
+    assert judge_problems(_found("his daughter Ava"), expected) == []
+
+
+def test_an_entry_using_a_word_its_item_must_not_is_a_problem() -> None:
+    expected = WRITTEN.model_copy(
+        update={"items": [WRITTEN.items[0], WRITTEN.items[1].model_copy(update={"omit": ("CV",)})]}
+    )
+    thanks = THANKS.model_copy(
+        update={"text": "Thank you to Sam Patel for covering the service desk, CV attached."}
+    )
+
+    problems = writer_problems(
+        _draft([NORTHWIND], [thanks]),
+        WRITER_TASK,
+        expected,
+        WRITER_EMAILS,
+        ["customer_win", "shout_out"],
+        400,
+    )
+
+    assert problems == ["m05: the entry says CV"]
 
 
 def test_an_unsupported_text_must_name_the_words_that_break_it() -> None:
-    expected = JudgeExpectation(supported=False, mention=("daughter",))
+    expected = JudgeExpectation(supported=False, mention=("record-breaking",))
 
-    assert judge_problems(_claims(("his daughter Ava", None)), expected) == []
-    assert judge_problems(_claims(("Tom Evans had a baby", "fact")), expected) == [
-        "no unsupported claim"
-    ]
-    assert judge_problems(_claims(("on 25 September", None)), expected) == [
-        "no unsupported claim names daughter"
+    assert judge_problems(_found("a record-breaking win"), expected) == []
+    assert judge_problems(_found(), expected) == ["nothing found unsupported"]
+    assert judge_problems(_found("on 25 September"), expected) == [
+        "nothing unsupported names record-breaking"
     ]
 
 

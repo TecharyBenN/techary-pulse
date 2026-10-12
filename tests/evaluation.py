@@ -253,8 +253,9 @@ class ItemExpectation(StrictEntity):
 
     sources: list[str]
     category: str
-    # Words the item's facts must contain.
+    # Words the item's facts must contain, and words the writer's entry for it must not.
     mention: tuple[str, ...] = ()
+    omit: tuple[str, ...] = ()
 
 
 class ConsolidatorExpectation(StrictEntity):
@@ -339,6 +340,11 @@ def writer_problems(
             f"{name}: the entry does not mention {word}"
             for word in _missing(wanted.mention, [entry.text])
         ]
+        problems += [
+            f"{name}: the entry says {word}"
+            for word in wanted.omit
+            if not _missing([word], [entry.text])
+        ]
         people = {person.casefold() for person in item.people}
         problems += [
             f"{name}: the entry names {sender}, who only shared it"
@@ -349,23 +355,24 @@ def writer_problems(
 
 
 class JudgeExpectation(StrictEntity):
-    """The judge's right answer for one text: whether it keeps to its facts, and words an
-    unsupported claim must name when it does not."""
+    """The judge\'s right answer for one text: whether it keeps to its facts, and words what it
+    finds unsupported must name when it does not."""
 
-    supported: bool
+    # None for a borderline text, where either verdict is acceptable.
+    supported: bool | None
     mention: tuple[str, ...] = ()
 
 
 def judge_problems(output: JudgeOutput, expected: JudgeExpectation) -> list[str]:
-    """How the claims depart from the expected verdict; empty when they are right."""
-    unsupported = [claim.claim for claim in output.claims if claim.source is None]
+    """How the verdict departs from the expected one; empty when it is right."""
+    unsupported = [part.text for part in output.unsupported]
+    if expected.supported is None:
+        return []
     if expected.supported:
-        return [f"unsupported claim: {claim}" for claim in unsupported]
+        return [f"unsupported: {part.text} ({part.reason})" for part in output.unsupported]
     if not unsupported:
-        return ["no unsupported claim"]
-    return [
-        f"no unsupported claim names {word}" for word in _missing(expected.mention, unsupported)
-    ]
+        return ["nothing found unsupported"]
+    return [f"nothing unsupported names {word}" for word in _missing(expected.mention, unsupported)]
 
 
 def _missing(words: Sequence[str], facts: Sequence[str]) -> list[str]:

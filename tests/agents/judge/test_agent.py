@@ -6,7 +6,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from pulse.agents.judge.agent import JudgeAgent, JudgeTask
-from pulse.entities.content import Claim, JudgeOutput
+from pulse.entities.content import JudgeOutput, UnsupportedText
 from pulse.entities.extracts import with_sources
 from tests.emails import ENTRY, make_consolidation, make_item, make_screened_email
 from tests.messages import make_message
@@ -45,7 +45,7 @@ async def test_has_no_tools_uses_native_output_and_keeps_input_out_of_instructio
     seen: list[AgentInfo] = []
     prompts: list[ModelMessage] = []
     output = JudgeOutput(
-        claims=[Claim(claim="Signed Northwind Retail", source="Signed Northwind Retail today")]
+        unsupported=[UnsupportedText(text="two customers", reason="The facts name one.")]
     )
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -66,3 +66,8 @@ async def test_has_no_tools_uses_native_output_and_keeps_input_out_of_instructio
     assert [p.content for p in request.parts if isinstance(p, UserPromptPart)] == [
         judge.message(TASK)
     ]
+    # Each field says what it holds in the schema the model is given, nested fields too.
+    schema = info.model_request_parameters.output_object
+    assert schema is not None
+    models = [schema.json_schema, *schema.json_schema["$defs"].values()]
+    assert all(field.get("description") for m in models for field in m["properties"].values())

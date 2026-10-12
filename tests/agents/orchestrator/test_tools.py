@@ -28,7 +28,7 @@ from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import PROGRESS_NOTES, ShowResult, Tools, progress_note
 from pulse.agents.sensitivity.agent import SensitivityAgent
 from pulse.agents.writer.agent import WriterAgent
-from pulse.entities.content import Claim, Entry, JudgeOutput
+from pulse.entities.content import Entry, JudgeOutput
 from pulse.entities.conversation import ReviewerMessage
 from pulse.entities.extracts import Extraction
 from pulse.entities.lifecycle import start_send
@@ -98,13 +98,8 @@ def judge_model(seen: list[dict[str, Any]] | None = None) -> FunctionModel:
         items = json.loads(blocks[1].split("\n")[1])
         if seen is not None:
             seen.append(text | {"items": [item["item_id"] for item in items]})
-        if text["text"] == ENTRY:
-            claims = [Claim(claim="Signed two customers", source=None)]
-        else:
-            claims = [
-                Claim(claim="Signed Northwind Retail", source="Signed Northwind Retail today")
-            ]
-        return text_response(JudgeOutput(claims=claims).model_dump_json())
+        verdict = make_verdict(claim="Signed two customers" if text["text"] == ENTRY else None)
+        return text_response(JudgeOutput(unsupported=verdict.unsupported).model_dump_json())
 
     return FunctionModel(model)
 
@@ -709,7 +704,7 @@ async def test_check_returns_every_failure_of_the_working_draft(store: SqliteSto
     }
 
 
-async def test_judge_stores_its_verdicts_and_returns_the_unsupported_claims(
+async def test_judge_stores_its_verdicts_and_returns_what_is_unsupported(
     store: SqliteStore,
 ) -> None:
     seen: list[dict[str, Any]] = []
@@ -722,7 +717,14 @@ async def test_judge_stores_its_verdicts_and_returns_the_unsupported_claims(
 
     assert result == {
         "judged": 2,
-        "unsupported": [{"target": "item-1", "claims": ["Signed two customers"]}],
+        "unsupported": [
+            {
+                "target": "item-1",
+                "unsupported": [
+                    {"text": "Signed two customers", "reason": "Nothing in the facts states it."}
+                ],
+            }
+        ],
     }
     assert await store.get_verdicts(newsletter_id) == JUDGED
     # One call per text: the intro with every item, each entry with only its own item.
@@ -758,7 +760,7 @@ async def test_judge_gives_an_entry_only_its_own_item(store: SqliteStore) -> Non
 
 
 async def test_judge_reports_an_invalid_response_and_stores_nothing(store: SqliteStore) -> None:
-    invalid = '{"claims": "Made up"}'
+    invalid = '{"unsupported": "Made up"}'
     tools = _tools(store, judge=FunctionModel(reply_with(invalid)))
     newsletter_id = await _consolidated(tools)
     await tools.write(_run_for(make_message()), "Write the first draft.")

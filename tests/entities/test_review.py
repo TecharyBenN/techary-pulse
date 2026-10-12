@@ -2,9 +2,9 @@ from datetime import UTC, datetime
 
 from pulse.entities.content import (
     CheckFailure,
-    Claim,
     Entry,
     NotApplied,
+    UnsupportedText,
     Verdict,
     Version,
     version_of,
@@ -115,16 +115,17 @@ def test_failures_and_unsupported_claims_are_named_as_reviewers_see_them() -> No
         ("Customer wins", "Section: not a configured category"),
     ]
     assert review.unsupported is not None
-    assert [(f.where, f.problem) for f in review.unsupported] == [("Intro", "A record week")]
+    assert [(f.where, f.problem) for f in review.unsupported] == [
+        ("Intro", "A record week: Nothing in the facts states it.")
+    ]
 
 
-def test_each_unsupported_claim_is_its_own_finding() -> None:
+def test_each_unsupported_part_is_its_own_finding_with_its_reason() -> None:
     verdict = Verdict(
         target="item-1",
-        claims=[
-            Claim(claim="Signed two customers", source=None),
-            Claim(claim="on 22 September", source="Signed Northwind Retail on 22 September"),
-            Claim(claim="worth a million pounds", source=None),
+        unsupported=[
+            UnsupportedText(text="Signed two customers", reason="The facts name one customer."),
+            UnsupportedText(text="worth a million pounds", reason="No value is given."),
         ],
     )
 
@@ -132,8 +133,8 @@ def test_each_unsupported_claim_is_its_own_finding() -> None:
 
     assert review.unsupported is not None
     assert [(f.where, f.problem) for f in review.unsupported] == [
-        (ENTRY, "Signed two customers"),
-        (ENTRY, "worth a million pounds"),
+        (ENTRY, "Signed two customers: The facts name one customer."),
+        (ENTRY, "worth a million pounds: No value is given."),
     ]
 
 

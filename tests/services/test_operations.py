@@ -413,7 +413,7 @@ async def test_present_returns_the_problems_as_the_reviewer_email_words_them(
 
     assert result.problems == [
         Finding(where="Intro", problem="Dashes: em or en dash"),
-        Finding(where=ENTRY, problem="Signed two"),
+        Finding(where=ENTRY, problem="Signed two: Nothing in the facts states it."),
     ]
     # Emailing the unchanged version again returns the same problems.
     assert (await operations.present_draft()).problems == result.problems

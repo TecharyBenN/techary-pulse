@@ -22,7 +22,7 @@ What goes in the newsletter:
 How each entry reads:
 - It is one or two sentences.
 - It tells the news itself, as a newsletter does: write "Happy birthday to Dan Wood", never "Lucy Grey sends birthday wishes to Dan Wood".
-- It uses only the facts of its item and facts stated in reviewer feedback, and keeps names, dates and numbers as the facts give them.
+- It uses only the facts of its item and facts stated in reviewer feedback, and keeps names, dates and numbers as the facts give them. It adds no detail the facts do not give, even a likely one, such as a baby's gender from its name.
 - It keeps every detail a reader needs to understand what is happening, to whom, when and how much.
 - It never credits the sender, because Pulse adds a line under each entry crediting who shared it. Use the sender names only to follow feedback, such as removing someone's update.
 - Its `people` holds only the names that appear in its own text.
@@ -87,6 +87,24 @@ Language:
 </instruction>
 <output>
 {"content": {"headline_title": "Headline of the week", "headline": "Wide World Importers upgrade finishes early", "intro": "This week, an early finish for the Wide World Importers network upgrade and a new joiner.", "sections": [{"category": "delivery_highlight", "title": "Delivery highlights", "entries": [{"item_id": "item-1", "text": "The Wide World Importers network upgrade finished on 6 March, two days early.", "people": []}]}, {"category": "team_news", "title": "Team news and new joiners", "entries": [{"item_id": "item-2", "text": "Welcome to Leo Brand, who joins the networking team on 10 March.", "people": ["Leo Brand"]}]}], "item_ids": ["item-1", "item-2"]}, "changes": [], "not_applied": []}
+</output>
+</example>
+<example>
+<note>A first draft: a new baby is congratulated with only what the facts say, so the baby is given no gender.</note>
+<items>
+{"headline": "A new arrival for Leo Brand", "items": [{"item_id": "item-1", "category": "team_news", "facts": ["Leo Brand's baby Ella arrived on 2 March."], "people": ["Leo Brand"], "sender_names": ["Grace Lin"], "received": ["2026-03-04T09:00:00Z"]}]}
+</items>
+<excluded_records>
+[]
+</excluded_records>
+<feedback>
+[]
+</feedback>
+<instruction>
+"Write the first draft of the newsletter."
+</instruction>
+<output>
+{"content": {"headline_title": "Headline of the week", "headline": "A new arrival for Leo Brand", "intro": "This week, a new arrival in the team.", "sections": [{"category": "team_news", "title": "Team news and new joiners", "entries": [{"item_id": "item-1", "text": "Congratulations to Leo Brand on the arrival of his baby, Ella, on 2 March.", "people": ["Leo Brand"]}]}], "item_ids": ["item-1"]}, "changes": [], "not_applied": []}
 </output>
 </example>
 </examples>

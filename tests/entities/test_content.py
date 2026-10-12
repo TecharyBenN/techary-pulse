@@ -5,11 +5,11 @@ import pytest
 
 from pulse.entities.content import (
     CheckFailure,
-    Claim,
     Content,
     Entry,
     EntryNotes,
     FlaggedEntry,
+    UnsupportedText,
     Verdict,
     check_content,
     draft_changed,
@@ -455,19 +455,8 @@ def test_a_version_keeps_the_notes_it_was_presented_with() -> None:
     assert version.notes == notes
 
 
-def test_a_verdict_is_supported_exactly_when_every_claim_has_a_source() -> None:
-    sourced = Claim(claim="Signed Northwind Retail", source="Signed Northwind Retail today")
-    unsourced = Claim(claim="Signed two customers", source=None)
+def test_a_verdict_is_supported_exactly_when_nothing_is_unsupported() -> None:
+    part = UnsupportedText(text="Signed two customers", reason="The facts name one customer.")
 
-    assert Verdict(target="item-1", claims=[sourced]).supported
-    assert not Verdict(target="item-1", claims=[sourced, unsourced]).supported
-    assert Verdict(target="item-1", claims=[sourced, unsourced]).unsupported() == [
-        "Signed two customers"
-    ]
-
-
-def test_a_text_with_no_claims_is_supported() -> None:
-    # Warm wording such as a greeting states no fact, so it makes no claim.
-    verdict = Verdict(target="item-1", claims=[])
-
-    assert verdict.supported and verdict.unsupported() == []
+    assert Verdict(target="item-1", unsupported=[]).supported
+    assert not Verdict(target="item-1", unsupported=[part]).supported

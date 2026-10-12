@@ -36,4 +36,4 @@ async def test_the_judge_finds_exactly_the_unsupported_texts() -> None:
 
 
 def _details(output: dict[str, Any]) -> list[str]:
-    return [f"unsupported: {c['claim']}" for c in output["claims"] if c["source"] is None]
+    return [f"unsupported: {part['text']} ({part['reason']})" for part in output["unsupported"]]

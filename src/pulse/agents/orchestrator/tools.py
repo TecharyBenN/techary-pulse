@@ -355,8 +355,9 @@ class Tools:
     @_reported
     async def judge(self) -> dict[str, Any]:
         """Run the judge on the working draft's intro and on each entry, in parallel, which
-        matches each claim to the facts and feedback that state it, and store its verdicts.
-        Returns how many parts it judged and the claims nothing states."""
+        finds what does not keep to the spirit of the facts and feedback, and store its
+        verdicts. Returns how many parts it judged and, for each part that fails, what does not
+        keep to its facts and why."""
         newsletter = await self._open()
         newsletter_id = newsletter.newsletter_id
         content = (await self._operations.draft_or_version(newsletter, None)).content
@@ -379,7 +380,10 @@ class Tools:
         return {
             "judged": len(verdicts),
             "unsupported": [
-                {"target": verdict.target, "claims": verdict.unsupported()}
+                {
+                    "target": verdict.target,
+                    "unsupported": [part.model_dump() for part in verdict.unsupported],
+                }
                 for verdict in verdicts
                 if not verdict.supported
             ],

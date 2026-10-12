@@ -80,9 +80,9 @@ def build_review(
         unsupported=None
         if version.verdicts is None
         else [
-            Finding(where=_where(content, verdict.target), problem=claim)
+            Finding(where=_where(content, verdict.target), problem=f"{part.text}: {part.reason}")
             for verdict in version.verdicts
-            for claim in verdict.unsupported()
+            for part in verdict.unsupported
         ],
         changes=version.changes if revised else [],
         not_applied=version.not_applied if revised else [],

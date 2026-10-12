@@ -110,18 +110,26 @@ class WriterOutput(StrictEntity):
     """Each piece of feedback not applied, with the reason."""
 
 
-class Claim(StrictEntity):
-    """One claim a text makes, with the fact or feedback that states it."""
+class UnsupportedText(StrictEntity):
+    """Part of a text that does not keep to the spirit of its facts, and why."""
 
-    claim: str
-    # Quoted from the facts or feedback, or None when nothing states it or a fact contradicts it.
-    source: str | None
+    # Each field's docstring is its description in the schema the judge is given.
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+    text: str
+    """The words in the text that do not keep to its facts."""
+
+    reason: str
+    """Why they do not, in one short sentence."""
 
 
 class JudgeOutput(StrictEntity):
-    """Each claim one text, the intro or an entry, makes, with its source."""
+    """What the judge finds in one text, the intro or an entry."""
 
-    claims: list[Claim]
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+    unsupported: list[UnsupportedText]
+    """Each part of the text that does not keep to the spirit of its facts; empty when it does."""
 
 
 class Verdict(JudgeOutput):
@@ -132,11 +140,7 @@ class Verdict(JudgeOutput):
 
     @property
     def supported(self) -> bool:
-        return not self.unsupported()
-
-    def unsupported(self) -> list[str]:
-        """The claims nothing in the facts or feedback states."""
-        return [claim.claim for claim in self.claims if claim.source is None]
+        return not self.unsupported
 
 
 class CheckFailure(Entity):

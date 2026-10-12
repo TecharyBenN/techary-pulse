@@ -10,11 +10,11 @@ import yaml
 from pydantic import BaseModel, TypeAdapter
 
 from pulse.entities.content import (
-    Claim,
     Content,
     Entry,
     EntryNotes,
     Section,
+    UnsupportedText,
     Verdict,
     WriterOutput,
 )
@@ -175,11 +175,11 @@ def make_draft(*entries: Entry, **changes: object) -> WriterOutput:
 
 
 def make_verdict(target: str = "item-1", claim: str | None = None) -> Verdict:
-    """A verdict whose one claim has a source, unless it names a claim with none."""
+    """A supported verdict, unless it names text that does not keep to the facts."""
     if claim is None:
-        sourced = Claim(claim="Signed Northwind Retail", source="Signed Northwind Retail today")
-        return Verdict(target=target, claims=[sourced])
-    return Verdict(target=target, claims=[Claim(claim=claim, source=None)])
+        return Verdict(target=target, unsupported=[])
+    unsupported = UnsupportedText(text=claim, reason="Nothing in the facts states it.")
+    return Verdict(target=target, unsupported=[unsupported])
 
 
 def corpus_messages() -> list[dict[str, Any]]:

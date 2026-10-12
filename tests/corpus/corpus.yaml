@@ -277,7 +277,7 @@ expect:
       - {sources: [m05], category: shout_out, mention: [Sam Patel, service desk, bank holiday]}
       - {sources: [m19], category: company_notices, mention: [Litware Supplies, '5', 1 November, 31 October]}
       - {sources: [m20], category: team_news, mention: [Dan Wood, birthday, 2 October]}
-      - {sources: [m21], category: team_news, mention: [Tom Evans, Ava, 25 September]}
+      - {sources: [m21], category: team_news, mention: [Tom Evans, Ava, 25 September], omit: [daughter, son]}
     # A reviewer restored these, Lucy's operation into the section they named; each stays its
     # own item.
     restored_items:
@@ -293,7 +293,8 @@ expect:
     sam-thanks: {supported: true}
     litware: {supported: true}
     birthday: {supported: true}
-    baby: {supported: false, mention: [daughter]}
+    # A gender guessed from a name is borderline; the writer is told not to add one.
+    baby: {supported: null}
     planted-record-breaking: {supported: false, mention: [record-breaking]}
     planted-wrong-value: {supported: false, mention: ['280']}
     planted-added-effect: {supported: false, mention: [saving]}
