@@ -283,3 +283,17 @@ expect:
     restored_items:
       - {sources: [m22], category: team_news, mention: [Lucy Grey, operation]}
       - {sources: [m23], category: company_notices, mention: [budget, cashflow, redundancies]}
+  # One text per case in judge_input.json: whether it keeps to its facts, and, when it does not,
+  # words an unsupported claim must name.
+  judge:
+    intro: {supported: true}
+    northwind: {supported: true}
+    contoso: {supported: true}
+    lucy-joins: {supported: true}
+    sam-thanks: {supported: true}
+    litware: {supported: true}
+    birthday: {supported: true}
+    baby: {supported: false, mention: [daughter]}
+    planted-record-breaking: {supported: false, mention: [record-breaking]}
+    planted-wrong-value: {supported: false, mention: ['280']}
+    planted-added-effect: {supported: false, mention: [saving]}

@@ -23,10 +23,11 @@ from pydantic_ai.providers.openai import OpenAIProvider
 
 from pulse.agents.base import SpecialistAgent
 from pulse.agents.consolidator.agent import ConsolidatorTask
+from pulse.agents.judge.agent import JudgeTask
 from pulse.agents.writer.agent import WriterTask
 from pulse.config import Config, load_config
 from pulse.entities.base import Entity, StrictEntity
-from pulse.entities.content import WriterOutput, check_content, item_sources
+from pulse.entities.content import JudgeOutput, WriterOutput, check_content, item_sources
 from pulse.entities.errors import SpecialistFailed
 from pulse.entities.extracts import (
     Consolidation,
@@ -55,6 +56,8 @@ _RECORDS = TypeAdapter(list[ExtractRecord])
 # The items the consolidator baseline produced from those included records, and the excluded
 # records, which the writer is given.
 WRITER_INPUT = Path(__file__).parent / "corpus" / "writer_input.json"
+# Texts from a tested writer draft, and three that each break one rule, which the judge is given.
+JUDGE_INPUT = Path(__file__).parent / "corpus" / "judge_input.json"
 # The kind of instruction the orchestrator gives for a first draft.
 FIRST_DRAFT = "Write the first draft of the newsletter."
 # A reviewer's request for the newsletter, which the run records as feedback before the writer
@@ -138,6 +141,25 @@ def writer_inputs() -> list[Input[WriterTask]]:
     return [Input("first-draft", label, "baselines", task)]
 
 
+def judge_inputs() -> list[Input[JudgeTask]]:
+    """Each text with what `judge` gives it: every item for the intro, its own for an entry, and
+    the writer input's feedback."""
+    [written] = writer_inputs()
+    items, feedback = written.task.items, written.task.feedback
+    inputs = []
+    for case in json.loads(JUDGE_INPUT.read_text(encoding="utf-8"))["cases"]:
+        own = [i for i in items if set(i.source_message_ids) == set(case["sources"] or [])]
+        task = JudgeTask(
+            part=case["part"],
+            text=case["text"],
+            items=items if case["part"] == "intro" else own,
+            feedback=feedback,
+        )
+        form = "planted" if case["id"].startswith("planted") else "baselines"
+        inputs.append(Input(case["id"], case["text"][:60], form, task))
+    return inputs
+
+
 class ExtractorExpectation(StrictEntity):
     """The extractor's right answer for one email, written from the design."""
 
@@ -152,7 +174,7 @@ class ExtractorExpectation(StrictEntity):
 
 
 def expectations[E: BaseModel](agent: str, model: type[E]) -> dict[str, E]:
-    """The test's expected answers for the agent, by corpus ID."""
+    """The test's expected answers for an agent that reads one email, by corpus ID."""
     return {
         m["id"]: model.model_validate(m["expect"][agent])
         for m in corpus_messages()
@@ -324,6 +346,26 @@ def writer_problems(
             if sender.casefold() not in people and not _missing([sender], [entry.text])
         ]
     return problems
+
+
+class JudgeExpectation(StrictEntity):
+    """The judge's right answer for one text: whether it keeps to its facts, and words an
+    unsupported claim must name when it does not."""
+
+    supported: bool
+    mention: tuple[str, ...] = ()
+
+
+def judge_problems(output: JudgeOutput, expected: JudgeExpectation) -> list[str]:
+    """How the claims depart from the expected verdict; empty when they are right."""
+    unsupported = [claim.claim for claim in output.claims if claim.source is None]
+    if expected.supported:
+        return [f"unsupported claim: {claim}" for claim in unsupported]
+    if not unsupported:
+        return ["no unsupported claim"]
+    return [
+        f"no unsupported claim names {word}" for word in _missing(expected.mention, unsupported)
+    ]
 
 
 def _missing(words: Sequence[str], facts: Sequence[str]) -> list[str]:

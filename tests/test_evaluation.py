@@ -10,7 +10,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.writer.agent import WriterTask
-from pulse.entities.content import Content, Entry, Section, WriterOutput
+from pulse.entities.content import Claim, Content, Entry, JudgeOutput, Section, WriterOutput
 from pulse.entities.extracts import (
     ConsolidatorItem,
     ConsolidatorOutput,
@@ -20,6 +20,7 @@ from pulse.entities.extracts import (
 )
 from tests.emails import (
     corpus_email,
+    corpus_expectation,
     corpus_messages,
     make_item,
     make_output,
@@ -33,6 +34,7 @@ from tests.evaluation import (
     Exchange,
     ExtractorExpectation,
     Input,
+    JudgeExpectation,
     Recorder,
     Results,
     SensitivityExpectation,
@@ -43,6 +45,8 @@ from tests.evaluation import (
     evaluate,
     expectations,
     extractor_problems,
+    judge_inputs,
+    judge_problems,
     save_results,
     sensitivity_problems,
     token_totals,
@@ -624,3 +628,39 @@ def test_token_totals_add_input_and_output_tokens_across_every_exchange() -> Non
     )
 
     assert token_totals([answer]) == (200, 20)
+
+
+def _claims(*claims: tuple[str, str | None]) -> JudgeOutput:
+    return JudgeOutput(claims=[Claim(claim=claim, source=source) for claim, source in claims])
+
+
+def test_a_supported_text_with_an_unsupported_claim_is_a_problem() -> None:
+    expected = JudgeExpectation(supported=True)
+
+    assert judge_problems(_claims(("Dan Wood's birthday", "Dan Wood's birthday")), expected) == []
+    assert judge_problems(_claims(("a significant win", None)), expected) == [
+        "unsupported claim: a significant win"
+    ]
+
+
+def test_an_unsupported_text_must_name_the_words_that_break_it() -> None:
+    expected = JudgeExpectation(supported=False, mention=("daughter",))
+
+    assert judge_problems(_claims(("his daughter Ava", None)), expected) == []
+    assert judge_problems(_claims(("Tom Evans had a baby", "fact")), expected) == [
+        "no unsupported claim"
+    ]
+    assert judge_problems(_claims(("on 25 September", None)), expected) == [
+        "no unsupported claim names daughter"
+    ]
+
+
+def test_every_judge_text_has_its_items_and_an_expectation() -> None:
+    inputs = judge_inputs()
+    expected = corpus_expectation("judge")
+
+    assert [i.input_id for i in inputs] == list(expected)
+    for item in inputs:
+        JudgeExpectation.model_validate(expected[item.input_id])
+        assert len(item.task.items) == (7 if item.task.part == "intro" else 1)
+        assert item.task.feedback

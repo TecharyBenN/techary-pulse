@@ -1,0 +1,102 @@
+{
+  "source": {
+    "writer": {
+      "results": "evaluations/writer/20261012T093436Z.json",
+      "commit": "8cc91474e099f1e2165c3ad175bff2871f1c0846",
+      "sample": 4
+    },
+    "planted": "the last three cases edit a real text to break one rule"
+  },
+  "cases": [
+    {
+      "id": "intro",
+      "part": "intro",
+      "sources": null,
+      "text": "This week brings a significant new customer win with Northwind Retail, an early delivery for Contoso, and celebrations across the team."
+    },
+    {
+      "id": "northwind",
+      "part": "entry",
+      "sources": [
+        "m01",
+        "m02",
+        "m15"
+      ],
+      "text": "Priya Shah and Tom Evans signed Northwind Retail to a three-year managed service contract on 22 September, worth about 180 thousand pounds a year, with onboarding starting in October."
+    },
+    {
+      "id": "contoso",
+      "part": "entry",
+      "sources": [
+        "m03",
+        "m06"
+      ],
+      "text": "The Contoso migration went live on 20 September, two days early, and the Contoso team finished user training on 24 September."
+    },
+    {
+      "id": "lucy-joins",
+      "part": "entry",
+      "sources": [
+        "m04"
+      ],
+      "text": "Welcome to Lucy Grey, who joined the service desk on 29 September."
+    },
+    {
+      "id": "sam-thanks",
+      "part": "entry",
+      "sources": [
+        "m05"
+      ],
+      "text": "Thank you to Sam Patel for covering the service desk over the bank holiday weekend."
+    },
+    {
+      "id": "litware",
+      "part": "entry",
+      "sources": [
+        "m19"
+      ],
+      "text": "Litware Supplies will raise the price of its business laptops by 5 per cent from 1 November, but orders placed before 31 October will keep the current price."
+    },
+    {
+      "id": "birthday",
+      "part": "entry",
+      "sources": [
+        "m20"
+      ],
+      "text": "Happy birthday to Dan Wood, who celebrated on 2 October."
+    },
+    {
+      "id": "baby",
+      "part": "entry",
+      "sources": [
+        "m21"
+      ],
+      "text": "Congratulations to Tom Evans on the arrival of his daughter Ava on 25 September."
+    },
+    {
+      "id": "planted-record-breaking",
+      "part": "intro",
+      "sources": null,
+      "text": "This week brings a record-breaking new customer win with Northwind Retail, an early delivery for Contoso, and celebrations across the team."
+    },
+    {
+      "id": "planted-wrong-value",
+      "part": "entry",
+      "sources": [
+        "m01",
+        "m02",
+        "m15"
+      ],
+      "text": "Priya Shah and Tom Evans signed Northwind Retail to a three-year managed service contract on 22 September, worth about 280 thousand pounds a year, with onboarding starting in October."
+    },
+    {
+      "id": "planted-added-effect",
+      "part": "entry",
+      "sources": [
+        "m03",
+        "m06"
+      ],
+      "text": "The Contoso migration went live on 20 September, two days early, and the Contoso team finished user training on 24 September, saving the customer thousands of pounds."
+    }
+  ]
+}
