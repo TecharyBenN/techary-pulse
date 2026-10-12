@@ -126,7 +126,7 @@ Exit criteria: the test user chats with the orchestrator in LibreChat, and a req
 
 Scope:
 
-- the Graph mailbox: certificate sign-in through MSAL, the thumbprint logged at start-up, and every operation in the mailbox interface: listing the inbox with paging, `ImmutableId` and plain-text bodies, moving to a folder found or created by name, sending, and reply in thread through `createReplyAll`; retries on HTTP 429 and 503; it passes the mailbox interface tests;
+- the Graph mailbox: certificate sign-in through azure-identity, the thumbprint logged at start-up, and every operation in the mailbox interface: listing the inbox with paging, `ImmutableId` and plain-text bodies, moving to a folder found or created by name, sending, and reply in thread through `createReplyAll`; retries on HTTP 429, 503 and 504; it passes the mailbox interface tests;
 - the `screened_emails` and `extract_records` tables;
 - `start_newsletter`: opening a newsletter with every inbox message, adding new messages to an open one, applying the pre-filter, and its refusals;
 - `list_screened_emails` and `get_newsletter`;
@@ -164,7 +164,7 @@ Exit criteria: tests cover the writer's output checks, each tool, the history pl
 
 ### Phase 7: quality
 
-Scope: `restore`, which replaces restoring through the writer, so a restored record is included in the store and becomes an item; `check`, the draft checks run in `present_draft`, the judge and `judge`, check failures and unsupported claims in the review section, the "not judged" note, and the orchestrator instructions for fixing failures and accepting those that cannot be fixed.
+Scope: `restore`, which replaces restoring through the writer, so a restored record is included in the store and becomes an item; `check`, the draft checks run in `present_draft`, the judge and `judge`, check failures and unsupported text in the review section, the "not judged" note, and the orchestrator instructions for fixing failures and accepting those that cannot be fixed.
 
 Exit criteria: tests cover the tools and the review section; live check: a draft with a failing check is fixed or presented with the failure listed.
 
@@ -209,13 +209,13 @@ Scope:
 - rendering each flagged entry's plain-text labels, and the flagged for review list after the newsletter, in the reviewer email, the chat endpoint's Markdown and the email channel's reply when a run shows the newsletter, and neither in the newsletter delivery sends, with golden files for each;
 - credit lines under every entry in every rendering, saved with each version; the writer's instructions to tell the news itself rather than report the email it came in, and no longer to name senders; and the `senders` draft check removed, with credit lines left out of the word count;
 - the judge run once for the intro and once per entry, and the limit on `write` calls in a run;
-- the judge matching each claim to its source; `extract` taking no arguments and extracting each screened email once, and `consolidate` taking every included record;
+- the judge listing what in a text does not keep to the spirit of its facts, each with its reason; `extract` taking no arguments and extracting each screened email once, and `consolidate` taking every included record;
 - the extractor's `people` limited to the people the facts name, the writer's output check that every name in an entry's `people` appears in its text, and the `people` draft check reduced to the sources;
 - `confidential` covering a partner's or supplier's email marked for partners only or asking not to distribute it further, flagged and not withheld;
 - the sensitivity agent, split from the extractor, run alongside it on each screened email;
 - the consolidator given short record IDs in place of message IDs, which code maps back;
 - the newsletter's state added to each orchestrator message by code, and `present_draft` returning the problems a version was presented with;
-- the extractor's prompt rewritten to Anthropic's prompting practices, with its output fields described in the schema, and an email with real news that fits no category keeping its facts;
+- every agent's prompt written to Anthropic's prompting practices in one structure, with each output field described in the schema, and an email with real news that fits no category keeping its facts;
 - the orchestrator instructions for reporting flagged entries;
 - the synthetic corpus updated to the new rules, with a forwarded email, a pricing email, a shout-out, a birthday, a new joiner's welcome, a celebration such as a new baby, an email that credits people for their work, and a private personal email.
 
