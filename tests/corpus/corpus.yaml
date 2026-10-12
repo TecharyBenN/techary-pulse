@@ -168,7 +168,7 @@ messages:
     extract: {category: null, exclusion_reason: "Criticism of a customer contact, not news.", summary: Criticism of a customer contact., facts: [], people: [], sensitivity: [{kind: inappropriate, withheld: true, evidence: criticises a named customer contact}]}
     expect:
       extractor: {category: null, has_facts: false, people: []}
-      sensitivity: {flags: {inappropriate: true}}
+      sensitivity: {flags: {inappropriate: true, named_person: null}}
   - id: m17
     case: empty message
     sender_name: Lucy Grey
@@ -271,7 +271,7 @@ consolidation:
 expect:
   consolidator:
     items:
-      - {sources: [m01, m02, m15], category: customer_win, mention: [Northwind Retail, three-year, 22 September, October, 180 thousand pounds]}
+      - {sources: [m01, m02, m15], category: customer_win, mention: [Northwind Retail, three-year, 22 September, October, '180']}
       - {sources: [m03, m06], category: delivery_highlight, mention: [Contoso, 20 September, two days early, training, 24 September]}
       - {sources: [m04], category: team_news, mention: [Lucy Grey, service desk, 29 September]}
       - {sources: [m05], category: shout_out, mention: [Sam Patel, service desk, bank holiday]}

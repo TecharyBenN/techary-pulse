@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from pydantic import AwareDatetime, PositiveInt
+from pydantic import AwareDatetime, ConfigDict, PositiveInt
 
 from pulse.entities.base import Entity, StrictEntity
 from pulse.entities.errors import Refusal
@@ -29,28 +29,54 @@ EntryCredits = dict[str, list[str]]
 class Entry(StrictEntity):
     """One entry in a section: its text, its item and the people it names."""
 
+    # Each field's docstring is its description in the schema the writer is given.
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
     item_id: str
+    """The ID of the item the entry is written from."""
+
     text: str
+    """The entry's text, one or two sentences."""
+
     people: list[str]
+    """Only the names that appear in this entry's text."""
 
 
 class Section(StrictEntity):
     """A titled section of entries in one category."""
 
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
     category: str
+    """The category of the section's items."""
+
     title: str
+    """The section's title as readers see it."""
+
     entries: list[Entry]
+    """The section's entries, in the order the newsletter shows them."""
 
 
 class Content(StrictEntity):
     """The headline, intro and sections a working draft or version holds, as the writer structured
     them."""
 
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
     headline_title: str
+    """The label above the headline."""
+
     headline: str
+    """One short line in sentence case."""
+
     intro: str
+    """One or two sentences introducing the newsletter."""
+
     sections: list[Section]
+    """One section for each category that has entries, in the order the newsletter shows them."""
+
     item_ids: list[str]
+    """The ID of every item the sections include, once each."""
 
     def entries(self) -> Iterator[Entry]:
         for section in self.sections:
@@ -60,16 +86,28 @@ class Content(StrictEntity):
 class NotApplied(StrictEntity):
     """Feedback the writer did not apply, and why."""
 
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
     feedback: str
+    """The feedback, in a few words."""
+
     reason: str
+    """Why it was not applied."""
 
 
 class WriterOutput(StrictEntity):
     """What the writer returns, stored as the working draft."""
 
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
     content: Content
+    """The newsletter's complete content."""
+
     changes: list[str]
+    """Each change made to the working draft, one short sentence each."""
+
     not_applied: list[NotApplied]
+    """Each piece of feedback not applied, with the reason."""
 
 
 class Claim(StrictEntity):

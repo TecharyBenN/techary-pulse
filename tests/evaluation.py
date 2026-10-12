@@ -9,7 +9,7 @@ import os
 import re
 import subprocess
 from collections import Counter, defaultdict
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple, Self, get_args
@@ -23,15 +23,19 @@ from pydantic_ai.providers.openai import OpenAIProvider
 
 from pulse.agents.base import SpecialistAgent
 from pulse.agents.consolidator.agent import ConsolidatorTask
+from pulse.agents.writer.agent import WriterTask
 from pulse.config import Config, load_config
 from pulse.entities.base import Entity, StrictEntity
+from pulse.entities.content import WriterOutput, check_content, item_sources
 from pulse.entities.errors import SpecialistFailed
 from pulse.entities.extracts import (
+    Consolidation,
     ConsolidatorOutput,
     ExtractorOutput,
     ExtractRecord,
     SensitivityKind,
     SensitivityOutput,
+    with_sources,
 )
 from pulse.entities.mail import ScreenedEmail
 from tests.emails import (
@@ -41,12 +45,21 @@ from tests.emails import (
     graph_corpus_emails,
     screen_email,
 )
+from tests.messages import make_message
 
 EVALUATIONS = Path("evaluations")
 # The included records the first-stage baselines produced, which the consolidator is given, and
 # two of their excluded records as a reviewer restored them.
 INCLUDED_RECORDS = Path(__file__).parent / "corpus" / "included_records.json"
 _RECORDS = TypeAdapter(list[ExtractRecord])
+# The items the consolidator baseline produced from those included records, and the excluded
+# records, which the writer is given.
+WRITER_INPUT = Path(__file__).parent / "corpus" / "writer_input.json"
+# The kind of instruction the orchestrator gives for a first draft.
+FIRST_DRAFT = "Write the first draft of the newsletter."
+# A reviewer's request for the newsletter, which the run records as feedback before the writer
+# runs; only a scheduled start has none.
+REQUEST = "Please draft a newsletter."
 
 # The input and sample a request to the gateway belongs to; each evaluated call runs in its own
 # task, so concurrent calls never share it.
@@ -104,6 +117,25 @@ def consolidator_inputs() -> list[Input[ConsolidatorTask]]:
             ConsolidatorTask(records=with_restored),
         ),
     ]
+
+
+def writer_inputs() -> list[Input[WriterTask]]:
+    """A first draft a reviewer asked for, from the consolidator baseline's items, with the
+    sender names and received times of their corpus emails, and the excluded records, as `write`
+    gives them."""
+    saved = json.loads(WRITER_INPUT.read_text(encoding="utf-8"))
+    consolidation = Consolidation.model_validate(saved["consolidation"])
+    emails = [item.task for item in corpus_inputs()]
+    task = WriterTask(
+        headline=consolidation.headline,
+        items=with_sources(consolidation.items, emails),
+        excluded=_RECORDS.validate_python(saved["excluded"]),
+        feedback=[make_message(text=REQUEST)],
+        instruction=FIRST_DRAFT,
+        draft=None,
+    )
+    label = f"first draft of {len(consolidation.items)} items"
+    return [Input("first-draft", label, "baselines", task)]
 
 
 class ExtractorExpectation(StrictEntity):
@@ -244,6 +276,53 @@ def consolidator_problems(
             for word in _missing(wanted.mention, item.facts)
         ]
     problems += [f"an unexpected item merging {' + '.join(sorted(merged))}" for merged in given]
+    return problems
+
+
+def writer_problems(
+    output: WriterOutput,
+    task: WriterTask,
+    expected: ConsolidatorExpectation,
+    emails: Sequence[ScreenedEmail],
+    categories: Collection[str],
+    max_words: int,
+) -> list[str]:
+    """How the draft departs from the expected one; empty when it is right. Pulse's own draft
+    checks come first; then, for each expected item, its entry, its section, the facts it must
+    keep and any sender it names who only shared it."""
+    content = output.content
+    sources = item_sources(content, task.items, emails)
+    feedback = [message.text for message in task.feedback]
+    problems = [
+        f"{failure.check} check failed at {failure.target or 'the whole draft'}: {failure.detail}"
+        for failure in check_content(content, sources, feedback, categories, max_words)
+    ]
+    placed = {
+        entry.item_id: (section.category, entry)
+        for section in content.sections
+        for entry in section.entries
+    }
+    by_sources = {frozenset(item.source_message_ids): item for item in task.items}
+    for wanted in expected.items:
+        name = " + ".join(wanted.sources)
+        item = by_sources[frozenset(wanted.sources)]
+        # The items check only compares entries with the draft's own item IDs.
+        if item.item_id not in placed:
+            problems.append(f"no entry for {name}")
+            continue
+        category, entry = placed[item.item_id]
+        if category != item.category:
+            problems.append(f"{name}: in {category} instead of {item.category}")
+        problems += [
+            f"{name}: the entry does not mention {word}"
+            for word in _missing(wanted.mention, [entry.text])
+        ]
+        people = {person.casefold() for person in item.people}
+        problems += [
+            f"{name}: the entry names {sender}, who only shared it"
+            for sender in item.sender_names
+            if sender.casefold() not in people and not _missing([sender], [entry.text])
+        ]
     return problems
 
 

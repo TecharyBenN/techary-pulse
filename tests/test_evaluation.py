@@ -9,13 +9,23 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from pulse.agents.extractor.agent import ExtractorAgent
+from pulse.agents.writer.agent import WriterTask
+from pulse.entities.content import Content, Entry, Section, WriterOutput
 from pulse.entities.extracts import (
     ConsolidatorItem,
     ConsolidatorOutput,
     ExtractorOutput,
     SensitivityOutput,
+    with_sources,
 )
-from tests.emails import corpus_email, corpus_messages, make_output, make_screened_email, share
+from tests.emails import (
+    corpus_email,
+    corpus_messages,
+    make_item,
+    make_output,
+    make_screened_email,
+    share,
+)
 from tests.emails import screen_email as screened
 from tests.evaluation import (
     Answer,
@@ -36,6 +46,8 @@ from tests.evaluation import (
     save_results,
     sensitivity_problems,
     token_totals,
+    writer_inputs,
+    writer_problems,
 )
 
 pytestmark = pytest.mark.anyio
@@ -299,6 +311,121 @@ def test_each_consolidator_input_has_expected_items_holding_every_record_once() 
         "m23",
     }
     assert all(record.exclusion is None for record in inputs["restored"].task.records)
+
+
+WRITER_EMAILS = [
+    make_screened_email("m01"),
+    make_screened_email(
+        "m05", sender_name="Dan Wood", body="Huge thanks to Sam Patel for covering the desk."
+    ),
+]
+WRITER_TASK = WriterTask(
+    headline="A new customer",
+    items=with_sources(
+        [
+            make_item(source_message_ids=["m01"]),
+            make_item(
+                "item-2",
+                category="shout_out",
+                facts=["Sam Patel covered the service desk"],
+                source_message_ids=["m05"],
+                people=["Sam Patel"],
+            ),
+        ],
+        WRITER_EMAILS,
+    ),
+    excluded=[],
+    feedback=[],
+    instruction="Write the first draft.",
+    draft=None,
+)
+WRITTEN = ConsolidatorExpectation.model_validate(
+    {
+        "items": [
+            {"sources": ["m01"], "category": "customer_win", "mention": ["Northwind Retail"]},
+            {"sources": ["m05"], "category": "shout_out", "mention": ["Sam Patel", "service desk"]},
+        ]
+    }
+)
+NORTHWIND = Entry(
+    item_id="item-1",
+    text="Priya Shah and Tom Evans signed Northwind Retail on 22 September.",
+    people=["Priya Shah", "Tom Evans"],
+)
+THANKS = Entry(
+    item_id="item-2", text="Thank you to Sam Patel for covering the service desk.", people=[]
+)
+
+
+def _draft(customer_win: list[Entry], shout_out: list[Entry]) -> WriterOutput:
+    sections = [
+        Section(category="customer_win", title="Customer wins", entries=customer_win),
+        Section(category="shout_out", title="Shout-outs", entries=shout_out),
+    ]
+    entries = [entry.item_id for section in sections for entry in section.entries]
+    content = Content(
+        headline_title="Headline of the week",
+        headline="A new customer",
+        intro="A good week.",
+        sections=sections,
+        item_ids=entries,
+    )
+    return WriterOutput(content=content, changes=[], not_applied=[])
+
+
+def _writer_problems(output: WriterOutput) -> list[str]:
+    return writer_problems(
+        output, WRITER_TASK, WRITTEN, WRITER_EMAILS, ["customer_win", "shout_out"], 400
+    )
+
+
+def test_a_draft_with_every_item_in_its_section_has_no_problems() -> None:
+    assert _writer_problems(_draft([NORTHWIND], [THANKS])) == []
+
+
+def test_an_entry_in_another_section_or_missing_a_fact_is_a_problem() -> None:
+    thanks = THANKS.model_copy(update={"text": "Thank you to Sam Patel."})
+
+    assert _writer_problems(_draft([NORTHWIND, thanks], [])) == [
+        "m05: in customer_win instead of shout_out",
+        "m05: the entry does not mention service desk",
+    ]
+
+
+def test_an_entry_naming_a_sender_who_only_shared_it_is_a_problem() -> None:
+    thanks = THANKS.model_copy(
+        update={"text": "Dan Wood thanks Sam Patel for covering the service desk."}
+    )
+
+    assert _writer_problems(_draft([NORTHWIND], [thanks])) == [
+        "m05: the entry names Dan Wood, who only shared it"
+    ]
+
+
+def test_pulse_draft_check_failures_and_dropped_items_are_problems() -> None:
+    dashed = NORTHWIND.model_copy(
+        update={"text": "Priya Shah and Tom Evans signed Northwind Retail \N{EM DASH} great news."}
+    )
+
+    # The items check only compares entries with the draft's own item IDs, so a dropped item is
+    # reported by the expected answer.
+    assert _writer_problems(_draft([dashed], [])) == [
+        "dashes check failed at item-1: em or en dash",
+        "no entry for m05",
+    ]
+
+
+def test_the_writer_input_holds_every_expected_item_once() -> None:
+    [item] = writer_inputs()
+    sources = sorted(sorted(i.source_message_ids) for i in item.task.items)
+
+    expected = consolidator_expectations()["included"]
+
+    assert sources == sorted(sorted(i.sources) for i in expected.items)
+    assert all(i.sender_names and i.received for i in item.task.items)
+    assert item.task.excluded and all(r.exclusion for r in item.task.excluded)
+    assert [m.text for m in item.task.feedback] == ["Please draft a newsletter."]
+    assert item.task.draft is None
 
 
 def _completion(content: str) -> dict[str, object]:

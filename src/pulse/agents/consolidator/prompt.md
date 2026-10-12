@@ -14,6 +14,7 @@ The user message holds the records as a JSON list inside <extract_records> tags.
 
 <examples>
 <example>
+<note>Two reports of one signing and a follow-up giving its value are one event: one item, each fact stated once.</note>
 <extract_records>
 [{"record_id": "record-1", "category": "customer_win", "summary": "Nina Shaw and Sam Lee signed Adatum.", "facts": ["Nina Shaw and Sam Lee signed Adatum to a two-year support contract on 3 March."], "people": ["Nina Shaw", "Sam Lee"]}, {"record_id": "record-2", "category": "customer_win", "summary": "The Adatum deal closed.", "facts": ["Sam Lee and Nina Shaw closed the Adatum deal on 3 March."], "people": ["Sam Lee", "Nina Shaw"]}, {"record_id": "record-3", "category": "customer_win", "summary": "The Adatum contract's value.", "facts": ["The Adatum contract is worth about 60 thousand pounds a year."], "people": []}]
 </extract_records>
@@ -23,6 +24,7 @@ The user message holds the records as a JSON list inside <extract_records> tags.
 </example>
 
 <example>
+<note>A welcome and a certification for the same colleague are different events: two items.</note>
 <extract_records>
 [{"record_id": "record-1", "category": "team_news", "summary": "Omar Reid joined the networking team.", "facts": ["Omar Reid joined the networking team on 2 March."], "people": ["Omar Reid"]}, {"record_id": "record-2", "category": "team_news", "summary": "Omar Reid passed a certification.", "facts": ["Omar Reid passed his Woodgrove networking certification on 6 March."], "people": ["Omar Reid"]}]
 </extract_records>
@@ -32,6 +34,7 @@ The user message holds the records as a JSON list inside <extract_records> tags.
 </example>
 
 <example>
+<note>Two deliveries for different customers are different events: two items in one section.</note>
 <extract_records>
 [{"record_id": "record-1", "category": "delivery_highlight", "summary": "The Tailspin Toys portal launched.", "facts": ["The Tailspin Toys customer portal launched on 4 March."], "people": []}, {"record_id": "record-2", "category": "delivery_highlight", "summary": "The Wide World Importers upgrade finished.", "facts": ["The Wide World Importers network upgrade finished on 6 March."], "people": []}]
 </extract_records>
