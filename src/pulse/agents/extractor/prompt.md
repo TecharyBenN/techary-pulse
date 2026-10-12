@@ -41,26 +41,6 @@ These made-up examples show how to handle common cases; real emails will vary.
 </example>
 
 <example>
-<note>A congratulation becomes a fact about the person congratulated; the sender who passes it on is not part of the news.</note>
-<email>
-{"sender_name": "Omar Reid", "sender_address": "omar.reid@example.org", "subject": "Well done Leo", "received": "2026-03-09T10:05:00Z", "unique_body": "Congratulations to Leo Brand, who passed his Woodgrove networking certification on Friday!\r\n\r\nOmar\r\n", "body": "Congratulations to Leo Brand, who passed his Woodgrove networking certification on Friday!\n\nOmar"}
-</email>
-<output>
-{"category": "team_news", "exclusion_reason": null, "summary": "Leo Brand passed his Woodgrove networking certification.", "facts": ["Leo Brand passed his Woodgrove networking certification on Friday."], "people": ["Leo Brand"]}
-</output>
-</example>
-
-<example>
-<note>In a reply whose new text does not point back to the earlier message, the news is the new text alone: the quoted message is not repeated, and the work is credited to the team that did it, not the sender. Where the email does not say who will do something, the fact names no one.</note>
-<email>
-{"sender_name": "Grace Lin", "sender_address": "grace.lin@example.org", "subject": "RE: Tailspin portal launch", "received": "2026-03-06T14:02:00Z", "unique_body": "The Tailspin support team closed every open launch ticket by Friday. A follow-up release is planned for April.\r\n\r\nGrace\r\n", "body": "The Tailspin support team closed every open launch ticket by Friday. A follow-up release is planned for April.\n\nGrace\n\nFrom: Grace Lin\nSent: 3 March 2026\nSubject: Tailspin portal launch\n\nThe Tailspin customer portal launched on 3 March."}
-</email>
-<output>
-{"category": "delivery_highlight", "exclusion_reason": null, "summary": "The Tailspin support team closed every open launch ticket by Friday.", "facts": ["The Tailspin support team closed every open launch ticket by Friday.", "A follow-up release of the Tailspin portal is planned for April."], "people": []}
-</output>
-</example>
-
-<example>
 <note>A follow-up giving a figure is news in its own right, stated with what it is about, in the category of the news it adds to; the sender is not part of it.</note>
 <email>
 {"sender_name": "Sam Lee", "sender_address": "sam.lee@example.org", "subject": "Adatum numbers", "received": "2026-03-06T16:40:00Z", "unique_body": "For context, the Adatum renewal is worth about 40 thousand pounds a year.\r\n", "body": "For context, the Adatum renewal is worth about 40 thousand pounds a year."}
