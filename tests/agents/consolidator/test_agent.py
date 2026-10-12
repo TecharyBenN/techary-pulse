@@ -103,3 +103,11 @@ async def test_consolidator_has_no_tools_and_uses_native_output() -> None:
     assert [p.content for p in request.parts if isinstance(p, UserPromptPart)] == [
         agent.message(TASK)
     ]
+    # Each field says what it holds in the schema the model is given, the item's fields too.
+    schema = info.model_request_parameters.output_object
+    assert schema is not None
+    fields = [
+        *schema.json_schema["properties"].values(),
+        *schema.json_schema["$defs"]["ConsolidatorItem"]["properties"].values(),
+    ]
+    assert all(field.get("description") for field in fields)

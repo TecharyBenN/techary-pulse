@@ -156,8 +156,14 @@ def _highest(used_ids: Collection[str]) -> int:
 class ItemContent(StrictEntity):
     """An item's news: its category and facts."""
 
+    # Each field's docstring is its description in the schema the consolidator is given.
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
     category: str
+    """The category of the item's records."""
+
     facts: list[str]
+    """The item's facts, one short sentence each, each stated once."""
 
 
 class ConsolidatorItem(ItemContent):
@@ -165,13 +171,19 @@ class ConsolidatorItem(ItemContent):
     by the short record IDs code gave its input."""
 
     source_record_ids: list[str]
+    """The record ID of every record merged into the item."""
 
 
 class ConsolidatorOutput(StrictEntity):
     """The consolidator's items and headline."""
 
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
     headline: str
+    """One short line in sentence case summing up the newsletter's main news."""
+
     items: list[ConsolidatorItem]
+    """One item for each piece of news."""
 
 
 class Item(ItemContent):
