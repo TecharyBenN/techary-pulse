@@ -5,11 +5,14 @@ from pathlib import Path
 
 import httpx2
 import pytest
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.writer.agent import WriterTask
+from pulse.config import load_config
 from pulse.entities.content import (
     Content,
     Entry,
@@ -42,9 +45,13 @@ from tests.evaluation import (
     ExtractorExpectation,
     Input,
     JudgeExpectation,
+    OrchestratorScenarios,
     Recorder,
     Results,
+    Scenario,
+    ScenarioExpectation,
     SensitivityExpectation,
+    Turn,
     consolidator_expectations,
     consolidator_inputs,
     consolidator_problems,
@@ -54,6 +61,9 @@ from tests.evaluation import (
     extractor_problems,
     judge_inputs,
     judge_problems,
+    orchestrator_expectations,
+    orchestrator_inputs,
+    orchestrator_problems,
     save_results,
     sensitivity_problems,
     token_totals,
@@ -696,3 +706,82 @@ def test_every_judge_text_has_its_items_and_an_expectation() -> None:
         JudgeExpectation.model_validate(expected[item.input_id])
         assert len(item.task.items) == (7 if item.task.part == "intro" else 1)
         assert item.task.feedback
+
+
+SHOW = ScenarioExpectation(
+    drafted=True,
+    message="Can I see the newsletter?",
+    calls=("show_draft",),
+    never=("write",),
+    reply_lacks=("Thank you to Sam Patel",),
+)
+
+
+def test_a_turn_calling_the_expected_tools_in_order_has_no_problems() -> None:
+    turn = Turn(tools=["get_newsletter", "show_draft"], reply="Here is version 1.")
+
+    assert orchestrator_problems(turn, SHOW) == []
+
+
+@pytest.mark.parametrize(
+    ("turn", "problems"),
+    [
+        (
+            Turn(tools=["get_newsletter"], reply="Done."),
+            ["called ['get_newsletter'] instead of ['show_draft'] in order"],
+        ),
+        (Turn(tools=["show_draft", "write"], reply="Done."), ["called write"]),
+        (
+            Turn(tools=["show_draft"], reply="Thank you to Sam Patel for the cover."),
+            ["the reply says Thank you to Sam Patel"],
+        ),
+        (
+            Turn(
+                tools=["show_draft"],
+                reply="Your Customer Wins section, item-2, looks good \N{EM DASH} m05.",
+            ),
+            [
+                "the reply contains Customer Wins",
+                "the reply contains item-2",
+                "the reply contains \N{EM DASH}",
+                "the reply contains m05",
+            ],
+        ),
+    ],
+)
+def test_each_departure_from_a_scenario_is_a_problem(turn: Turn, problems: list[str]) -> None:
+    assert orchestrator_problems(turn, SHOW) == problems
+
+
+def test_section_names_other_than_the_titles_are_a_problem() -> None:
+    turn = Turn(tools=["show_draft"], reply="Sections: Team news and Shout outs.")
+
+    assert orchestrator_problems(turn, SHOW) == [
+        "the reply contains Team news",
+        "the reply contains Shout outs",
+    ]
+    titled = Turn(tools=["show_draft"], reply="Team news and new joiners, then Shout-outs.")
+    assert orchestrator_problems(titled, SHOW) == []
+
+
+def test_every_scenario_is_an_input() -> None:
+    assert [i.input_id for i in orchestrator_inputs()] == list(orchestrator_expectations())
+
+
+async def test_a_drafted_scenario_runs_the_orchestrator_on_version_1_with_stand_ins() -> None:
+    config = load_config(Path("config/config.example.yaml"))
+    seen: list[str] = []
+
+    async def reviewer_facing(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(str(messages[-1]))
+        if len(seen) == 1:
+            return ModelResponse(parts=[ToolCallPart("show_draft", {})])
+        return ModelResponse(parts=[TextPart("Here is version 1.")])
+
+    scenarios = OrchestratorScenarios(FunctionModel(reviewer_facing), config)
+
+    turn = await scenarios.answer(Scenario(drafted=True, message="Can I see the newsletter?"))
+
+    assert turn == Turn(tools=["show_draft"], reply="Here is version 1.")
+    # The model saw the version the scripted run presented, through the real tools.
+    assert '"version": 1' in seen[0] or "latest_version" in seen[0]

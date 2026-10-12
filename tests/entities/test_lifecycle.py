@@ -18,6 +18,7 @@ from pulse.entities.lifecycle import (
     require_latest,
     require_open,
     send_time,
+    send_time_text,
     start_send,
     update,
     withdraw,
@@ -373,3 +374,15 @@ def test_require_latest_refuses_before_any_newsletter_exists() -> None:
 
 def test_require_latest_accepts_a_closed_newsletter() -> None:
     assert require_latest(_sent()) == _sent()
+
+
+LONDON = ZoneInfo("Europe/London")
+
+
+def test_a_send_time_at_the_approval_is_now() -> None:
+    assert send_time_text(OPENED, OPENED, LONDON) == "now"
+
+
+def test_a_later_send_time_gives_its_day_date_and_time_in_the_time_zone() -> None:
+    # 08:00 UTC is 09:00 in London in September.
+    assert send_time_text(SEND_TIME, OPENED, LONDON) == "Monday 28 September at 09:00"

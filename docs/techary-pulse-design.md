@@ -216,7 +216,7 @@ The orchestrator's rules are set with `instructions`, which Pydantic AI sends wi
 | `show_draft` | Read | Shows the reviewer the working draft, or a named version: the channel shows it after the reply, rendered by code, as when a version is presented. |
 | `get_items` | Read | Returns the headline, the current items with the sender names and received times of their source emails, and the excluded records. |
 | `present_draft` | Action | Saves the working draft as the next version with its check results, the judge's latest verdicts, its entry flags and its credit lines, and emails its reviewer email to `reviewers` in the newsletter's email thread, withdrawing any approval as described in [versions and approval](#versions-and-approval). When the working draft is unchanged since the latest version, it emails that version's reviewer email again instead, as described there. Returns the version number, the check failures and unsupported claims it was presented with, worded as its reviewer email words them, and how many of its entries are flagged. |
-| `approve` | Action | Records approval of a named version and sets the send time. |
+| `approve` | Action | Records approval of a named version and sets the send time. Returns the version and the send time as reviewers read it, in `timezone`: "now" when it is the approval time, otherwise its day, date and time, such as "Monday 5 October at 09:00". |
 | `withdraw_approval` | Action | Returns an approved newsletter to `in_review`. |
 | `abandon` | Action | Closes the newsletter unsent and emails the reviewers that it was abandoned. |
 
@@ -236,7 +236,7 @@ Every tool checks its preconditions in code, records its effect in the store as 
 
 The orchestrator's instructions apply these rules:
 
-- before acting on a message, call `get_newsletter`, and treat the store as the record of what has already been done;
+- act on the newsletter's state, which code gives with every message, call `get_newsletter` when it needs the state again, and treat the store as the record of what has already been done;
 - on the start instruction, or when a reviewer asks for a newsletter, call `start_newsletter`, then present a draft built from the newsletter's screened emails;
 - treat a message that asks for changes as feedback, even if it also mentions approval: revise the draft, present the new version and ask the reviewer to confirm approval of it;
 - when a message asks for any change to an approved newsletter, call `withdraw_approval` first, then ask for clarification or revise, so the old version is not sent while the change is in progress;

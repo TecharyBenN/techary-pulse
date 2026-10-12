@@ -8,30 +8,48 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, NamedTuple, Self, get_args
+from typing import Any, NamedTuple, Protocol, Self, get_args
 
 import httpx2
 from pydantic import AwareDatetime, BaseModel, TypeAdapter
 from pydantic_ai.exceptions import AgentRunError
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    UserPromptPart,
+)
 from pydantic_ai.models import Model
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from pulse.agents.base import SpecialistAgent
-from pulse.agents.consolidator.agent import ConsolidatorTask
-from pulse.agents.judge.agent import JudgeTask
-from pulse.agents.writer.agent import WriterTask
+from pulse.adapters.render import Renderer
+from pulse.adapters.store import SqliteStore
+from pulse.agents.consolidator.agent import ConsolidatorAgent, ConsolidatorTask
+from pulse.agents.extractor.agent import ExtractorAgent
+from pulse.agents.judge.agent import JudgeAgent, JudgeTask
+from pulse.agents.orchestrator.agent import OrchestratorAgent
+from pulse.agents.orchestrator.run import Orchestrator
+from pulse.agents.orchestrator.tools import Tools
+from pulse.agents.sensitivity.agent import SensitivityAgent
+from pulse.agents.writer.agent import WriterAgent, WriterTask
 from pulse.config import Config, load_config
 from pulse.entities.base import Entity, StrictEntity
 from pulse.entities.content import JudgeOutput, WriterOutput, check_content, item_sources
 from pulse.entities.errors import SpecialistFailed
 from pulse.entities.extracts import (
     Consolidation,
+    ConsolidatorItem,
     ConsolidatorOutput,
+    Extraction,
     ExtractorOutput,
     ExtractRecord,
     SensitivityKind,
@@ -39,6 +57,8 @@ from pulse.entities.extracts import (
     with_sources,
 )
 from pulse.entities.mail import ScreenedEmail
+from pulse.main import build_outbox
+from pulse.services.operations import Operations
 from tests.emails import (
     corpus_email,
     corpus_expectation,
@@ -46,7 +66,10 @@ from tests.emails import (
     graph_corpus_emails,
     screen_email,
 )
-from tests.messages import make_message
+from tests.fakes.clock import ControlledClock
+from tests.fakes.mailbox import FakeMailbox
+from tests.fakes.models import extractor_model, responses, sensitivity_model, text_response
+from tests.messages import OPENED, make_message
 
 EVALUATIONS = Path("evaluations")
 # The included records the first-stage baselines produced, which the consolidator is given, and
@@ -58,6 +81,8 @@ _RECORDS = TypeAdapter(list[ExtractRecord])
 WRITER_INPUT = Path(__file__).parent / "corpus" / "writer_input.json"
 # Texts from a tested writer draft, and three that each break one rule, which the judge is given.
 JUDGE_INPUT = Path(__file__).parent / "corpus" / "judge_input.json"
+# The writer's tested draft, which the writer stand-in returns to the orchestrator.
+ORCHESTRATOR_INPUT = Path(__file__).parent / "corpus" / "orchestrator_input.json"
 # The kind of instruction the orchestrator gives for a first draft.
 FIRST_DRAFT = "Write the first draft of the newsletter."
 # A reviewer's request for the newsletter, which the run records as feedback before the writer
@@ -548,9 +573,15 @@ def save_results(results: Results, folder: Path = EVALUATIONS) -> Path:
     return path
 
 
+class Answering[T, O](Protocol):
+    """An agent, or a stand-in Pulse around one, answering one task."""
+
+    async def answer(self, task: T) -> O: ...
+
+
 async def run_live[T, O: BaseModel](
     agent: str,
-    build: Callable[[Model, Config], SpecialistAgent[T, O]],
+    build: Callable[[Model, Config], Answering[T, O]],
     inputs: Sequence[Input[T]],
     problems: Callable[[str, O], list[str]],
     details: Callable[[dict[str, Any]], list[str]],
@@ -617,3 +648,232 @@ def _report[T](
 
 def _git(*args: str) -> str:
     return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
+
+
+class Scenario(Entity):
+    """A reviewer's message to the orchestrator, sent to a new newsletter, or to one whose version 1
+    a scripted run has already drafted and presented."""
+
+    drafted: bool
+    message: str
+    # Whether Pulse uses the example configuration's scheduled send rule in place of
+    # ./config.yaml's.
+    scheduled_send: bool = False
+
+
+class Turn(Entity):
+    """The tools the orchestrator called for the message, in order, and its reply."""
+
+    tools: list[str]
+    reply: str | None
+
+
+class ScenarioExpectation(Scenario, StrictEntity):
+    """The orchestrator's right answer to a scenario: tools it must call in this order, with any
+    others between, tools it must not call, and what its reply must and must not say."""
+
+    calls: tuple[str, ...] = ()
+    never: tuple[str, ...] = ()
+    reply_has: tuple[str, ...] = ()
+    reply_lacks: tuple[str, ...] = ()
+
+
+def orchestrator_expectations() -> dict[str, ScenarioExpectation]:
+    return {
+        scenario_id: ScenarioExpectation.model_validate(answer)
+        for scenario_id, answer in corpus_expectation("orchestrator").items()
+    }
+
+
+def orchestrator_inputs() -> list[Input[Scenario]]:
+    return [
+        Input(
+            scenario_id,
+            expected.message,
+            "scenario",
+            Scenario(**expected.model_dump(include=set(Scenario.model_fields))),
+        )
+        for scenario_id, expected in orchestrator_expectations().items()
+    ]
+
+
+# The example configuration, whose send rule is the scheduled one production uses.
+_EXAMPLE = load_config(Path(__file__).parent.parent / "config" / "config.example.yaml")
+
+# What no reply may contain: IDs, dashes, and sections named by category rather than title.
+_REPLY_NEVER = re.compile(
+    r"\b(?:item|record|excluded)-\d+\b|\bm\d\d\b|[\u2013\u2014]"
+    r"|customer_win|delivery_highlight|team_news|shout_out|company_notices"
+    r"|Customer Wins?\b|Delivery Highlights?\b|Team News\b|Shout Outs?\b|Company Notices?\b"
+    r"|(?i:\bshout outs?\b)|(?i:\bteam news\b(?! and new joiners))"
+)
+
+
+def orchestrator_problems(turn: Turn, expected: ScenarioExpectation) -> list[str]:
+    """How the turn departs from the expected one; empty when it is right."""
+    problems = []
+    remaining = iter(turn.tools)
+    if not all(tool in remaining for tool in expected.calls):
+        problems.append(f"called {turn.tools} instead of {list(expected.calls)} in order")
+    problems += [f"called {tool}" for tool in expected.never if tool in turn.tools]
+    reply = turn.reply or ""
+    problems += [
+        f"the reply does not say {text}"
+        for text in expected.reply_has
+        if text.casefold() not in reply.casefold()
+    ]
+    problems += [
+        f"the reply says {text}"
+        for text in expected.reply_lacks
+        if text.casefold() in reply.casefold()
+    ]
+    problems += [
+        f"the reply contains {match}" for match in dict.fromkeys(_REPLY_NEVER.findall(reply))
+    ]
+    return problems
+
+
+class OrchestratorScenarios:
+    """A fresh Pulse for each scenario, with the given orchestrator model and every specialist agent
+    replaced by a stand-in answering with its baseline, so only the orchestrator varies."""
+
+    def __init__(self, model: Model, config: Config) -> None:
+        self._model = model
+        self._config = config
+
+    async def answer(self, scenario: Scenario) -> Turn:
+        config = self._config
+        with tempfile.TemporaryDirectory() as folder:
+            store = SqliteStore(Path(folder) / "pulse.db")
+            await store.initialise()
+            inbox = [corpus_email(message, n) for n, message in enumerate(corpus_messages())]
+            renderer = Renderer(config.timezone)
+            operations = Operations(
+                store,
+                FakeMailbox(inbox),
+                build_outbox(config, FakeMailbox(), store, renderer),
+                screen_email,
+                renderer.reviewer_email,
+                ControlledClock(OPENED),
+                send_rule=_EXAMPLE.send if scenario.scheduled_send else config.send,
+                timezone=config.timezone,
+                section_titles=config.section_titles,
+                max_words=config.limits.max_words,
+            )
+            tools = Tools(operations, store, *_standin_agents(config))
+            lock = asyncio.Lock()
+
+            def orchestrator(model: Model) -> Orchestrator:
+                return Orchestrator(
+                    OrchestratorAgent(model, tools.toolset()),
+                    store,
+                    operations.summary,
+                    config.orchestrator.max_tool_calls,
+                    timedelta(minutes=config.orchestrator.max_run_minutes),
+                    lock,
+                )
+
+            if scenario.drafted:
+                scripted = FunctionModel(_scripted_draft())
+                await orchestrator(scripted).handle(
+                    make_message("s01", text="Please draft a newsletter.")
+                )
+            run = await orchestrator(self._model).handle(make_message("r02", text=scenario.message))
+            newsletter = await store.get_latest_newsletter()
+            rows = await store.load_history(newsletter.newsletter_id) if newsletter else []
+            called = [
+                part.tool_name
+                for row in rows
+                if row.message_id == "r02"
+                for step in ModelMessagesTypeAdapter.validate_json(row.data)
+                if isinstance(step, ModelResponse)
+                for part in step.parts
+                if isinstance(part, ToolCallPart)
+            ]
+            return Turn(tools=called, reply=run.text)
+
+
+def _scripted_draft() -> Callable[[list[ModelMessage], AgentInfo], Awaitable[ModelResponse]]:
+    """The orchestrator's draft run as its instructions lay it out, so a scenario that starts from
+    version 1 always starts from the same history."""
+    steps = ["get_newsletter", "start_newsletter", "extract", "consolidate"]
+    calls = [ModelResponse(parts=[ToolCallPart(tool, {})]) for tool in steps]
+    calls.append(ModelResponse(parts=[ToolCallPart("write", {"instruction": FIRST_DRAFT})]))
+    calls += [
+        ModelResponse(parts=[ToolCallPart(tool, {})])
+        for tool in ("check", "judge", "present_draft")
+    ]
+    reply = text_response("I have drafted the newsletter and sent version 1 to the reviewers.")
+    return responses(*calls, reply)
+
+
+def _standin_agents(
+    config: Config,
+) -> tuple[ExtractorAgent, SensitivityAgent, ConsolidatorAgent, WriterAgent, JudgeAgent]:
+    """The specialist agents, each answering with its baseline: the first-stage records, the
+    consolidator's items, the writer's tested draft, and no unsupported text."""
+    records = _RECORDS.validate_python(
+        json.loads(INCLUDED_RECORDS.read_text(encoding="utf-8"))["records"]
+        + json.loads(WRITER_INPUT.read_text(encoding="utf-8"))["excluded"]
+    )
+    bodies = {message["id"]: message["body"] for message in corpus_messages()}
+    fields = set(Extraction.model_fields)
+    extractions = {
+        bodies[record.message_id]: Extraction.model_validate(record.model_dump(include=fields))
+        for record in records
+    }
+    consolidation = Consolidation.model_validate(
+        json.loads(WRITER_INPUT.read_text(encoding="utf-8"))["consolidation"]
+    )
+    by_facts = {tuple(record.facts): record.message_id for record in records}
+    draft = WriterOutput.model_validate(
+        json.loads(ORCHESTRATOR_INPUT.read_text(encoding="utf-8"))["draft"]
+    )
+
+    async def consolidator(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        given = json.loads(_prompt(messages).split("\n")[1])
+        record_ids = {by_facts[tuple(record["facts"])]: record["record_id"] for record in given}
+        items = [
+            ConsolidatorItem(
+                category=item.category,
+                facts=item.facts,
+                source_record_ids=[record_ids[m] for m in item.source_message_ids],
+            )
+            for item in consolidation.items
+        ]
+        output = ConsolidatorOutput(headline=consolidation.headline, items=items)
+        return text_response(output.model_dump_json())
+
+    async def writer(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if "<working_draft>" not in _prompt(messages):
+            return text_response(draft.model_dump_json())
+        content = draft.content.model_copy(
+            update={"intro": "A good week for customers and the team."}
+        )
+        revised = WriterOutput(content=content, changes=["Shortened the intro."], not_applied=[])
+        return text_response(revised.model_dump_json())
+
+    async def judge(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return text_response(JudgeOutput(unsupported=[]).model_dump_json())
+
+    return (
+        ExtractorAgent(extractor_model(extractions), config.categories),
+        SensitivityAgent(sensitivity_model(extractions)),
+        ConsolidatorAgent(FunctionModel(consolidator), config.categories),
+        WriterAgent(
+            FunctionModel(writer),
+            config.categories,
+            config.section_titles,
+            config.headline_title,
+            config.limits.max_words,
+        ),
+        JudgeAgent(FunctionModel(judge)),
+    )
+
+
+def _prompt(messages: list[ModelMessage]) -> str:
+    request = messages[0]
+    assert isinstance(request, ModelRequest)
+    [prompt] = [part.content for part in request.parts if isinstance(part, UserPromptPart)]
+    assert isinstance(prompt, str)
+    return prompt

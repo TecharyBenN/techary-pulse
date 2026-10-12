@@ -23,7 +23,7 @@ from tests.emails import (
 from tests.fakes.clock import ControlledClock
 from tests.fakes.mailbox import FakeMailbox
 from tests.messages import OPENED, REVIEWER, make_newsletter
-from tests.operations import REVIEWERS, TIMEZONE, make_operations
+from tests.operations import REVIEWERS, make_operations
 
 PRESENTED = OPENED + timedelta(hours=2)
 MONDAY_NINE = Scheduled(mode="scheduled", day="MON", time=time(9, 0))
@@ -541,7 +541,7 @@ async def test_approve_records_the_approval_with_a_send_time_of_now(
         REVIEWER,
     )
     assert newsletter.approved_at == newsletter.send_time == APPROVED
-    assert result == ApproveResult(version=1, send_time=APPROVED.astimezone(TIMEZONE))
+    assert result == ApproveResult(version=1, send_time="now")
 
 
 async def test_approve_in_scheduled_mode_sends_in_the_send_slot(
@@ -552,8 +552,7 @@ async def test_approve_in_scheduled_mode_sends_in_the_send_slot(
     result = await _approved(operations, store, clock)
 
     # Opened on Friday 25 September, so the slot is Monday 28 September at 09:00 in London.
-    assert result.send_time == datetime(2026, 9, 28, 9, 0, tzinfo=TIMEZONE)
-    assert result.send_time.tzinfo == TIMEZONE
+    assert result.send_time == "Monday 28 September at 09:00"
     assert (await _newsletter(store)).send_time == datetime(2026, 9, 28, 8, 0, tzinfo=UTC)
 
 

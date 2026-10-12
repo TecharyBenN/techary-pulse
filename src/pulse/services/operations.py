@@ -6,8 +6,6 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from pydantic import AwareDatetime
-
 from pulse.entities import lifecycle
 from pulse.entities.base import Entity
 from pulse.entities.content import (
@@ -39,6 +37,7 @@ from pulse.entities.lifecycle import (
     require_latest,
     require_open,
     send_time,
+    send_time_text,
     update,
 )
 from pulse.entities.mail import Body, InboundEmail, Mailbox, MessageId, ScreenedEmail
@@ -98,8 +97,8 @@ class ApproveResult(Entity):
     """The approved version and its send time."""
 
     version: int
-    # In the configured time zone, for the reply.
-    send_time: AwareDatetime
+    # As reviewers read it, in the configured time zone, so the reply gives it unchanged.
+    send_time: str
 
 
 class NoticeResult(Entity):
@@ -230,7 +229,9 @@ class Operations:
         send_at = send_time(self._send_rule, self._timezone, newsletter.opened_at, now)
         approved = lifecycle.approve(newsletter, version, caller, message, now, send_at)
         await self._store.save_newsletter(approved)
-        return ApproveResult(version=version, send_time=send_at.astimezone(self._timezone))
+        return ApproveResult(
+            version=version, send_time=send_time_text(send_at, now, self._timezone)
+        )
 
     async def withdraw_approval(self, caller: str | None) -> NoticeResult:
         """Return the approved newsletter to review, and tell the reviewers the send is

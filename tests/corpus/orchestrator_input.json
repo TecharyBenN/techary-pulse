@@ -1,0 +1,105 @@
+{
+  "source": {
+    "writer": {
+      "results": "evaluations/writer/20261012T131916Z.json",
+      "commit": "8836cae261d445e171c0541652734b88840b56fe",
+      "sample": 1
+    }
+  },
+  "draft": {
+    "content": {
+      "headline_title": "Headline of the week",
+      "headline": "Northwind Retail signs three-year contract and Contoso migration goes live early",
+      "intro": "This week brings a significant new contract win with Northwind Retail, an early completion of the Contoso migration, and celebrations in the team.",
+      "sections": [
+        {
+          "category": "customer_win",
+          "title": "Customer wins",
+          "entries": [
+            {
+              "item_id": "item-1",
+              "text": "Priya Shah and Tom Evans signed Northwind Retail to a three-year managed service contract on 22 September, worth about 180 thousand pounds a year, with onboarding starting in October.",
+              "people": [
+                "Priya Shah",
+                "Tom Evans"
+              ]
+            }
+          ]
+        },
+        {
+          "category": "delivery_highlight",
+          "title": "Delivery highlights",
+          "entries": [
+            {
+              "item_id": "item-2",
+              "text": "The Contoso migration went live on 20 September, two days early, and user training finished on 24 September.",
+              "people": []
+            }
+          ]
+        },
+        {
+          "category": "team_news",
+          "title": "Team news and new joiners",
+          "entries": [
+            {
+              "item_id": "item-3",
+              "text": "Welcome to Lucy Grey, who joined the service desk on 29 September.",
+              "people": [
+                "Lucy Grey"
+              ]
+            },
+            {
+              "item_id": "item-6",
+              "text": "Happy birthday to Dan Wood, who celebrated on 2 October.",
+              "people": [
+                "Dan Wood"
+              ]
+            },
+            {
+              "item_id": "item-7",
+              "text": "Congratulations to Tom Evans on the arrival of his baby, Ava, on 25 September.",
+              "people": [
+                "Tom Evans"
+              ]
+            }
+          ]
+        },
+        {
+          "category": "shout_out",
+          "title": "Shout-outs",
+          "entries": [
+            {
+              "item_id": "item-4",
+              "text": "Thank you to Sam Patel for covering the service desk over the bank holiday weekend.",
+              "people": [
+                "Sam Patel"
+              ]
+            }
+          ]
+        },
+        {
+          "category": "company_notices",
+          "title": "Company notices",
+          "entries": [
+            {
+              "item_id": "item-5",
+              "text": "Litware Supplies will raise the price of its business laptops by 5 per cent from 1 November, though orders placed before 31 October will keep the current price.",
+              "people": []
+            }
+          ]
+        }
+      ],
+      "item_ids": [
+        "item-1",
+        "item-2",
+        "item-3",
+        "item-6",
+        "item-7",
+        "item-4",
+        "item-5"
+      ]
+    },
+    "changes": [],
+    "not_applied": []
+  }
+}

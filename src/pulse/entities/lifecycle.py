@@ -206,6 +206,14 @@ def send_time(
     return max(_send_slot(rule, timezone, opened_at), approved_at)
 
 
+def send_time_text(send_at: dt.datetime, approved_at: dt.datetime, timezone: ZoneInfo) -> str:
+    """The send time as reviewers read it, in `timezone`: "now" when it is the approval time."""
+    if send_at <= approved_at:
+        return "now"
+    local = send_at.astimezone(timezone)
+    return f"{local:%A} {local.day} {local:%B} at {local:%H:%M}"
+
+
 def _send_slot(rule: Scheduled, timezone: ZoneInfo, opened_at: dt.datetime) -> dt.datetime:
     """The first occurrence of the send day and time, in `timezone`, after the opening."""
     opened = opened_at.astimezone(timezone)

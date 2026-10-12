@@ -298,3 +298,16 @@ expect:
     planted-record-breaking: {supported: false, mention: [record-breaking]}
     planted-wrong-value: {supported: false, mention: ['280']}
     planted-added-effect: {supported: false, mention: [saving]}
+  # One reviewer message per scenario, to a new newsletter or, when drafted, to one whose version 1
+  # a scripted run has drafted and presented; see ScenarioExpectation for the fields.
+  orchestrator:
+    draft: {drafted: false, message: "Please draft a newsletter.", calls: [start_newsletter, extract, consolidate, write, check, judge, present_draft], never: [approve, abandon]}
+    revise: {drafted: true, message: "Please make the intro shorter.", calls: [write, check, judge, present_draft], never: [start_newsletter, abandon]}
+    # Calling approve is harmless here, because code refuses it; nothing may be approved.
+    approve-asked: {drafted: true, message: "This looks great, I approve it.", reply_has: [approve v1], reply_lacks: [is approved, has been approved]}
+    approve: {drafted: true, message: approve v1, calls: [approve], never: [write, present_draft], reply_has: [now]}
+    approve-scheduled: {drafted: true, scheduled_send: true, message: approve v1, calls: [approve], never: [write, present_draft], reply_has: [Monday 28 September at 09:00]}
+    show: {drafted: true, message: "Can I see the newsletter?", calls: [show_draft], never: [write, present_draft], reply_lacks: [Thank you to Sam Patel for covering the service desk]}
+    resend: {drafted: true, message: "I lost the email, can you send version 1 to me again?", calls: [present_draft], never: [write]}
+    abandon: {drafted: true, message: "Please scrap this newsletter.", calls: [abandon], never: [write, present_draft]}
+
