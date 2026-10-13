@@ -55,7 +55,7 @@ A phase with a live check is complete only when the check has passed against the
 | 4. Start and extract | `start_newsletter`, the pre-filter, the extractor, the Graph mailbox |
 | 5. Consolidate | The consolidator |
 | 6. Write and present | The writer, `present_draft`, the reviewer email |
-| 7. Quality | `check`, the judge |
+| 7. Quality | The draft checks, the judge |
 | 8. Approve, send, withdraw and abandon | `approve`, delivery, `withdraw_approval`, `abandon` |
 | 9. Email channel | Reviewer conversations by email |
 | 10. Forwarded emails and sensitivity flags | Forwarded content for the extractor, withheld and flagged content, credit lines |
@@ -164,7 +164,7 @@ Exit criteria: tests cover the writer's output checks, each tool, the history pl
 
 ### Phase 7: quality
 
-Scope: `restore`, which replaces restoring through the writer, so a restored record is included in the store and becomes an item; `check`, the draft checks run in `present_draft`, the judge and `judge`, check failures and unsupported text in the review section, the "not judged" note, and the orchestrator instructions for fixing failures and accepting those that cannot be fixed.
+Scope: `restore`, which replaces restoring through the writer, so a restored record is included in the store and becomes an item; the draft checks run in `judge` and `present_draft`, the judge and `judge`, check failures and unsupported text in the review section, the "not judged" note, and the orchestrator instructions for fixing failures and accepting those that cannot be fixed.
 
 Exit criteria: tests cover the tools and the review section; live check: a draft with a failing check is fixed or presented with the failure listed.
 

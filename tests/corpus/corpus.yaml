@@ -268,6 +268,51 @@ consolidation:
     - {category: team_news, facts: [Dan Wood celebrates a birthday on 2 October], source_message_ids: [m20]}
     - {category: team_news, facts: [Tom Evans welcomed baby Ava on 25 September], source_message_ids: [m21]}
 
+# A forwarded supplier notice with more facts than a two-sentence entry holds easily, which only
+# the writer and judge are given: its email, its item as the consolidator returns it, and a working
+# draft whose entry for it breaks the sentence limit, as a first draft did in a live run.
+notice:
+  message:
+    id: n01
+    sender_name: Ben Carter
+    sender_address: ben.carter@example.org
+    subject: "FW: Fabrikam hardware pricing update"
+    unique_body: Worth knowing for anyone quoting Fabrikam hardware this quarter.
+    body: |-
+      Worth knowing for anyone quoting Fabrikam hardware this quarter.
+
+      From: Fabrikam Networks Partner Team <partners@example.com>
+      Sent: 2 October 2026
+      Subject: Hardware pricing update
+
+      Because of rising component costs, Fabrikam Networks will add a surcharge to Gen 4 hardware from 1 December 2026: 7 percent on Gen 4 Branch models and 11 percent on Gen 4 Campus and Data Centre models. From the same date, list prices for Gen 5 hardware will increase by 4 percent. Quotes issued before 30 November are honoured until 31 January 2027. The surcharge does not apply to support renewals.
+  headline: Fabrikam Networks changes its hardware pricing
+  item:
+    category: company_notices
+    facts:
+      - Fabrikam Networks will add a 7 per cent surcharge to Gen 4 Branch hardware from 1 December 2026
+      - Fabrikam Networks will add an 11 per cent surcharge to Gen 4 Campus and Data Centre hardware from 1 December 2026
+      - Fabrikam Networks will increase Gen 5 hardware list prices by 4 per cent from 1 December 2026
+      - Fabrikam Networks quotes issued before 30 November are honoured until 31 January 2027
+      - The surcharge does not apply to support renewals
+      - Fabrikam Networks gives rising component costs as the reason
+  instruction: "Fix this problem with the smallest change, keeping every entry and item: the sentences check failed at item-1, 3 sentences, limit 2."
+  draft:
+    content:
+      headline_title: Headline of the week
+      headline: Fabrikam Networks changes its hardware pricing
+      intro: This week brings a hardware pricing update from Fabrikam Networks.
+      sections:
+        - category: company_notices
+          title: Company notices
+          entries:
+            - item_id: item-1
+              text: From 1 December 2026, Fabrikam Networks will add a surcharge of 7 per cent to Gen 4 Branch hardware and 11 per cent to Gen 4 Campus and Data Centre hardware. Gen 5 hardware list prices will increase by 4 per cent from the same date. Quotes issued before 30 November are honoured until 31 January 2027, and support renewals are not affected.
+              people: []
+      item_ids: [item-1]
+    changes: []
+    not_applied: []
+
 expect:
   consolidator:
     items:
@@ -298,11 +343,17 @@ expect:
     planted-record-breaking: {supported: false, mention: [record-breaking]}
     planted-wrong-value: {supported: false, mention: ['280']}
     planted-added-effect: {supported: false, mention: [saving]}
+    # Leaving out each surcharge's rate leaves out detail; it states nothing the facts do not.
+    notice-no-rates: {supported: true}
+  # The writer's notice inputs, held to the facts a reader needs: what, when and how much.
+  writer:
+    notice-first-draft: {items: [{sources: [n01], category: company_notices, mention: [Fabrikam Networks, 1 December, Gen 4, Gen 5, '7', '11', '4']}]}
+    notice-fix: {items: [{sources: [n01], category: company_notices, mention: [Fabrikam Networks, 1 December, Gen 4, Gen 5, '7', '11', '4']}]}
   # One reviewer message per scenario, to a new newsletter or, when drafted, to one whose version 1
   # a scripted run has drafted and presented; see ScenarioExpectation for the fields.
   orchestrator:
-    draft: {drafted: false, message: "Please draft a newsletter.", calls: [start_newsletter, extract, consolidate, write, check, judge, present_draft], never: [approve, abandon]}
-    revise: {drafted: true, message: "Please make the intro shorter.", calls: [write, check, judge, present_draft], never: [start_newsletter, abandon]}
+    draft: {drafted: false, message: "Please draft a newsletter.", calls: [start_newsletter, extract, consolidate, write, judge, present_draft], never: [approve, abandon], times: {present_draft: 1}}
+    revise: {drafted: true, message: "Please make the intro shorter.", calls: [write, judge, present_draft], never: [start_newsletter, abandon], times: {present_draft: 1}}
     # Calling approve is harmless here, because code refuses it; nothing may be approved.
     approve-asked: {drafted: true, message: "This looks great, I approve it.", reply_has: [approve v1], reply_lacks: [is approved, has been approved]}
     approve: {drafted: true, message: approve v1, calls: [approve], never: [write, present_draft], reply_has: [now]}
@@ -310,4 +361,7 @@ expect:
     show: {drafted: true, message: "Can I see the newsletter?", calls: [show_draft], never: [write, present_draft], reply_lacks: [Thank you to Sam Patel for covering the service desk]}
     resend: {drafted: true, message: "I lost the email, can you send version 1 to me again?", calls: [present_draft], never: [write]}
     abandon: {drafted: true, message: "Please scrap this newsletter.", calls: [abandon], never: [write, present_draft]}
-
+    # The draft fails a check, the first fix adds a detail the judge finds unsupported, and the second fix removes it.
+    fix-clears: {drafted: false, fixes: clears, message: "Please draft a newsletter.", calls: [write, judge, write, judge, write, judge, present_draft], times: {write: 3, judge: 3, present_draft: 1}}
+    # As fix-clears, but the second fix keeps the detail, so the orchestrator presents and names it.
+    fix-sticks: {drafted: false, fixes: sticks, message: "Please draft a newsletter.", calls: [write, judge, write, judge, write, judge, present_draft], times: {write: 3, judge: 3, present_draft: 1}, reply_has: [support]}

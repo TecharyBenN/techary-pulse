@@ -197,7 +197,7 @@ async def test_a_failing_check_is_fixed_or_listed_in_the_version(tmp_path: Path)
         for message in history
         if isinstance(message, ModelRequest)
         for part in message.parts
-        if isinstance(part, ToolReturnPart) and part.tool_name == "check"
+        if isinstance(part, ToolReturnPart) and part.tool_name == "judge"
     ]
     print(f"--- check results\n{checks}")
     assert checks

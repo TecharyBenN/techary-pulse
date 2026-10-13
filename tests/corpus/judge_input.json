@@ -5,7 +5,8 @@
       "commit": "8cc91474e099f1e2165c3ad175bff2871f1c0846",
       "sample": 4
     },
-    "planted": "the last three cases edit a real text to break one rule"
+    "planted": "the three planted cases edit a real text to break one rule",
+    "notice": "the notice case is written for the corpus notice, naming its surcharges without their rates"
   },
   "cases": [
     {
@@ -97,6 +98,14 @@
         "m06"
       ],
       "text": "The Contoso migration went live on 20 September, two days early, and the Contoso team finished user training on 24 September, saving the customer thousands of pounds."
+    },
+    {
+      "id": "notice-no-rates",
+      "part": "entry",
+      "sources": [
+        "n01"
+      ],
+      "text": "From 1 December 2026, Fabrikam Networks will add surcharges to Gen 4 Branch and Campus and Data Centre hardware and increase Gen 5 hardware list prices."
     }
   ]
 }

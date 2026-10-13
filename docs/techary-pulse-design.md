@@ -205,12 +205,11 @@ The orchestrator's rules are set with `instructions`, which Pydantic AI sends wi
 | --- | --- | --- |
 | `start_newsletter` | Action | Opens a newsletter with the pending emails, or adds those that have arrived since to the open one, and applies the pre-filter to them. |
 | `list_screened_emails` | Read | Returns each screened email's message ID, sender name, received time, attachment flag, pre-filter outcome, and extract record if one exists. Never returns subjects or bodies. |
-| `extract` | Specialist | Runs the extractor and the sensitivity agent, in parallel, on every screened email of the open newsletter that passed the pre-filter and has no extract record yet, and stores each extract record with its exclusion outcome. It takes no arguments, so the orchestrator never copies message IDs it could get wrong. An email whose extraction failed still has no record, so calling `extract` again retries it. A gateway error fails the tool only once every other email's extraction has finished, so none saves a record after the run has failed. Returns each email's outcome and the totals included, excluded by reason, and failed. |
+| `extract` | Specialist | Runs the extractor and the sensitivity agent, in parallel, on every screened email of the open newsletter that passed the pre-filter and has no extract record yet, and stores each extract record with its exclusion outcome. It takes no arguments, so the orchestrator never copies message IDs it could get wrong. An email whose extraction failed still has no record, so calling `extract` again retries it. A gateway error fails the tool only once every other email's extraction has finished, so none saves a record after the run has failed. Returns each email's outcome and the totals included, excluded, excluded by reason, and failed. |
 | `restore` | Action | Includes a named excluded record, recording the reviewer who asked and, for a record with no category, setting the section the reviewer named as its category. The items are then out of date until `consolidate` runs. |
 | `consolidate` | Specialist | Runs the consolidator on every included extract record and stores the resulting items and headline, replacing any earlier ones. Returns the headline, the item count and each item's ID, category and sources. |
 | `write` | Specialist | Runs the writer on the items, the excluded records, all feedback, the orchestrator's instruction and, when revising, the working draft, and stores the result as the working draft. A call is a revision whenever a working draft exists. Returns the included IDs, the changes, the feedback not applied and whether the working draft has changed since the latest version. |
-| `judge` | Specialist | Runs the judge on the working draft's intro and on each of its entries, in parallel, and stores its verdicts. |
-| `check` | Read | Runs the code checks in [draft checks](#draft-checks) on the working draft and returns every failure. |
+| `judge` | Specialist | Runs the code checks in [draft checks](#draft-checks) on the working draft, then the judge on its intro and on each of its entries, in parallel, and stores its verdicts. Returns every check failure and what the judge found unsupported. |
 | `get_newsletter` | Read | Returns a summary of the latest newsletter: state, versions presented, item and excluded record counts, whether the items are up to date (built from exactly the included records), whether the working draft has changed since the latest version, approved version, send time and sent time. |
 | `get_draft` | Read | Returns the working draft, or a named version. |
 | `show_draft` | Read | Shows the reviewer the working draft, or a named version: the channel shows it after the reply, rendered by code, as when a version is presented. |
@@ -229,7 +228,6 @@ Every tool checks its preconditions in code, records its effect in the store as 
 - `restore` refuses an ID that names no excluded record in the open newsletter, a record with no facts, because there is nothing to write from, and a record with no category unless it is given a configured category.
 - `start_newsletter`, `present_draft`, `withdraw_approval` and `abandon` refuse once `send_started` is recorded.
 - `present_draft` refuses when there is no working draft.
-- `write` refuses a fourth call in one run, so the draft is presented before it is revised again; the orchestrator's instructions allow one revision to fix checks and claims, and code allows two.
 - `consolidate` refuses when the newsletter has no included extract records.
 
 ### Behaviour
@@ -241,7 +239,7 @@ The orchestrator's instructions apply these rules:
 - treat a message that asks for changes as feedback, even if it also mentions approval: revise the draft, present the new version and ask the reviewer to confirm approval of it;
 - when a message asks for any change to an approved newsletter, call `withdraw_approval` first, then ask for clarification or revise, so the old version is not sent while the change is in progress;
 - once a new newsletter opens, treat feedback given earlier in the conversation as belonging to the previous newsletter;
-- fix a failing check or unsupported claim with the smallest change that corrects it, such as rewording only the affected entries, and never by removing an entry or item; make one such revision, then present the version with any problem that remains;
+- fix a failing check or unsupported claim with the smallest change that corrects it, such as rewording only the affected entries, and never by removing an entry or item; call `judge` after every `write`, and keep fixing until `judge` reports no problem or a fix leaves a problem it was asked to correct, then present the version with any problem that remains;
 - accept a check failure that cannot be corrected without losing content; the review section lists it;
 - approve only the latest presented version, and name the version approved in the reply;
 - when a reviewer wants to approve, ask them to reply with `approve v{version}` as the first line of their message, unless their message already starts with it;
@@ -403,7 +401,7 @@ Code checks a draft for these conditions. A source message's text is its subject
 
 Each check verifies an entry against its item. Each failure names the check, where it occurred (the headline title, the headline, the intro, an entry's item ID, a section's category, or the whole draft for the word count) and the offending detail, such as the name, or the count and its limit.
 
-The checks run through `check` and again in `present_draft`. A version can be presented with failures; its reviewer email lists them first. The review section names where each failure or unsupported claim is as reviewers see the newsletter: an entry by its text, a section by its title, and the headline title, headline, intro or whole newsletter by name.
+The checks run through `judge` and again in `present_draft`. A version can be presented with failures; its reviewer email lists them first. The review section names where each failure or unsupported claim is as reviewers see the newsletter: an entry by its text, a section by its title, and the headline title, headline, intro or whole newsletter by name.
 
 ## Flagged entries
 

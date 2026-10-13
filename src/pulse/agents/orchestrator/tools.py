@@ -52,17 +52,13 @@ PROGRESS_NOTES = {
     "write": "Writing the draft",
     "get_draft": "Reading the draft",
     "show_draft": "Getting the draft ready to show you",
-    "check": "Checking the draft",
-    "judge": "Checking the draft against the facts",
+    "judge": "Checking the draft",
     "present_draft": "Sending the draft to the reviewers",
     "approve": "Recording your approval",
     "withdraw_approval": "Withdrawing the approval",
     "abandon": "Abandoning the newsletter",
 }
 _DEFAULT_NOTE = "Working on it"
-# The orchestrator's instructions allow one revision to fix checks and claims; code allows two,
-# so a run writes a draft or revision and at most two fixes before presenting.
-_MAX_WRITES_PER_RUN = 3
 
 
 def progress_note(tool: str) -> str:
@@ -92,20 +88,24 @@ class ShowResult(Entity):
 
 
 class ExtractResult(Entity):
-    """Each email's outcome from extract, with the totals included, excluded and failed."""
+    """Each email's outcome from extract, with the totals included, excluded, excluded by
+    reason, and failed."""
 
     outcomes: list[ExtractOutcome]
     included: int
-    excluded: dict[ExclusionReason, int]
+    excluded: int
+    excluded_by_reason: dict[ExclusionReason, int]
     failed: int
 
     @classmethod
     def of(cls, outcomes: list[ExtractOutcome]) -> Self:
         extracted = [outcome for outcome in outcomes if outcome.error is None]
+        by_reason = Counter(o.exclusion for o in extracted if o.exclusion is not None)
         return cls(
             outcomes=outcomes,
             included=sum(1 for outcome in extracted if outcome.exclusion is None),
-            excluded=Counter(o.exclusion for o in extracted if o.exclusion is not None),
+            excluded=by_reason.total(),
+            excluded_by_reason=by_reason,
             failed=len(outcomes) - len(extracted),
         )
 
@@ -157,8 +157,6 @@ class Tools:
         self._consolidator = consolidator
         self._writer = writer
         self._judge = judge
-        # Write calls by the message whose run made them.
-        self._writes: Counter[str] = Counter()
 
     def toolset(self) -> FunctionToolset[ReviewerMessage]:
         # A tool can read what an earlier tool in the same response stored, such as consolidate
@@ -175,7 +173,6 @@ class Tools:
                 self.write,
                 self.get_draft,
                 self.show_draft,
-                self.check,
                 self.judge,
                 self.present_draft,
                 self.approve,
@@ -221,7 +218,7 @@ class Tools:
         the open newsletter that passed the pre-filter and has no extract record yet, and store
         each extract record with its exclusion outcome. An email that failed has no record, so
         calling this again retries it. Returns each email's outcome and the totals included,
-        excluded by reason, and failed."""
+        excluded, excluded by reason, and failed."""
         newsletter = await self._open()
         newsletter_id = newsletter.newsletter_id
         extracted = {r.message_id for r in await self._store.list_extract_records(newsletter_id)}
@@ -295,16 +292,12 @@ class Tools:
         }
 
     @_reported
-    async def write(self, ctx: RunContext[ReviewerMessage], instruction: str) -> dict[str, Any]:
+    async def write(self, instruction: str) -> dict[str, Any]:
         """Run the writer on the items, the excluded records and all feedback, following your
         instruction, and store the result as the working draft. When a working draft exists,
         the writer revises it. Returns the included IDs, the changes, any feedback not applied,
         and whether the draft now differs from the latest version."""
         newsletter = await self._open()
-        message_id = ctx.deps.message_id
-        if self._writes[message_id] >= _MAX_WRITES_PER_RUN:
-            raise Refusal("present the draft before revising it again")
-        self._writes[message_id] += 1
         newsletter_id = newsletter.newsletter_id
         consolidated, items, excluded = await self._items(newsletter_id)
         feedback = await self._store.list_feedback(newsletter_id)
@@ -344,20 +337,13 @@ class Tools:
         return ShowResult(version=version)
 
     @_reported
-    async def check(self) -> dict[str, Any]:
-        """Run the code checks on the working draft. Returns every failure and their count."""
-        failures = await self._operations.check()
-        return {
-            "failure_count": len(failures),
-            "failures": [failure.model_dump(mode="json") for failure in failures],
-        }
-
-    @_reported
     async def judge(self) -> dict[str, Any]:
-        """Run the judge on the working draft's intro and on each entry, in parallel, which
-        finds what does not keep to the spirit of the facts and feedback, and store its
-        verdicts. Returns how many parts it judged and, for each part that fails, what does not
-        keep to its facts and why."""
+        """Run the code checks on the working draft, then the judge on its intro and on each
+        entry, in parallel, which finds what does not keep to the spirit of the facts and
+        feedback, and store its verdicts. Returns every check failure and their count, how many
+        parts it judged and, for each part that fails, what does not keep to its facts and
+        why."""
+        failures = await self._operations.check()
         newsletter = await self._open()
         newsletter_id = newsletter.newsletter_id
         content = (await self._operations.draft_or_version(newsletter, None)).content
@@ -378,6 +364,8 @@ class Tools:
         ]
         await self._store.save_verdicts(newsletter_id, verdicts)
         return {
+            "failure_count": len(failures),
+            "failures": [failure.model_dump(mode="json") for failure in failures],
             "judged": len(verdicts),
             "unsupported": [
                 {

@@ -2,10 +2,18 @@ import json
 import stat
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Literal
 
 import httpx2
 import pytest
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -20,6 +28,8 @@ from pulse.entities.content import (
     Section,
     UnsupportedText,
     WriterOutput,
+    check_content,
+    item_sources,
 )
 from pulse.entities.extracts import (
     ConsolidatorItem,
@@ -52,6 +62,7 @@ from tests.evaluation import (
     ScenarioExpectation,
     SensitivityExpectation,
     Turn,
+    chosen_inputs,
     consolidator_expectations,
     consolidator_inputs,
     consolidator_problems,
@@ -61,12 +72,14 @@ from tests.evaluation import (
     extractor_problems,
     judge_inputs,
     judge_problems,
+    notice_email,
     orchestrator_expectations,
     orchestrator_inputs,
     orchestrator_problems,
     save_results,
     sensitivity_problems,
     token_totals,
+    writer_expectations,
     writer_inputs,
     writer_problems,
 )
@@ -437,7 +450,7 @@ def test_pulse_draft_check_failures_and_dropped_items_are_problems() -> None:
 
 
 def test_the_writer_input_holds_every_expected_item_once() -> None:
-    [item] = writer_inputs()
+    item = writer_inputs()[0]
     sources = sorted(sorted(i.source_message_ids) for i in item.task.items)
 
     expected = consolidator_expectations()["included"]
@@ -447,6 +460,24 @@ def test_the_writer_input_holds_every_expected_item_once() -> None:
     assert item.task.excluded and all(r.exclusion for r in item.task.excluded)
     assert [m.text for m in item.task.feedback] == ["Please draft a newsletter."]
     assert item.task.draft is None
+
+
+def test_every_writer_input_has_an_expectation() -> None:
+    assert [i.input_id for i in writer_inputs()] == list(writer_expectations())
+
+
+def test_the_notice_is_drafted_then_its_entry_fixed_after_the_sentences_check_failed() -> None:
+    config = load_config(Path("config/config.example.yaml"))
+    _, first, fix = writer_inputs()
+
+    assert first.task.draft is None
+    assert [i.source_message_ids for i in first.task.items] == [["n01"]]
+    assert fix.task.items == first.task.items
+    assert fix.task.draft is not None
+    content = fix.task.draft.content
+    sources = item_sources(content, fix.task.items, [notice_email()])
+    failures = check_content(content, sources, [], config.categories, config.limits.max_words)
+    assert [(f.check, f.target) for f in failures] == [("sentences", "item-1")]
 
 
 def _completion(content: str) -> dict[str, object]:
@@ -697,6 +728,18 @@ def test_an_unsupported_text_must_name_the_words_that_break_it() -> None:
     ]
 
 
+def test_chosen_inputs_are_those_named_or_all_when_none_are() -> None:
+    inputs = judge_inputs()
+
+    assert chosen_inputs(inputs, None) == inputs
+    assert [i.input_id for i in chosen_inputs(inputs, "notice-no-rates,intro")] == [
+        "intro",
+        "notice-no-rates",
+    ]
+    with pytest.raises(ValueError, match="no inputs named"):
+        chosen_inputs(inputs, "intro,unknown")
+
+
 def test_every_judge_text_has_its_items_and_an_expectation() -> None:
     inputs = judge_inputs()
     expected = corpus_expectation("judge")
@@ -753,6 +796,15 @@ def test_each_departure_from_a_scenario_is_a_problem(turn: Turn, problems: list[
     assert orchestrator_problems(turn, SHOW) == problems
 
 
+def test_calling_a_tool_other_than_the_expected_times_is_a_problem() -> None:
+    expected = ScenarioExpectation(drafted=False, message="Draft it.", times={"write": 2})
+
+    assert orchestrator_problems(Turn(tools=["write", "write"], reply="Done."), expected) == []
+    assert orchestrator_problems(Turn(tools=["write"] * 3, reply="Done."), expected) == [
+        "called write 3 times instead of 2"
+    ]
+
+
 def test_section_names_other_than_the_titles_are_a_problem() -> None:
     turn = Turn(tools=["show_draft"], reply="Sections: Team news and Shout outs.")
 
@@ -785,3 +837,40 @@ async def test_a_drafted_scenario_runs_the_orchestrator_on_version_1_with_stand_
     assert turn == Turn(tools=["show_draft"], reply="Here is version 1.")
     # The model saw the version the scripted run presented, through the real tools.
     assert '"version": 1' in seen[0] or "latest_version" in seen[0]
+
+
+@pytest.mark.parametrize(
+    ("fixes", "found"),
+    [("clears", [(1, 0), (0, 1), (0, 0)]), ("sticks", [(1, 0), (0, 1), (0, 1)])],
+)
+async def test_a_fix_scenario_fails_the_check_then_the_judge_until_the_detail_clears(
+    fixes: Literal["clears", "sticks"], found: list[tuple[int, int]]
+) -> None:
+    config = load_config(Path("config/config.example.yaml"))
+    steps = ["start_newsletter", "extract", "consolidate"]
+    steps += ["write", "judge", "write", "judge", "write", "judge", "present_draft"]
+    calls = [
+        ModelResponse(
+            parts=[ToolCallPart(tool, {"instruction": "Fix it."} if tool == "write" else {})]
+        )
+        for tool in steps
+    ]
+    remaining = [*calls, ModelResponse(parts=[TextPart("Version 1 is presented.")])]
+    returned: list[ToolReturnPart] = []
+
+    async def scripted(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        last = messages[-1]
+        if isinstance(last, ModelRequest):
+            returned.extend(p for p in last.parts if isinstance(p, ToolReturnPart))
+        return remaining.pop(0)
+
+    scenarios = OrchestratorScenarios(FunctionModel(scripted), config)
+
+    turn = await scenarios.answer(
+        Scenario(drafted=False, fixes=fixes, message="Please draft a newsletter.")
+    )
+
+    assert turn.tools == steps
+    judged = [part.model_response_object() for part in returned if part.tool_name == "judge"]
+    # Check failures and unsupported texts each time the judge runs.
+    assert [(j["failure_count"], len(j["unsupported"])) for j in judged] == found

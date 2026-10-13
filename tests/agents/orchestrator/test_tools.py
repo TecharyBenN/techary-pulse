@@ -162,7 +162,6 @@ async def test_toolset_offers_each_tool(store: SqliteStore) -> None:
         "write",
         "get_draft",
         "show_draft",
-        "check",
         "judge",
         "present_draft",
         "approve",
@@ -281,10 +280,7 @@ async def test_tools_refuse_before_any_newsletter_exists(store: SqliteStore) -> 
     assert await tools.extract() == "Refused: no newsletter is open"
     assert await tools.consolidate() == "Refused: no newsletter is open"
     assert await tools.get_items() == "Refused: no newsletter exists yet"
-    assert (
-        await tools.write(_run_for(make_message()), "Write the first draft.")
-        == "Refused: no newsletter is open"
-    )
+    assert await tools.write("Write the first draft.") == "Refused: no newsletter is open"
     assert await tools.get_draft() == "Refused: no newsletter exists yet"
     assert await tools.present_draft(_run_for(make_message())) == "Refused: no newsletter is open"
 
@@ -297,8 +293,9 @@ async def test_extract_stores_each_record_with_its_exclusion(store: SqliteStore)
     result = await tools.extract()
 
     assert not isinstance(result, str)
-    assert (result.included, result.excluded, result.failed) == (
+    assert (result.included, result.excluded, result.excluded_by_reason, result.failed) == (
         1,
+        2,
         {"no_category": 2},
         0,
     )
@@ -326,7 +323,13 @@ async def test_extract_takes_only_emails_that_passed_and_have_no_record(
     result = await tools.extract()
 
     assert not isinstance(result, str)
-    assert (result.outcomes, result.included, result.excluded, result.failed) == ([], 0, {}, 0)
+    assert (
+        result.outcomes,
+        result.included,
+        result.excluded,
+        result.excluded_by_reason,
+        result.failed,
+    ) == ([], 0, 0, {}, 0)
 
 
 async def test_extract_reports_an_invalid_response_and_retries_it_when_called_again(
@@ -566,7 +569,7 @@ async def test_write_stores_the_first_draft(store: SqliteStore) -> None:
     tools = _tools(store, writer=_writer_prompts(prompts))
     newsletter_id = await _consolidated(tools)
 
-    result = await tools.write(_run_for(make_message()), "Write the first draft.")
+    result = await tools.write("Write the first draft.")
 
     assert result == {
         "changes": [],
@@ -585,11 +588,11 @@ async def test_write_revises_the_working_draft_with_all_feedback(store: SqliteSt
     tools = _tools(store, writer=_writer_prompts(prompts))
     newsletter_id = await _consolidated(tools)
     await store.record_feedback(newsletter_id, make_message("r01", text="Shorter intro, please."))
-    await tools.write(_run_for(make_message()), "Write the first draft.")
+    await tools.write("Write the first draft.")
 
     await tools.present_draft(_run_for(make_message()))
 
-    revised = await tools.write(_run_for(make_message()), "Shorten the intro.")
+    revised = await tools.write("Shorten the intro.")
 
     # The stand-in returns the same draft again, so it has not changed since v1.
     assert isinstance(revised, dict)
@@ -605,7 +608,7 @@ async def test_write_reports_an_invalid_response_and_stores_nothing(store: Sqlit
     tools = _tools(store, writer=FunctionModel(reply_with(invalid)))
     newsletter_id = await _consolidated(tools)
 
-    result = await tools.write(_run_for(make_message()), "Write the first draft.")
+    result = await tools.write("Write the first draft.")
 
     assert result == (
         "Failed: writer gave no valid response: item-9 in item_ids is not a known item"
@@ -617,7 +620,7 @@ async def test_get_draft_returns_the_working_draft_or_a_version(store: SqliteSto
     tools = _tools(store)
     await _consolidated(tools)
     assert await tools.get_draft() == "Refused: there is no working draft"
-    await tools.write(_run_for(make_message()), "Write the first draft.")
+    await tools.write("Write the first draft.")
     await tools.present_draft(_run_for(make_message()))
 
     assert await tools.get_draft() == DRAFT.model_dump(mode="json")
@@ -633,7 +636,7 @@ async def test_show_draft_names_what_to_show_and_refuses_what_does_not_exist(
     tools = _tools(store)
     await _consolidated(tools)
     assert await tools.show_draft() == "Refused: there is no working draft"
-    await tools.write(_run_for(make_message()), "Write the first draft.")
+    await tools.write("Write the first draft.")
     await tools.present_draft(_run_for(make_message()))
 
     assert await tools.show_draft() == ShowResult(version=None)
@@ -648,7 +651,7 @@ async def test_present_draft_emails_the_next_version(store: SqliteStore) -> None
     assert (
         await tools.present_draft(_run_for(make_message())) == "Refused: there is no working draft"
     )
-    await tools.write(_run_for(make_message()), "Write the first draft.")
+    await tools.write("Write the first draft.")
 
     result = await tools.present_draft(_run_for(make_message()))
 
@@ -662,7 +665,7 @@ async def test_present_draft_in_the_email_channel_sends_no_email(store: SqliteSt
     conversation = FakeMailbox()
     tools = _tools(store, conversation=conversation)
     await _consolidated(tools)
-    await tools.write(_run_for(make_message()), "Write the first draft.")
+    await tools.write("Write the first draft.")
 
     result = await tools.present_draft(_run_for(make_message("c01", channel="email")))
 
@@ -682,7 +685,7 @@ async def test_get_newsletter_shows_whether_the_draft_changed(store: SqliteStore
         return summary["draft_changed"]
 
     assert await draft_changed() is False
-    await tools.write(_run_for(make_message()), "Write the first draft.")
+    await tools.write("Write the first draft.")
     assert await draft_changed() is True
     await tools.present_draft(_run_for(make_message()))
     assert await draft_changed() is False
@@ -691,17 +694,19 @@ async def test_get_newsletter_shows_whether_the_draft_changed(store: SqliteStore
     assert await draft_changed() is True
 
 
-async def test_check_returns_every_failure_of_the_working_draft(store: SqliteStore) -> None:
+async def test_judge_runs_the_code_checks_and_returns_every_failure(store: SqliteStore) -> None:
     tools = _tools(store)
     newsletter_id = await _consolidated(tools)
-    assert await tools.check() == "Refused: there is no working draft"
     dashed = DRAFT.content.model_copy(update={"intro": "A strong week \N{EN DASH} again."})
     await store.save_draft(newsletter_id, DRAFT.model_copy(update={"content": dashed}))
 
-    assert await tools.check() == {
-        "failure_count": 1,
-        "failures": [{"check": "dashes", "target": "intro", "detail": "em or en dash"}],
-    }
+    result = await tools.judge()
+
+    assert isinstance(result, dict)
+    assert (result["failure_count"], result["failures"]) == (
+        1,
+        [{"check": "dashes", "target": "intro", "detail": "em or en dash"}],
+    )
 
 
 async def test_judge_stores_its_verdicts_and_returns_what_is_unsupported(
@@ -711,11 +716,13 @@ async def test_judge_stores_its_verdicts_and_returns_what_is_unsupported(
     tools = _tools(store, judge=judge_model(seen))
     newsletter_id = await _consolidated(tools)
     assert await tools.judge() == "Refused: there is no working draft"
-    await tools.write(_run_for(make_message()), "Write the first draft.")
+    await tools.write("Write the first draft.")
 
     result = await tools.judge()
 
     assert result == {
+        "failure_count": 0,
+        "failures": [],
         "judged": 2,
         "unsupported": [
             {
@@ -763,26 +770,12 @@ async def test_judge_reports_an_invalid_response_and_stores_nothing(store: Sqlit
     invalid = '{"unsupported": "Made up"}'
     tools = _tools(store, judge=FunctionModel(reply_with(invalid)))
     newsletter_id = await _consolidated(tools)
-    await tools.write(_run_for(make_message()), "Write the first draft.")
+    await tools.write("Write the first draft.")
 
     assert await tools.judge() == (
         "Failed: judge gave no valid response: the response did not match the output type"
     )
     assert await store.get_verdicts(newsletter_id) is None
-
-
-async def test_write_refuses_a_fourth_call_in_one_run(store: SqliteStore) -> None:
-    tools = _tools(store)
-    await _consolidated(tools)
-    run = _run_for(make_message("r01"))
-    for _ in range(3):
-        assert not isinstance(await tools.write(run, "Revise the draft."), str)
-
-    assert await tools.write(run, "Revise the draft.") == (
-        "Refused: present the draft before revising it again"
-    )
-    # Each message's run has its own count.
-    assert not isinstance(await tools.write(_run_for(make_message("r02")), "Revise."), str)
 
 
 def _run_for(message: ReviewerMessage) -> RunContext[ReviewerMessage]:
@@ -849,7 +842,7 @@ def _call(tool: str, args: dict[str, object] | None = None) -> ModelResponse:
 async def _presented(tools: Tools) -> str:
     """Start a newsletter and present version 1, returning the newsletter ID."""
     newsletter_id = await _consolidated(tools)
-    await tools.write(_run_for(make_message()), "Write the first draft.")
+    await tools.write("Write the first draft.")
     await tools.present_draft(_run_for(make_message()))
     return newsletter_id
 
@@ -915,7 +908,6 @@ async def test_read_tools_still_work_once_the_newsletter_is_closed(store: Sqlite
     assert isinstance(await tools.get_draft(1), dict)
     assert isinstance(await tools.get_draft(), dict)
     assert await tools.show_draft(1) == ShowResult(version=1)
-    assert isinstance(await tools.check(), dict)
 
 
 async def test_action_tools_refuse_once_the_newsletter_is_closed(store: SqliteStore) -> None:
@@ -926,7 +918,7 @@ async def test_action_tools_refuse_once_the_newsletter_is_closed(store: SqliteSt
 
     assert await tools.extract() == refused
     assert await tools.consolidate() == refused
-    assert await tools.write(_run_for(make_message()), "Shorten the intro.") == refused
+    assert await tools.write("Shorten the intro.") == refused
     assert await tools.judge() == refused
     assert await tools.present_draft(_run_for(make_message())) == refused
     assert await tools.approve(_run_for(make_message(text="approve v1")), 1) == refused

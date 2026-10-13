@@ -13,10 +13,10 @@ from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, NamedTuple, Protocol, Self, get_args
+from typing import Any, Literal, NamedTuple, Protocol, Self, get_args
 
 import httpx2
-from pydantic import AwareDatetime, BaseModel, TypeAdapter
+from pydantic import AwareDatetime, BaseModel, Field, TypeAdapter
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import (
     ModelMessage,
@@ -43,7 +43,13 @@ from pulse.agents.sensitivity.agent import SensitivityAgent
 from pulse.agents.writer.agent import WriterAgent, WriterTask
 from pulse.config import Config, load_config
 from pulse.entities.base import Entity, StrictEntity
-from pulse.entities.content import JudgeOutput, WriterOutput, check_content, item_sources
+from pulse.entities.content import (
+    JudgeOutput,
+    UnsupportedText,
+    WriterOutput,
+    check_content,
+    item_sources,
+)
 from pulse.entities.errors import SpecialistFailed
 from pulse.entities.extracts import (
     Consolidation,
@@ -52,8 +58,10 @@ from pulse.entities.extracts import (
     Extraction,
     ExtractorOutput,
     ExtractRecord,
+    Item,
     SensitivityKind,
     SensitivityOutput,
+    SourcedItem,
     with_sources,
 )
 from pulse.entities.mail import ScreenedEmail
@@ -63,6 +71,7 @@ from tests.emails import (
     corpus_email,
     corpus_expectation,
     corpus_messages,
+    corpus_notice,
     graph_corpus_emails,
     screen_email,
 )
@@ -89,6 +98,10 @@ FIRST_DRAFT = "Write the first draft of the newsletter."
 # runs; only a scheduled start has none.
 REQUEST = "Please draft a newsletter."
 
+# The input IDs a live evaluation is limited to, comma separated, when set, so a run can answer
+# only the inputs a question needs.
+INPUTS_VARIABLE = "EVAL_INPUTS"
+
 # The input and sample a request to the gateway belongs to; each evaluated call runs in its own
 # task, so concurrent calls never share it.
 _CALL: contextvars.ContextVar[tuple[str, int]] = contextvars.ContextVar("evaluated_call")
@@ -101,7 +114,8 @@ class Input[T](NamedTuple):
     input_id: str
     label: str
     # For a corpus email, "graph" when Graph returned it and "local" when it was kept out of the
-    # dev inbox; for a later agent, the baselines its input came from.
+    # dev inbox; for a later agent, the baselines its input came from, or "synthetic" when it was
+    # written for the test.
     form: str
     task: T
 
@@ -150,7 +164,8 @@ def consolidator_inputs() -> list[Input[ConsolidatorTask]]:
 def writer_inputs() -> list[Input[WriterTask]]:
     """A first draft a reviewer asked for, from the consolidator baseline's items, with the
     sender names and received times of their corpus emails, and the excluded records, as `write`
-    gives them."""
+    gives them; then the corpus notice's first draft, and the fix of its working draft that the
+    sentences check failed."""
     saved = json.loads(WRITER_INPUT.read_text(encoding="utf-8"))
     consolidation = Consolidation.model_validate(saved["consolidation"])
     emails = [item.task for item in corpus_inputs()]
@@ -163,24 +178,71 @@ def writer_inputs() -> list[Input[WriterTask]]:
         draft=None,
     )
     label = f"first draft of {len(consolidation.items)} items"
-    return [Input("first-draft", label, "baselines", task)]
+    notice = corpus_notice()
+    first = task.model_copy(
+        update={"headline": notice["headline"], "items": [notice_item()], "excluded": []}
+    )
+    fix = first.model_copy(
+        update={
+            "instruction": notice["instruction"],
+            "draft": WriterOutput.model_validate(notice["draft"]),
+        }
+    )
+    return [
+        Input("first-draft", label, "baselines", task),
+        Input("notice-first-draft", "first draft of a dense supplier notice", "synthetic", first),
+        Input("notice-fix", "fix of the notice's three-sentence entry", "synthetic", fix),
+    ]
+
+
+def notice_email() -> ScreenedEmail:
+    """The corpus notice's email, received after every corpus email."""
+    return screen_email(corpus_email(corpus_notice()["message"], len(corpus_messages())))
+
+
+def notice_item() -> SourcedItem:
+    """The corpus notice's item, the only one in its newsletter."""
+    email = notice_email()
+    item = Item(
+        **corpus_notice()["item"],
+        source_message_ids=[email.message_id],
+        item_id="item-1",
+        people=[],
+    )
+    [sourced] = with_sources([item], [email])
+    return sourced
+
+
+def writer_expectations() -> dict[str, ConsolidatorExpectation]:
+    """The items each writer input's draft must hold: the consolidator's expected items for the
+    corpus, and the corpus notice's own."""
+    expected = {"first-draft": consolidator_expectations()["included"]}
+    return expected | {
+        input_id: ConsolidatorExpectation.model_validate(answer)
+        for input_id, answer in corpus_expectation("writer").items()
+    }
 
 
 def judge_inputs() -> list[Input[JudgeTask]]:
-    """Each text with what `judge` gives it: every item for the intro, its own for an entry, and
-    the writer input's feedback."""
-    [written] = writer_inputs()
+    """Each text with what `judge` gives it: every corpus item for the intro, its own for an
+    entry, and the writer input's feedback."""
+    written = writer_inputs()[0]
     items, feedback = written.task.items, written.task.feedback
     inputs = []
     for case in json.loads(JUDGE_INPUT.read_text(encoding="utf-8"))["cases"]:
-        own = [i for i in items if set(i.source_message_ids) == set(case["sources"] or [])]
+        own = [
+            i
+            for i in [*items, notice_item()]
+            if set(i.source_message_ids) == set(case["sources"] or [])
+        ]
         task = JudgeTask(
             part=case["part"],
             text=case["text"],
             items=items if case["part"] == "intro" else own,
             feedback=feedback,
         )
-        form = "planted" if case["id"].startswith("planted") else "baselines"
+        prefix = case["id"].split("-")[0]
+        form = {"planted": "planted", "notice": "synthetic"}.get(prefix, "baselines")
         inputs.append(Input(case["id"], case["text"][:60], form, task))
     return inputs
 
@@ -592,6 +654,7 @@ async def run_live[T, O: BaseModel](
     gives the lines worth reading from one answer."""
     config = load_config(Path("config.yaml"))
     model = config.llm.models[agent]
+    inputs = chosen_inputs(inputs, os.environ.get(INPUTS_VARIABLE))
     recorder = Recorder()
     provider = OpenAIProvider(
         base_url=config.llm.base_url,
@@ -622,6 +685,17 @@ async def run_live[T, O: BaseModel](
         f"{input_tokens} input and {output_tokens} output tokens; results in {path}"
     )
     return answers
+
+
+def chosen_inputs[T](inputs: Sequence[Input[T]], chosen: str | None) -> Sequence[Input[T]]:
+    """The inputs named in `chosen`, comma separated, or every input when it is unset."""
+    if not chosen:
+        return inputs
+    wanted = chosen.split(",")
+    unknown = set(wanted) - {item.input_id for item in inputs}
+    if unknown:
+        raise ValueError(f"no inputs named {sorted(unknown)}")
+    return [item for item in inputs if item.input_id in wanted]
 
 
 def token_totals(answers: Sequence[Answer]) -> tuple[int, int]:
@@ -659,6 +733,10 @@ class Scenario(Entity):
     # Whether Pulse uses the example configuration's scheduled send rule in place of
     # ./config.yaml's.
     scheduled_send: bool = False
+    # When set, the writer stand-in's first draft fails the sentences check and its first fix adds
+    # a detail the judge stand-in finds unsupported; its next fix removes the detail when
+    # "clears", and keeps it when "sticks".
+    fixes: Literal["clears", "sticks"] | None = None
 
 
 class Turn(Entity):
@@ -670,10 +748,12 @@ class Turn(Entity):
 
 class ScenarioExpectation(Scenario, StrictEntity):
     """The orchestrator's right answer to a scenario: tools it must call in this order, with any
-    others between, tools it must not call, and what its reply must and must not say."""
+    others between, tools it must not call, how many times it must call a tool, and what its
+    reply must and must not say."""
 
     calls: tuple[str, ...] = ()
     never: tuple[str, ...] = ()
+    times: dict[str, int] = Field(default_factory=dict)
     reply_has: tuple[str, ...] = ()
     reply_lacks: tuple[str, ...] = ()
 
@@ -716,6 +796,11 @@ def orchestrator_problems(turn: Turn, expected: ScenarioExpectation) -> list[str
     if not all(tool in remaining for tool in expected.calls):
         problems.append(f"called {turn.tools} instead of {list(expected.calls)} in order")
     problems += [f"called {tool}" for tool in expected.never if tool in turn.tools]
+    problems += [
+        f"called {tool} {turn.tools.count(tool)} times instead of {times}"
+        for tool, times in expected.times.items()
+        if turn.tools.count(tool) != times
+    ]
     reply = turn.reply or ""
     problems += [
         f"the reply does not say {text}"
@@ -760,7 +845,7 @@ class OrchestratorScenarios:
                 section_titles=config.section_titles,
                 max_words=config.limits.max_words,
             )
-            tools = Tools(operations, store, *_standin_agents(config))
+            tools = Tools(operations, store, *_standin_agents(config, fixes=scenario.fixes))
             lock = asyncio.Lock()
 
             def orchestrator(model: Model) -> Orchestrator:
@@ -799,19 +884,17 @@ def _scripted_draft() -> Callable[[list[ModelMessage], AgentInfo], Awaitable[Mod
     steps = ["get_newsletter", "start_newsletter", "extract", "consolidate"]
     calls = [ModelResponse(parts=[ToolCallPart(tool, {})]) for tool in steps]
     calls.append(ModelResponse(parts=[ToolCallPart("write", {"instruction": FIRST_DRAFT})]))
-    calls += [
-        ModelResponse(parts=[ToolCallPart(tool, {})])
-        for tool in ("check", "judge", "present_draft")
-    ]
+    calls += [ModelResponse(parts=[ToolCallPart(tool, {})]) for tool in ("judge", "present_draft")]
     reply = text_response("I have drafted the newsletter and sent version 1 to the reviewers.")
     return responses(*calls, reply)
 
 
 def _standin_agents(
-    config: Config,
+    config: Config, *, fixes: Literal["clears", "sticks"] | None = None
 ) -> tuple[ExtractorAgent, SensitivityAgent, ConsolidatorAgent, WriterAgent, JudgeAgent]:
     """The specialist agents, each answering with its baseline: the first-stage records, the
-    consolidator's items, the writer's tested draft, and no unsupported text."""
+    consolidator's items, the writer's tested draft, and no unsupported text, unless `fixes`
+    is set, as Scenario describes."""
     records = _RECORDS.validate_python(
         json.loads(INCLUDED_RECORDS.read_text(encoding="utf-8"))["records"]
         + json.loads(WRITER_INPUT.read_text(encoding="utf-8"))["excluded"]
@@ -829,6 +912,37 @@ def _standin_agents(
     draft = WriterOutput.model_validate(
         json.loads(ORCHESTRATOR_INPUT.read_text(encoding="utf-8"))["draft"]
     )
+    [notice] = [
+        entry for entry in draft.content.entries() if entry.text.startswith("Litware Supplies")
+    ]
+
+    def with_notice(text: str, changes: list[str]) -> WriterOutput:
+        """The tested draft with the supplier notice entry reworded."""
+        entry = notice.model_copy(update={"text": text})
+        sections = [
+            section.model_copy(
+                update={"entries": [entry if e == notice else e for e in section.entries]}
+            )
+            for section in draft.content.sections
+        ]
+        content = draft.content.model_copy(update={"sections": sections})
+        return WriterOutput(content=content, changes=changes, not_applied=[])
+
+    # Three sentences that keep to the item's facts, so only the sentences check fails.
+    long_draft = with_notice(
+        "Litware Supplies will raise the price of its business laptops by 5 per cent. "
+        "The rise starts on 1 November. Orders placed before 31 October will keep the current "
+        "price.",
+        [],
+    )
+    # The fix adds a detail the item's facts do not give, which the judge finds.
+    added = "its first rise this year"
+    fixed = with_notice(
+        "Litware Supplies will raise the price of its business laptops by 5 per cent from "
+        f"1 November, {added}, though orders placed before 31 October will keep the current "
+        "price.",
+        ["Rewrote the Litware Supplies entry in one sentence."],
+    )
 
     async def consolidator(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         given = json.loads(_prompt(messages).split("\n")[1])
@@ -844,9 +958,22 @@ def _standin_agents(
         output = ConsolidatorOutput(headline=consolidation.headline, items=items)
         return text_response(output.model_dump_json())
 
+    # The second fix removes the added detail, when it clears.
+    cleared = WriterOutput(
+        content=draft.content,
+        changes=[f"Removed {added!r} from the Litware Supplies entry."],
+        not_applied=[],
+    )
+
     async def writer(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if "<working_draft>" not in _prompt(messages):
-            return text_response(draft.model_dump_json())
+        prompt = _prompt(messages)
+        if "<working_draft>" not in prompt:
+            return text_response((long_draft if fixes else draft).model_dump_json())
+        if fixes:
+            # The working draft holds the added detail only after the first fix.
+            second = added in prompt.split("<working_draft>")[1]
+            output = cleared if second and fixes == "clears" else fixed
+            return text_response(output.model_dump_json())
         content = draft.content.model_copy(
             update={"intro": "A good week for customers and the team."}
         )
@@ -854,7 +981,11 @@ def _standin_agents(
         return text_response(revised.model_dump_json())
 
     async def judge(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        return text_response(JudgeOutput(unsupported=[]).model_dump_json())
+        unsupported = []
+        if fixes and added in _prompt(messages):
+            reason = "The facts do not say this is Litware Supplies' first price rise this year."
+            unsupported = [UnsupportedText(text=added, reason=reason)]
+        return text_response(JudgeOutput(unsupported=unsupported).model_dump_json())
 
     return (
         ExtractorAgent(extractor_model(extractions), config.categories),

@@ -187,6 +187,12 @@ def corpus_messages() -> list[dict[str, Any]]:
     return messages
 
 
+def corpus_notice() -> dict[str, Any]:
+    """The corpus's dense supplier notice, which only the writer and judge are given."""
+    notice: dict[str, Any] = _corpus()["notice"]
+    return notice
+
+
 def corpus_consolidation(record_ids: Mapping[str, str]) -> ConsolidatorOutput:
     """The corpus's expected consolidation, naming each source email by the record ID the
     consolidator was given for it; `record_ids` maps corpus message IDs to record IDs."""
