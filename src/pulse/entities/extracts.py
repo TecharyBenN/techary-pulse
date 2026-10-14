@@ -84,6 +84,31 @@ class ExtractedNews(News):
     """The facts of the news, one short sentence each."""
 
 
+class DecomposerOutput(StrictEntity):
+    """One line's facts, split so each states one thing."""
+
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+    facts: list[str]
+    """The facts, each stating one thing, one short sentence each."""
+
+
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def number_problems(before: Sequence[str], after: Sequence[str], source: str) -> list[str]:
+    """How splitting `before` into `after` lost or invented a detail: a number of `before` that
+    `after` drops, or a number of `after` that neither `before` nor `source`, the line the facts
+    came from, holds."""
+    given = dict.fromkeys(n for fact in before for n in _NUMBER.findall(fact))
+    split = dict.fromkeys(n for fact in after for n in _NUMBER.findall(fact))
+    known = set(given) | set(_NUMBER.findall(source))
+    problems = ["no facts"] if before and not after else []
+    problems += [f"dropped {n}" for n in given if n not in split]
+    problems += [f"added {n}" for n in split if n not in known]
+    return problems
+
+
 def extracted_news(output: ExtractorOutput) -> ExtractedNews:
     """The extractor's answer with each line's facts joined in line order."""
     ordered = sorted(output.lines, key=lambda line: line.line)

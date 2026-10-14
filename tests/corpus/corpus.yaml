@@ -339,11 +339,11 @@ dense_notices:
     body: |-
       Hi all,
 
-      From 1 May, expense claims over £500 need director approval, and claims under £50 no longer need a receipt. Mileage stays at 45p a mile.
+      From 1 May, expense claims over £500 need director approval, and claims under £50 no longer need a receipt. Mileage stays at 45 pence a mile.
 
       Aisha
     expect:
-      extractor: {category: company_notices, has_facts: true, people: [], mention: ['500', director, '50', receipt, 45p], omit: [Aisha Khan], apart: [['500', '50']]}
+      extractor: {category: company_notices, has_facts: true, people: [], mention: ['500', director, '50', receipt, '45'], omit: [Aisha Khan], apart: [['500', '50']]}
 
 expect:
   consolidator:

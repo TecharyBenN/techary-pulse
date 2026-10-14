@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pydantic_ai.models import Model
 
 from pulse.agents.base import EmailAgent
-from pulse.entities.extracts import ExtractorOutput
+from pulse.entities.extracts import ExtractorOutput, number_problems
 from pulse.entities.mail import ScreenedEmail, message_lines
 
 
@@ -36,6 +36,11 @@ class ExtractorAgent(EmailAgent[ExtractorOutput]):
             return ["give either a category or an exclusion reason"]
         if output.category is not None and output.category not in self._categories:
             return [f"category {output.category} is not a configured category"]
+        facts = [fact for line in output.lines for fact in line.facts]
+        if added := number_problems([], facts, "\n".join(message_lines(task))):
+            return [
+                f"write each number only as the email gives it, adding none: {', '.join(added)}"
+            ]
         return []
 
 

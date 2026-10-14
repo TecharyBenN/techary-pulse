@@ -17,7 +17,9 @@ pytestmark = pytest.mark.anyio
 
 CATEGORIES = {"customer_win": "A new customer has signed.", "shout_out": "A colleague is thanked."}
 EMAIL = make_screened_email(
-    "m01", subject="Signed today", body="Hi all,\n\nWe signed Northwind Retail.\n\nPriya"
+    "m01",
+    subject="Signed today",
+    body="Hi all,\n\nWe signed Northwind Retail on 22 September.\n\nPriya",
 )
 EXTRACTOR = ExtractorAgent(TestModel(), CATEGORIES)
 
@@ -92,7 +94,8 @@ def test_the_message_holds_the_email_without_its_body_and_its_numbered_lines() -
     assert lines == (
         "<lines>\n"
         '[{"line": 0, "text": "Signed today"}, {"line": 1, "text": "Hi all,"}, '
-        '{"line": 2, "text": "We signed Northwind Retail."}, {"line": 3, "text": "Priya"}]\n'
+        '{"line": 2, "text": "We signed Northwind Retail on 22 September."}, '
+        '{"line": 3, "text": "Priya"}]\n'
         "</lines>"
     )
 
@@ -133,3 +136,14 @@ def test_every_prompt_example_answers_line_by_line_for_its_email() -> None:
             "<email>\n" + email_json + "\n</email>\n\n<lines>\n" + lines_json + "\n</lines>"
         )
         assert agent.checks(output, email) == []
+
+
+def test_a_number_the_email_does_not_give_is_a_problem() -> None:
+    lines = message_lines(EMAIL)
+    added = answer_for(make_output(facts=["We signed Northwind Retail on 1 May 2026."]), lines)
+    given = answer_for(make_output(facts=["We signed Northwind Retail."]), lines)
+
+    assert EXTRACTOR.checks(added, EMAIL) == [
+        "write each number only as the email gives it, adding none: added 1, added 2026"
+    ]
+    assert EXTRACTOR.checks(given, EMAIL) == []

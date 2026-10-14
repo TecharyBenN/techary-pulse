@@ -36,6 +36,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pulse.adapters.render import Renderer
 from pulse.adapters.store import SqliteStore
 from pulse.agents.consolidator.agent import ConsolidatorAgent, ConsolidatorTask
+from pulse.agents.decomposer.agent import DecomposerAgent
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.judge.agent import JudgeAgent, JudgeTask
 from pulse.agents.orchestrator.agent import OrchestratorAgent
@@ -61,6 +62,7 @@ from pulse.entities.extracts import (
     ConsolidatorOutput,
     ExtractedNews,
     Extraction,
+    ExtractorOutput,
     ExtractRecord,
     Item,
     SensitivityKind,
@@ -82,7 +84,13 @@ from tests.emails import (
 )
 from tests.fakes.clock import ControlledClock
 from tests.fakes.mailbox import FakeMailbox
-from tests.fakes.models import extractor_model, responses, sensitivity_model, text_response
+from tests.fakes.models import (
+    decomposer_model,
+    extractor_model,
+    responses,
+    sensitivity_model,
+    text_response,
+)
 from tests.messages import OPENED, make_message
 
 EVALUATIONS = Path("evaluations")
@@ -805,17 +813,28 @@ class Answering[T, O](Protocol):
     async def answer(self, task: T) -> O: ...
 
 
+class ExtractionSteps:
+    """The extractor then the decomposer on one email, as `extract` runs them."""
+
+    def __init__(self, extractor: ExtractorAgent, decomposer: DecomposerAgent) -> None:
+        self._extractor = extractor
+        self._decomposer = decomposer
+
+    async def answer(self, task: ScreenedEmail) -> ExtractorOutput:
+        return await self._decomposer.split(await self._extractor.answer(task), task)
+
+
 async def run_live[T, O: BaseModel](
     agent: str,
-    build: Callable[[Model, Config], Answering[T, O]],
+    build: Callable[[Callable[[str], Model], Config], Answering[T, O]],
     inputs: Sequence[Input[T]],
     problems: Callable[[str, O], list[str]],
     details: Callable[[dict[str, Any]], list[str]],
     samples: int,
 ) -> list[Answer]:
-    """Run the agent, built by `build` as main builds it, on every input through the dev gateway,
-    using ./config.yaml and .env. Save the results and print a report for each input; `details`
-    gives the lines worth reading from one answer."""
+    """Run the agent, built by `build` from each agent's model as main builds it, on every input
+    through the dev gateway, using ./config.yaml and .env. Save the results and print a report for
+    each input; `details` gives the lines worth reading from one answer."""
     config = load_config(Path("config.yaml"))
     model = config.llm.models[agent]
     inputs = chosen_inputs(inputs, os.environ.get(INPUTS_VARIABLE))
@@ -825,7 +844,9 @@ async def run_live[T, O: BaseModel](
         api_key=os.environ[config.llm.api_key_env],
         http_client=recorder.client(),
     )
-    evaluated = build(OpenAIChatModel(model, provider=provider), config)
+    evaluated = build(
+        lambda name: OpenAIChatModel(config.llm.models[name], provider=provider), config
+    )
     started = datetime.now(UTC)
     answers = await evaluate(evaluated.answer, problems, inputs, samples, recorder)
     results = Results.of(
@@ -1055,7 +1076,9 @@ def _scripted_draft() -> Callable[[list[ModelMessage], AgentInfo], Awaitable[Mod
 
 def _standin_agents(
     config: Config, *, fixes: Literal["clears", "sticks"] | None = None
-) -> tuple[ExtractorAgent, SensitivityAgent, ConsolidatorAgent, WriterAgent, JudgeAgent]:
+) -> tuple[
+    ExtractorAgent, DecomposerAgent, SensitivityAgent, ConsolidatorAgent, WriterAgent, JudgeAgent
+]:
     """The specialist agents, each answering with its baseline: the first-stage records, the
     consolidator's items, the writer's tested draft, and no unsupported text, unless `fixes`
     is set, as Scenario describes."""
@@ -1153,6 +1176,7 @@ def _standin_agents(
 
     return (
         ExtractorAgent(extractor_model(extractions), config.categories),
+        DecomposerAgent(decomposer_model({})),
         SensitivityAgent(sensitivity_model(extractions)),
         ConsolidatorAgent(FunctionModel(consolidator), config.categories),
         WriterAgent(

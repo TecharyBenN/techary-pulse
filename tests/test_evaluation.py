@@ -544,7 +544,7 @@ INPUTS = [
         "m02",
         "Contoso",
         "local",
-        make_screened_email("m02", body="Tom Evans closed Contoso today."),
+        make_screened_email("m02", body="Tom Evans closed Contoso on 22 September."),
     ),
 ]
 
@@ -593,7 +593,7 @@ async def test_evaluate_scores_every_sample_with_the_exchanges_that_produced_it(
     assert first["m01"] != first["m02"]
     # The body sent is kept once by its hash, so the exact request can be read back.
     [m02_hash] = first["m02"]
-    assert "Tom Evans closed Contoso today." in json.dumps(recorder.requests[m02_hash])
+    assert "Tom Evans closed Contoso on 22 September." in json.dumps(recorder.requests[m02_hash])
     # Headers are never recorded, so neither is the gateway key.
     recorded = json.dumps(recorder.requests) + json.dumps(
         [a.model_dump(mode="json") for a in answers]
@@ -603,7 +603,7 @@ async def test_evaluate_scores_every_sample_with_the_exchanges_that_produced_it(
 
 async def test_evaluate_keeps_the_retry_with_the_answer_it_belongs_to() -> None:
     recorder = Recorder()
-    agent = _gateway(recorder, {"Tom Evans closed Contoso today.": 1})
+    agent = _gateway(recorder, {"Tom Evans closed Contoso on 22 September.": 1})
 
     answers = await evaluate(
         agent.answer,
@@ -637,7 +637,7 @@ async def test_a_wrong_answer_is_recorded_with_its_problems() -> None:
 
 async def test_no_valid_answer_is_recorded_as_a_problem_with_both_exchanges() -> None:
     recorder = Recorder()
-    agent = _gateway(recorder, {"Tom Evans closed Contoso today.": 2})
+    agent = _gateway(recorder, {"Tom Evans closed Contoso on 22 September.": 2})
 
     answers = await evaluate(
         agent.answer,

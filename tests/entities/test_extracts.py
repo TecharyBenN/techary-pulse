@@ -19,6 +19,7 @@ from pulse.entities.extracts import (
     items_up_to_date,
     make_consolidation,
     make_record,
+    number_problems,
     restored,
     sender_names,
     with_sources,
@@ -351,3 +352,41 @@ def test_extracted_news_joins_the_facts_in_line_order() -> None:
             "Onboarding starts in October.",
         ],
     )
+
+
+FACT = "A 15 per cent surcharge applies from 3 October 2026, except for schools (1 December 2026)."
+SPLIT = [
+    "A 15 per cent surcharge applies from 3 October 2026.",
+    "For schools, it applies from 1 December 2026.",
+]
+
+
+def test_split_facts_keeping_every_number_have_no_number_problems() -> None:
+    assert number_problems([FACT], SPLIT, FACT) == []
+    assert number_problems([FACT], [FACT], FACT) == []
+
+
+def test_a_number_dropped_or_added_is_a_problem() -> None:
+    dropped = ["A surcharge applies from 3 October 2026.", "For schools, from 1 December 2026."]
+    added = [*SPLIT, "It ends on 31 March 2027."]
+
+    assert number_problems([FACT], dropped, FACT) == ["dropped 15"]
+    assert number_problems([FACT], added, FACT) == ["added 31", "added 2027"]
+
+
+def test_a_number_from_the_line_may_be_added() -> None:
+    line = "Gen 4 Branch (PA-400s): a 15% surcharge from 3 October 2026."
+    before = ["A 15 per cent surcharge applies to Gen 4 Branch from 3 October 2026."]
+    after = ["A 15 per cent surcharge applies to Gen 4 Branch (PA-400s) from 3 October 2026."]
+
+    assert number_problems(before, after, line) == []
+
+
+def test_no_facts_back_for_facts_given_is_a_problem() -> None:
+    assert number_problems([FACT], [], FACT) == [
+        "no facts",
+        "dropped 15",
+        "dropped 3",
+        "dropped 2026",
+        "dropped 1",
+    ]

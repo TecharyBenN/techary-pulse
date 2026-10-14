@@ -22,6 +22,7 @@ from pulse.adapters.render import Renderer
 from pulse.adapters.store import SqliteStore
 from pulse.adapters.tokens import JwtVerifier
 from pulse.agents.consolidator.agent import ConsolidatorAgent
+from pulse.agents.decomposer.agent import DecomposerAgent
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.judge.agent import JudgeAgent
 from pulse.agents.orchestrator.agent import OrchestratorAgent
@@ -181,6 +182,7 @@ def build_orchestrator(
         operations,
         store,
         ExtractorAgent(model("extractor"), categories),
+        DecomposerAgent(model("decomposer")),
         SensitivityAgent(model("sensitivity")),
         ConsolidatorAgent(model("consolidator"), categories),
         WriterAgent(

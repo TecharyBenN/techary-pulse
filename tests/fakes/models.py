@@ -25,7 +25,7 @@ from pulse.agents.orchestrator.agent import OrchestratorAgent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import ShowResult
 from pulse.entities.conversation import ReviewerMessage
-from pulse.entities.extracts import Extraction, SensitivityOutput
+from pulse.entities.extracts import DecomposerOutput, Extraction, SensitivityOutput
 from pulse.entities.mail import body_lines
 from pulse.entities.store import Store
 from pulse.services.operations import PresentResult
@@ -155,6 +155,21 @@ def extractor_model(outputs: Mapping[str, Extraction]) -> FunctionModel:
         lines = prompt_lines(prompt)
         [body] = [body for body in outputs if body_lines(body) == lines[1:]]
         return text_response(answer_for(outputs[body], lines).model_dump_json())
+
+    return FunctionModel(model)
+
+
+def decomposer_model(splits: Mapping[str, list[str]]) -> FunctionModel:
+    """Return each fact unchanged, unless `splits` gives the facts it splits into."""
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        request = messages[0]
+        assert isinstance(request, ModelRequest)
+        [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
+        assert isinstance(prompt, str)
+        facts = json.loads(prompt.split("\n")[1])
+        split = [part for fact in facts for part in splits.get(fact, [fact])]
+        return text_response(DecomposerOutput(facts=split).model_dump_json())
 
     return FunctionModel(model)
 

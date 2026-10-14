@@ -4,6 +4,7 @@ and a first draft and a fix for a dense supplier notice, through the dev gateway
 evaluations/writer/."""
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -72,9 +73,9 @@ async def test_the_writer_drafts_a_saved_run_first_draft() -> None:
     await run_live("writer", _build, saved_writer_inputs(run), problems, _details, SAMPLES)
 
 
-def _build(model: Model, config: Config) -> WriterAgent:
+def _build(models: Callable[[str], Model], config: Config) -> WriterAgent:
     return WriterAgent(
-        model,
+        models("writer"),
         config.categories,
         config.section_titles,
         config.headline_title,

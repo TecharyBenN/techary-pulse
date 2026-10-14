@@ -3,17 +3,20 @@ dev gateway, using ./config.yaml and .env. Every call is paid; the results, with
 sent, go to evaluations/extractor/."""
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic_ai.models import Model
 
+from pulse.agents.decomposer.agent import DecomposerAgent
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.config import Config
 from pulse.entities.extracts import ExtractorOutput, extracted_news
 from tests.evaluation import (
     STORE_VARIABLE,
+    ExtractionSteps,
     ExtractorExpectation,
     corpus_inputs,
     dense_notice_expectations,
@@ -53,8 +56,11 @@ async def test_the_extractor_reads_a_saved_run_emails() -> None:
     )
 
 
-def _build(model: Model, config: Config) -> ExtractorAgent:
-    return ExtractorAgent(model, config.categories)
+def _build(models: Callable[[str], Model], config: Config) -> ExtractionSteps:
+    return ExtractionSteps(
+        ExtractorAgent(models("extractor"), config.categories),
+        DecomposerAgent(models("decomposer")),
+    )
 
 
 def _details(output: dict[str, Any]) -> list[str]:

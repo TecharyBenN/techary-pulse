@@ -19,7 +19,15 @@ from pulse.entities.errors import PulseError
 from pulse.entities.lifecycle import SendRule
 from pulse.entities.mail import domain_in
 
-AGENT_NAMES = ("orchestrator", "extractor", "sensitivity", "consolidator", "writer", "judge")
+AGENT_NAMES = (
+    "orchestrator",
+    "extractor",
+    "decomposer",
+    "sensitivity",
+    "consolidator",
+    "writer",
+    "judge",
+)
 
 
 class ConfigError(PulseError):

@@ -3,6 +3,7 @@ one rule, through the dev gateway, using ./config.yaml and .env. Every call is p
 with every request sent, go to evaluations/judge/."""
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +37,8 @@ async def test_the_judge_finds_exactly_the_unsupported_texts() -> None:
         for case, answer in corpus_expectation("judge").items()
     }
 
-    def build(model: Model, config: Config) -> JudgeAgent:
-        return JudgeAgent(model)
+    def build(models: Callable[[str], Model], config: Config) -> JudgeAgent:
+        return JudgeAgent(models("judge"))
 
     def problems(case: str, output: JudgeOutput) -> list[str]:
         return judge_problems(output, expected[case])
@@ -55,8 +56,8 @@ async def test_the_judge_rejudges_a_saved_run() -> None:
     drafts = os.environ.get(WRITER_RESULTS_VARIABLE)
     inputs = saved_judge_inputs(run, Path(drafts) if drafts else None)
 
-    def build(model: Model, config: Config) -> JudgeAgent:
-        return JudgeAgent(model)
+    def build(models: Callable[[str], Model], config: Config) -> JudgeAgent:
+        return JudgeAgent(models("judge"))
 
     await run_live("judge", build, inputs, lambda _, __: [], _details, 1 if drafts else SAMPLES)
 

@@ -3,6 +3,7 @@ produced, with and without two restored records, through the dev gateway, using 
 and .env. Every call is paid; the results, with every request sent, go to
 evaluations/consolidator/."""
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -36,8 +37,8 @@ async def test_the_consolidator_merges_the_records_as_expected(input_id: str) ->
         for item in inputs
     }
 
-    def build(model: Model, config: Config) -> ConsolidatorAgent:
-        return ConsolidatorAgent(model, config.categories)
+    def build(models: Callable[[str], Model], config: Config) -> ConsolidatorAgent:
+        return ConsolidatorAgent(models("consolidator"), config.categories)
 
     def problems(input_id: str, output: ConsolidatorOutput) -> list[str]:
         return consolidator_problems(output, sources[input_id], expected[input_id])

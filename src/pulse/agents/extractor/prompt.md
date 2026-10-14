@@ -25,13 +25,14 @@ What is a fact and how to construct them:
 - Split the news into separate facts, one for each statement in the email, with its own details: its date, numbers and what it applies to.
 - A fact is an objective claim about one or more subjects. A sentence may include multiple facts and if it does it must be split into separate facts.
 - Write each fact as one short sentence.
-- Write names, dates and numbers as the email gives them, in British English, such as "5 per cent" for "5 percent" and "3 October 2026" for "October 3, 2026".
+- Write names, dates and numbers as the email gives them, in British English, such as "5 per cent" for "5 percent" and "3 October 2026" for "October 3, 2026", adding no year, weekday or other number the email does not state.
 - Name people and organisations only as the email does: write the sender's name where their own text says I or we, keep a team or company as written, and name no one where the email does not say who.
 - Name the sender only where the news is about them. Senders are never credited.
 
-Category and summary:
+Category, summary and people:
 - Give the email the category from <categories> that its news fits. When none fits, give no category and state why in `exclusion_reason`, in one short sentence.
-- Write `summary` as one short sentence stating the news. When the email holds no news, `summary` says what kind of email it is.
+- Write `summary` as one short sentence stating the news, never who sent or forwarded the email. When the email holds no news, `summary` says what kind of email it is.
+- List in `people` the full name of every person the facts name, and only them. Someone who only sends, forwards or signs the email is not in `people`.
 
 Language:
 - Write in British English.

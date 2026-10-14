@@ -10,6 +10,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.toolsets import FunctionToolset
 
 from pulse.agents.consolidator.agent import ConsolidatorAgent, ConsolidatorTask
+from pulse.agents.decomposer.agent import DecomposerAgent
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.judge.agent import JudgeAgent, JudgeTask
 from pulse.agents.sensitivity.agent import SensitivityAgent
@@ -22,6 +23,7 @@ from pulse.entities.extracts import (
     Consolidation,
     ExclusionReason,
     Extraction,
+    ExtractorOutput,
     ExtractRecord,
     SourcedItem,
     consolidation_input,
@@ -146,6 +148,7 @@ class Tools:
         operations: Operations,
         store: Store,
         extractor: ExtractorAgent,
+        decomposer: DecomposerAgent,
         sensitivity: SensitivityAgent,
         consolidator: ConsolidatorAgent,
         writer: WriterAgent,
@@ -154,6 +157,7 @@ class Tools:
         self._operations = operations
         self._store = store
         self._extractor = extractor
+        self._decomposer = decomposer
         self._sensitivity = sensitivity
         self._consolidator = consolidator
         self._writer = writer
@@ -236,7 +240,7 @@ class Tools:
         # Sensitivity is judged in its own call, so a flag is never dropped while the extractor
         # works on the news.
         extracted, flagged = await asyncio.gather(
-            self._extractor.answer(email), self._sensitivity.answer(email), return_exceptions=True
+            self._extracted(email), self._sensitivity.answer(email), return_exceptions=True
         )
         if isinstance(extracted, BaseException) or isinstance(flagged, BaseException):
             for result in (extracted, flagged):
@@ -249,6 +253,10 @@ class Tools:
         return ExtractOutcome(
             message_id=message_id, exclusion=record.exclusion, excluded_id=record.excluded_id
         )
+
+    async def _extracted(self, email: ScreenedEmail) -> ExtractorOutput:
+        """The extractor's answer with each line's facts split by the decomposer."""
+        return await self._decomposer.split(await self._extractor.answer(email), email)
 
     @_reported
     async def restore(

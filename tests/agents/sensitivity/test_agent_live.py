@@ -2,6 +2,7 @@
 ./config.yaml and .env. Every call is paid; the results, with every request sent, go to
 evaluations/sensitivity/."""
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -26,8 +27,8 @@ SAMPLES = 5
 async def test_the_sensitivity_agent_gives_the_expected_flags_for_every_corpus_email() -> None:
     expected = expectations("sensitivity", SensitivityExpectation)
 
-    def build(model: Model, config: Config) -> SensitivityAgent:
-        return SensitivityAgent(model)
+    def build(models: Callable[[str], Model], config: Config) -> SensitivityAgent:
+        return SensitivityAgent(models("sensitivity"))
 
     def problems(corpus_id: str, output: SensitivityOutput) -> list[str]:
         return sensitivity_problems(output, expected[corpus_id])

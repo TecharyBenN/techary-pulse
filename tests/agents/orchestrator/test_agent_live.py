@@ -27,7 +27,12 @@ async def test_the_orchestrator_handles_every_scenario_as_expected() -> None:
         return orchestrator_problems(turn, expected[scenario])
 
     answers = await run_live(
-        "orchestrator", OrchestratorScenarios, orchestrator_inputs(), problems, _details, SAMPLES
+        "orchestrator",
+        lambda models, config: OrchestratorScenarios(models("orchestrator"), config),
+        orchestrator_inputs(),
+        problems,
+        _details,
+        SAMPLES,
     )
 
     assert all(not answer.problems for answer in answers)

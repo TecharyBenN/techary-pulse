@@ -21,6 +21,7 @@ from pydantic_ai.usage import RunUsage
 
 from pulse.adapters.store import SqliteStore
 from pulse.agents.consolidator.agent import ConsolidatorAgent
+from pulse.agents.decomposer.agent import DecomposerAgent
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.judge.agent import JudgeAgent
 from pulse.agents.orchestrator.agent import OrchestratorAgent
@@ -52,6 +53,7 @@ from tests.emails import (
 from tests.fakes.mailbox import FakeMailbox
 from tests.fakes.models import (
     corpus_consolidator_model,
+    decomposer_model,
     extractor_model,
     gateway_error,
     no_state,
@@ -75,8 +77,9 @@ INBOX = [
 # The extractor and sensitivity stand-ins find each email by its body.
 OUTPUTS = {
     INBOX[0].body: make_output(),
-    INBOX[1].body: make_output(category=None),
-    INBOX[2].body: make_output(category=None),
+    # Every number in an extractor's facts must be in its email, so these facts give none.
+    INBOX[1].body: make_output(category=None, facts=["The team has nothing new this week."]),
+    INBOX[2].body: make_output(category=None, facts=["A colleague said thank you."]),
 }
 CONSOLIDATOR_OUTPUT = make_consolidator_output(make_consolidator_item("record-1"))
 CONSOLIDATION = make_consolidation(make_item(source_message_ids=["m01"]))
@@ -119,11 +122,13 @@ def _tools(
     writer: FunctionModel | None = None,
     conversation: FakeMailbox | None = None,
     judge: FunctionModel | None = None,
+    splits: Mapping[str, list[str]] | None = None,
 ) -> Tools:
     return Tools(
         make_operations(store, FakeMailbox(INBOX), conversation),
         store,
         ExtractorAgent(extractor_model(outputs), CATEGORIES),
+        DecomposerAgent(decomposer_model(splits or {})),
         SensitivityAgent(sensitivity or sensitivity_model(outputs)),
         ConsolidatorAgent(
             consolidator or FunctionModel(reply_with(CONSOLIDATOR_OUTPUT.model_dump_json())),
@@ -312,6 +317,21 @@ async def test_extract_stores_each_record_with_its_exclusion(store: SqliteStore)
     assert {r.message_id for r in records} == {"m01", "m02", "m03"}
 
 
+async def test_extract_stores_each_record_with_its_facts_split_by_the_decomposer(
+    store: SqliteStore,
+) -> None:
+    [fact] = OUTPUTS[INBOX[0].body].facts
+    split = [fact, "Onboarding starts in October."]
+    tools = _tools(store, splits={fact: split})
+    started = await tools.start_newsletter()
+    assert not isinstance(started, str)
+
+    await tools.extract()
+
+    records = {r.message_id: r for r in await store.list_extract_records(started.newsletter_id)}
+    assert records["m01"].facts == split
+
+
 async def test_extract_takes_only_emails_that_passed_and_have_no_record(
     store: SqliteStore,
 ) -> None:
@@ -417,6 +437,7 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
         make_operations(store, FakeMailbox(inbox)),
         store,
         ExtractorAgent(extractor_model(outputs), categories),
+        DecomposerAgent(decomposer_model({})),
         SensitivityAgent(sensitivity_model(outputs)),
         ConsolidatorAgent(consolidator, categories),
         WriterAgent(
@@ -750,7 +771,7 @@ async def test_judge_gives_an_entry_only_its_own_item(store: SqliteStore) -> Non
             ).model_dump_json()
         )
     )
-    outputs = OUTPUTS | {INBOX[1].body: make_output()}
+    outputs = OUTPUTS | {INBOX[1].body: make_output(facts=["Contoso renewed its contract."])}
     tools = _tools(
         store,
         outputs,
