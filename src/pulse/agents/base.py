@@ -144,8 +144,14 @@ class SpecialistAgent[T, O](PulseAgent[T, O]):
     def _categories_instruction(cls, categories: Mapping[str, str]) -> str:
         """`categories` maps each configured category to its definition, from configuration, so
         it may sit in the instructions."""
-        listed = cls._listed(categories)
-        return f"The configured categories are:\n<categories>\n{listed}\n</categories>"
+        return cls._configured(
+            "The configured categories are:", "categories", cls._listed(categories)
+        )
+
+    @staticmethod
+    def _configured(label: str, tag: str, value: str) -> str:
+        """A value from configuration in a tagged block, so the rules can name it by its tag."""
+        return f"{label}\n<{tag}>\n{value}\n</{tag}>"
 
 
 class EmailAgent[O](SpecialistAgent[ScreenedEmail, O]):

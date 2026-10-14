@@ -28,8 +28,6 @@ from pulse.entities.content import (
     Section,
     UnsupportedText,
     WriterOutput,
-    check_content,
-    item_sources,
 )
 from pulse.entities.extracts import (
     ConsolidatorItem,
@@ -72,7 +70,6 @@ from tests.evaluation import (
     extractor_problems,
     judge_inputs,
     judge_problems,
-    notice_email,
     orchestrator_expectations,
     orchestrator_inputs,
     orchestrator_problems,
@@ -449,6 +446,15 @@ def test_pulse_draft_check_failures_and_dropped_items_are_problems() -> None:
     ]
 
 
+def test_an_entry_over_the_sentence_limit_is_not_a_problem() -> None:
+    # The orchestrator's fix loop shortens a long entry, so a first draft's length is no defect.
+    long = NORTHWIND.model_copy(
+        update={"text": "Priya Shah and Tom Evans signed Northwind Retail. " * 6}
+    )
+
+    assert _writer_problems(_draft([long], [THANKS])) == []
+
+
 def test_the_writer_input_holds_every_expected_item_once() -> None:
     item = writer_inputs()[0]
     sources = sorted(sorted(i.source_message_ids) for i in item.task.items)
@@ -464,20 +470,6 @@ def test_the_writer_input_holds_every_expected_item_once() -> None:
 
 def test_every_writer_input_has_an_expectation() -> None:
     assert [i.input_id for i in writer_inputs()] == list(writer_expectations())
-
-
-def test_the_notice_is_drafted_then_its_entry_fixed_after_the_sentences_check_failed() -> None:
-    config = load_config(Path("config/config.example.yaml"))
-    _, first, fix = writer_inputs()
-
-    assert first.task.draft is None
-    assert [i.source_message_ids for i in first.task.items] == [["n01"]]
-    assert fix.task.items == first.task.items
-    assert fix.task.draft is not None
-    content = fix.task.draft.content
-    sources = item_sources(content, fix.task.items, [notice_email()])
-    failures = check_content(content, sources, [], config.categories, config.limits.max_words)
-    assert [(f.check, f.target) for f in failures] == [("sentences", "item-1")]
 
 
 def _completion(content: str) -> dict[str, object]:

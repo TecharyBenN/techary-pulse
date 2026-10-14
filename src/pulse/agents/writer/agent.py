@@ -56,10 +56,15 @@ class WriterAgent(SpecialistAgent[WriterTask, WriterOutput]):
             # These come from configuration, so they may sit in the instructions.
             instructions=[
                 self._categories_instruction(categories),
-                f"Unless asked otherwise, use these sections, in this order, with these titles:\n"
-                f"{self._listed(section_titles)}",
-                f"Unless asked otherwise, the headline title is: {headline_title}",
-                f"The newsletter must be under {max_words} words.",
+                self._configured(
+                    "The default sections, in order, with their titles:",
+                    "sections",
+                    self._listed(section_titles),
+                ),
+                self._configured("The default headline title:", "headline_title", headline_title),
+                self._configured(
+                    "The most words the newsletter may have:", "max_words", str(max_words)
+                ),
             ],
         )
 

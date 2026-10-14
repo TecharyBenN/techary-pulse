@@ -202,6 +202,10 @@ def test_name_from_feedback_passes() -> None:
     assert _check(content, feedback=["Ann Lee helped too"]) == []
 
 
+# Three sentences before each text, so the cases test the boundary at the limit of five.
+_THREE = "Priya Shah signed. Tom Evans helped. Ann Lee watched. "
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -211,8 +215,8 @@ def test_name_from_feedback_passes() -> None:
         "Priya Shah signed Northwind.com today. It went well.",
     ],
 )
-def test_two_sentences_pass(text: str) -> None:
-    assert _check(_entry_one(text)) == []
+def test_five_sentences_pass(text: str) -> None:
+    assert _check(_entry_one(_THREE + text)) == []
 
 
 @pytest.mark.parametrize(
@@ -223,12 +227,12 @@ def test_two_sentences_pass(text: str) -> None:
         "Priya Shah signed, e.g. the deal. It went well.",
     ],
 )
-def test_three_sentences_fail(text: str) -> None:
-    failures = _check(_entry_one(text))
+def test_six_sentences_fail(text: str) -> None:
+    failures = _check(_entry_one(_THREE + text))
 
     assert _checks(failures) == [("sentences", "item-1")]
     # The limit is in the detail, so whoever fixes the entry knows the target.
-    assert [failure.detail for failure in failures] == ["3 sentences, limit 2"]
+    assert [failure.detail for failure in failures] == ["6 sentences, limit 5"]
 
 
 def test_an_entry_need_not_name_its_sender() -> None:

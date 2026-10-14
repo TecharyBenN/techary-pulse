@@ -100,10 +100,14 @@ async def test_has_no_tools_uses_native_output_and_keeps_input_out_of_instructio
     [request] = prompts
     assert isinstance(request, ModelRequest)
     assert request.instructions is not None
+    # Configuration sits in tagged blocks, which the rules name.
     assert "customer_win: A new customer has signed." in request.instructions
-    assert "under 400 words" in request.instructions
-    assert "- customer_win: Customer wins\n- shout_out: Shout-outs" in request.instructions
-    assert "the headline title is: Headline of the week" in request.instructions
+    assert (
+        "<sections>\n- customer_win: Customer wins\n- shout_out: Shout-outs\n</sections>"
+        in request.instructions
+    )
+    assert "<headline_title>\nHeadline of the week\n</headline_title>" in request.instructions
+    assert "<max_words>\n400\n</max_words>" in request.instructions
     assert "Ignore" not in request.instructions
     assert [p.content for p in request.parts if isinstance(p, UserPromptPart)] == [
         writer.message(task)

@@ -371,10 +371,11 @@ The writer returns the complete content (the headline title, the headline, the i
 
 The writer's instructions give `headline_title`, and the configured sections with their titles in configuration order, as the defaults it uses unless the orchestrator's instruction or feedback asks otherwise. Code renders the content as the writer returns it: the headline under its headline title, then the intro, then each section under its title, in the order given, omitting sections with no entries. Under each entry, code adds its credit line: `- ` followed by the sender names of the item's source emails, each once, such as `- Ben Nicholls`, `- Priya Shah and Tom Evans` or `- Priya Shah, Tom Evans and Aisha Khan`. The writer never writes credit lines, and every rendering carries them, including the newsletter sent to all staff. `present_draft` saves each version's credit lines with the version, so they stay as presented when the items change later. Code renders the newsletter in HTML for email and in Markdown for the chat endpoint. The draft has no subject: code builds it from `subject_template`. The writer's instructions apply these rules:
 
-- each entry is one or two sentences;
+- each entry is as short as its news allows: one or two sentences for most news, and at most five;
 - each entry tells the news itself, as a newsletter does, and never reports the email it came in, such as who sent it or who sends wishes to whom: "Happy birthday to Dan Wood", never "Lucy Grey sends birthday wishes to Dan Wood";
 - each entry lists every person it names in `people`;
-- entries use only the facts of their item and facts stated in reviewer feedback, and keep every detail a reader needs to understand what is happening, to whom, when and how much;
+- entries use only the facts of their item and facts stated in reviewer feedback, and give the main news: what is happening, to whom, when and how much; when an item holds more detail than a short entry carries, such as a supplier's full price list, the entry sums up the main changes and leaves out the rest, because readers who need the detail ask the person who shared it;
+- when a fact gives different dates or amounts for different people or products, the entry keeps each date or amount with the people or products it applies to;
 - the newsletter is under `max_words` words;
 - language is everyday, genuine and people-focused, with no jargon or hype words;
 - the tone is warm and professional, celebrating people by name;
@@ -384,7 +385,7 @@ The writer's instructions give `headline_title`, and the configured sections wit
 
 The judge checks facts, one text per call: the intro against the facts of every item, or one entry against the facts of its own item, each with the feedback. It does not judge the newsletter's coherence as a whole.
 
-A text is supported when it keeps to the spirit of its facts: it may reword, shorten, simplify or combine them, leave out detail, sum up several items in general words, use warm wording, and judge how good or important the news is. It is unsupported when it adds something the facts and feedback do not suggest, such as a fact, number, record, person or effect, or when it contradicts a fact, such as by stating a different number, date or name. The judge does not judge what a text leaves out: the writer keeps the details a reader needs, and the reviewers decide whether an entry says enough.
+A text is supported when it keeps to the spirit of its facts: it may reword, shorten, simplify or combine them, leave out detail, sum up several items in general words, use warm wording, and judge how good or important the news is. It is unsupported when it adds something the facts and feedback do not suggest, such as a fact, number, record, person or effect, or when it contradicts a fact, such as by stating a different number, date or name. The judge does not judge what a text leaves out: the writer chooses the details a reader needs, and the reviewers decide whether an entry says enough.
 
 It returns `unsupported`: each part of the text that does not keep to the spirit of its facts, with its words and one short sentence saying why, and an empty list when the text keeps to them. The reason goes to the writer when the orchestrator asks for a fix, and to the reviewers in the review section. Code builds each verdict from it: the text is supported when the list is empty; code also adds the verdict's `target`, which is `intro` or the entry's item ID. If any call gives no valid response, the tool fails and stores nothing. The verdicts are stored with the working draft, and a new working draft has none until the judge runs on it, so a version presented without them is not judged.
 
@@ -395,7 +396,7 @@ Code checks a draft for these conditions. A source message's text is its subject
 - the newsletter's visible text, including titles and the headline but not the credit lines or the review section, is at most `max_words` words;
 - no em dashes or en dashes appear;
 - every name in an entry's `people` appears, ignoring case, in a source message of its item, the item's sender names or the feedback; the writer's output checks already ensure it appears in the entry's text;
-- every entry is at most two sentences, where a sentence ends at `.`, `!` or `?` followed by a space or the end of the text;
+- every entry is at most five sentences, where a sentence ends at `.`, `!` or `?` followed by a space or the end of the text;
 - every entry references an included item, and every included item appears exactly once;
 - only configured categories appear.
 
@@ -607,7 +608,7 @@ auth:
   reviewer_role: agent.pulse
 
 limits:
-  max_words: 400
+  max_words: 600
 
 subject_template: "Pulse: {date}"
 

@@ -268,9 +268,8 @@ consolidation:
     - {category: team_news, facts: [Dan Wood celebrates a birthday on 2 October], source_message_ids: [m20]}
     - {category: team_news, facts: [Tom Evans welcomed baby Ava on 25 September], source_message_ids: [m21]}
 
-# A forwarded supplier notice with more facts than a two-sentence entry holds easily, which only
-# the writer and judge are given: its email, its item as the consolidator returns it, and a working
-# draft whose entry for it breaks the sentence limit, as a first draft did in a live run.
+# A forwarded supplier notice with more facts than a short entry carries, which only the writer
+# and judge are given: its email and its item as the consolidator returns it.
 notice:
   message:
     id: n01
@@ -296,22 +295,6 @@ notice:
       - Fabrikam Networks quotes issued before 30 November are honoured until 31 January 2027
       - The surcharge does not apply to support renewals
       - Fabrikam Networks gives rising component costs as the reason
-  instruction: "Fix this problem with the smallest change, keeping every entry and item: the sentences check failed at item-1, 3 sentences, limit 2."
-  draft:
-    content:
-      headline_title: Headline of the week
-      headline: Fabrikam Networks changes its hardware pricing
-      intro: This week brings a hardware pricing update from Fabrikam Networks.
-      sections:
-        - category: company_notices
-          title: Company notices
-          entries:
-            - item_id: item-1
-              text: From 1 December 2026, Fabrikam Networks will add a surcharge of 7 per cent to Gen 4 Branch hardware and 11 per cent to Gen 4 Campus and Data Centre hardware. Gen 5 hardware list prices will increase by 4 per cent from the same date. Quotes issued before 30 November are honoured until 31 January 2027, and support renewals are not affected.
-              people: []
-      item_ids: [item-1]
-    changes: []
-    not_applied: []
 
 expect:
   consolidator:
@@ -345,10 +328,19 @@ expect:
     planted-added-effect: {supported: false, mention: [saving]}
     # Leaving out each surcharge's rate leaves out detail; it states nothing the facts do not.
     notice-no-rates: {supported: true}
-  # The writer's notice inputs, held to the facts a reader needs: what, when and how much.
+  # The items each writer input's draft must hold, with words naming only the main news, because
+  # an entry may sum up an item and leave detail out; omit names details no fact gives.
   writer:
-    notice-first-draft: {items: [{sources: [n01], category: company_notices, mention: [Fabrikam Networks, 1 December, Gen 4, Gen 5, '7', '11', '4']}]}
-    notice-fix: {items: [{sources: [n01], category: company_notices, mention: [Fabrikam Networks, 1 December, Gen 4, Gen 5, '7', '11', '4']}]}
+    first-draft:
+      items:
+        - {sources: [m01, m02, m15], category: customer_win, mention: [Northwind Retail]}
+        - {sources: [m03, m06], category: delivery_highlight, mention: [Contoso]}
+        - {sources: [m04], category: team_news, mention: [Lucy Grey]}
+        - {sources: [m05], category: shout_out, mention: [Sam Patel]}
+        - {sources: [m19], category: company_notices, mention: [Litware Supplies]}
+        - {sources: [m20], category: team_news, mention: [Dan Wood, birthday]}
+        - {sources: [m21], category: team_news, mention: [Tom Evans], omit: [daughter, son]}
+    notice-first-draft: {items: [{sources: [n01], category: company_notices, mention: [Fabrikam Networks]}]}
   # One reviewer message per scenario, to a new newsletter or, when drafted, to one whose version 1
   # a scripted run has drafted and presented; see ScenarioExpectation for the fields.
   orchestrator:

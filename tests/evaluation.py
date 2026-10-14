@@ -24,6 +24,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.models import Model
@@ -44,8 +45,10 @@ from pulse.agents.writer.agent import WriterAgent, WriterTask
 from pulse.config import Config, load_config
 from pulse.entities.base import Entity, StrictEntity
 from pulse.entities.content import (
+    Content,
     JudgeOutput,
     UnsupportedText,
+    Version,
     WriterOutput,
     check_content,
     item_sources,
@@ -97,6 +100,12 @@ FIRST_DRAFT = "Write the first draft of the newsletter."
 # A reviewer's request for the newsletter, which the run records as feedback before the writer
 # runs; only a scheduled start has none.
 REQUEST = "Please draft a newsletter."
+
+# A saved run's store, which a live evaluation takes its inputs from in place of the corpus, so
+# an agent can be rerun on exactly what a run gave it. Its content stays outside the repository.
+STORE_VARIABLE = "EVAL_STORE"
+# A writer results file whose drafts the judge is given, with a saved run's items.
+WRITER_RESULTS_VARIABLE = "EVAL_WRITER_RESULTS"
 
 # The input IDs a live evaluation is limited to, comma separated, when set, so a run can answer
 # only the inputs a question needs.
@@ -164,8 +173,7 @@ def consolidator_inputs() -> list[Input[ConsolidatorTask]]:
 def writer_inputs() -> list[Input[WriterTask]]:
     """A first draft a reviewer asked for, from the consolidator baseline's items, with the
     sender names and received times of their corpus emails, and the excluded records, as `write`
-    gives them; then the corpus notice's first draft, and the fix of its working draft that the
-    sentences check failed."""
+    gives them; then the corpus notice's first draft."""
     saved = json.loads(WRITER_INPUT.read_text(encoding="utf-8"))
     consolidation = Consolidation.model_validate(saved["consolidation"])
     emails = [item.task for item in corpus_inputs()]
@@ -182,16 +190,97 @@ def writer_inputs() -> list[Input[WriterTask]]:
     first = task.model_copy(
         update={"headline": notice["headline"], "items": [notice_item()], "excluded": []}
     )
-    fix = first.model_copy(
-        update={
-            "instruction": notice["instruction"],
-            "draft": WriterOutput.model_validate(notice["draft"]),
-        }
-    )
     return [
         Input("first-draft", label, "baselines", task),
         Input("notice-first-draft", "first draft of a dense supplier notice", "synthetic", first),
-        Input("notice-fix", "fix of the notice's three-sentence entry", "synthetic", fix),
+    ]
+
+
+class SavedRun(NamedTuple):
+    """What a saved run's writer and judge were given for its first draft, and the version 1 it
+    presented."""
+
+    emails: list[ScreenedEmail]
+    task: WriterTask
+    version: Version
+
+
+async def saved_run(path: Path) -> SavedRun:
+    """Rebuild the first-draft writer task from a saved run's store as `write` built it: the
+    items with their sources, the excluded records, and the feedback up to the message whose run
+    presented version 1. Feedback is taken in the order it was recorded, as test messages can
+    share a received time."""
+    store = SqliteStore(path)
+    newsletter = await store.get_latest_newsletter()
+    assert newsletter is not None, "the store holds no newsletter"
+    newsletter_id = newsletter.newsletter_id
+    consolidation = await store.get_items(newsletter_id)
+    version = await store.get_version(newsletter_id, 1)
+    assert consolidation is not None and version is not None, "the run presented no version"
+    emails = await store.list_screened_emails(newsletter_id)
+    records = await store.list_extract_records(newsletter_id)
+    feedback = await store.list_feedback(newsletter_id)
+    [presenting] = [
+        row.message_id
+        for row in await store.load_history(newsletter_id)
+        for step in ModelMessagesTypeAdapter.validate_json(row.data)
+        if isinstance(step, ModelRequest)
+        for part in step.parts
+        if isinstance(part, ToolReturnPart)
+        and part.tool_name == "present_draft"
+        and part.model_response_object().get("version") == 1
+    ]
+    ids = [message.message_id for message in feedback]
+    task = WriterTask(
+        headline=consolidation.headline,
+        items=with_sources(consolidation.items, emails),
+        excluded=[record for record in records if record.exclusion is not None],
+        feedback=feedback[: ids.index(presenting) + 1],
+        instruction=FIRST_DRAFT,
+        draft=None,
+    )
+    return SavedRun(emails, task, version)
+
+
+def saved_writer_inputs(run: SavedRun) -> list[Input[WriterTask]]:
+    return [
+        Input("saved-first-draft", f"first draft of {len(run.task.items)} items", "saved", run.task)
+    ]
+
+
+def saved_judge_inputs(run: SavedRun, writer_results: Path | None) -> list[Input[JudgeTask]]:
+    """Each text version 1's judge found unsupported, with what `judge` gave it; or, given
+    `writer_results`, the same parts of each draft in it."""
+    by_id = {item.item_id: item for item in run.task.items}
+    assert run.version.verdicts is not None, "version 1 was not judged"
+    targets = [verdict.target for verdict in run.version.verdicts if not verdict.supported]
+
+    def task(target: str, content: Content) -> JudgeTask:
+        if target == "intro":
+            return JudgeTask(
+                part="intro", text=content.intro, items=run.task.items, feedback=run.task.feedback
+            )
+        [entry] = [entry for entry in content.entries() if entry.item_id == target]
+        return JudgeTask(
+            part="entry", text=entry.text, items=[by_id[target]], feedback=run.task.feedback
+        )
+
+    if writer_results is None:
+        return [
+            Input(f"version-1-{target}", target, "saved", task(target, run.version.content))
+            for target in targets
+        ]
+    saved = json.loads(writer_results.read_text(encoding="utf-8"))
+    return [
+        Input(
+            f"draft-{answer['sample']}-{target}",
+            target,
+            "saved",
+            task(target, WriterOutput.model_validate(answer["output"]).content),
+        )
+        for answer in saved["answers"]
+        if answer["output"] is not None
+        for target in targets
     ]
 
 
@@ -214,10 +303,8 @@ def notice_item() -> SourcedItem:
 
 
 def writer_expectations() -> dict[str, ConsolidatorExpectation]:
-    """The items each writer input's draft must hold: the consolidator's expected items for the
-    corpus, and the corpus notice's own."""
-    expected = {"first-draft": consolidator_expectations()["included"]}
-    return expected | {
+    """The items each writer input's draft must hold, by input ID."""
+    return {
         input_id: ConsolidatorExpectation.model_validate(answer)
         for input_id, answer in corpus_expectation("writer").items()
     }
@@ -398,14 +485,17 @@ def writer_problems(
     max_words: int,
 ) -> list[str]:
     """How the draft departs from the expected one; empty when it is right. Pulse's own draft
-    checks come first; then, for each expected item, its entry, its section, the facts it must
-    keep and any sender it names who only shared it."""
+    checks, except the sentence limit, come first; then, for each expected item, its entry, its
+    section, the facts it must keep and any sender it names who only shared it."""
     content = output.content
     sources = item_sources(content, task.items, emails)
     feedback = [message.text for message in task.feedback]
+    # The orchestrator's fix loop shortens an entry over the sentence limit, so a first draft's
+    # length is not scored; every other check failure is.
     problems = [
         f"{failure.check} check failed at {failure.target or 'the whole draft'}: {failure.detail}"
         for failure in check_content(content, sources, feedback, categories, max_words)
+        if failure.check != "sentences"
     ]
     placed = {
         entry.item_id: (section.category, entry)
@@ -928,11 +1018,11 @@ def _standin_agents(
         content = draft.content.model_copy(update={"sections": sections})
         return WriterOutput(content=content, changes=changes, not_applied=[])
 
-    # Three sentences that keep to the item's facts, so only the sentences check fails.
+    # Six sentences that keep to the item's facts, so only the sentences check fails.
     long_draft = with_notice(
-        "Litware Supplies will raise the price of its business laptops by 5 per cent. "
-        "The rise starts on 1 November. Orders placed before 31 October will keep the current "
-        "price.",
+        "Litware Supplies will raise the price of its business laptops. The rise is 5 per cent. "
+        "It starts on 1 November. It covers business laptops. Orders placed before 31 October "
+        "will keep the current price. Those orders are not affected by the rise.",
         [],
     )
     # The fix adds a detail the item's facts do not give, which the judge finds.

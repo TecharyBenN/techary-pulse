@@ -59,7 +59,7 @@ auth:
   reviewer_role: agent.pulse
 
 limits:
-  max_words: 400
+  max_words: 600
 
 subject_template: "Pulse: {date}"
 

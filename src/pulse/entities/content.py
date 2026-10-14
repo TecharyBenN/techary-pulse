@@ -18,7 +18,7 @@ CheckName = Literal["word_count", "dashes", "people", "sentences", "items", "cat
 
 _DASHES = ("\N{EN DASH}", "\N{EM DASH}")
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
-_MAX_SENTENCES = 2
+_MAX_SENTENCES = 5
 
 # The sensitivity flags of each flagged entry, by the entry's item ID.
 EntryFlags = dict[str, list[Sensitivity]]
@@ -36,7 +36,7 @@ class Entry(StrictEntity):
     """The ID of the item the entry is written from."""
 
     text: str
-    """The entry's text, one or two sentences."""
+    """The entry's text."""
 
     people: list[str]
     """Only the names that appear in this entry's text."""
