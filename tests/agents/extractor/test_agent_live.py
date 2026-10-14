@@ -1,5 +1,6 @@
-"""Evaluates the extractor on its own on the corpus, through the dev gateway, using ./config.yaml
-and .env. Every call is paid; the results, with every request sent, go to evaluations/extractor/."""
+"""Evaluates the extractor on its own on the corpus and the made-up dense notices, through the
+dev gateway, using ./config.yaml and .env. Every call is paid; the results, with every request
+sent, go to evaluations/extractor/."""
 
 import os
 from pathlib import Path
@@ -15,6 +16,8 @@ from tests.evaluation import (
     STORE_VARIABLE,
     ExtractorExpectation,
     corpus_inputs,
+    dense_notice_expectations,
+    dense_notice_inputs,
     expectations,
     extractor_problems,
     run_live,
@@ -29,12 +32,13 @@ SAMPLES = 5
 
 @pytest.mark.skipif(STORE_VARIABLE in os.environ, reason="a saved run's store is given")
 async def test_the_extractor_gives_the_expected_answer_for_every_corpus_email() -> None:
-    expected = expectations("extractor", ExtractorExpectation)
+    expected = expectations("extractor", ExtractorExpectation) | dense_notice_expectations()
+    inputs = [*corpus_inputs(), *dense_notice_inputs()]
 
     def problems(corpus_id: str, output: ExtractorOutput) -> list[str]:
         return extractor_problems(output, expected[corpus_id])
 
-    answers = await run_live("extractor", _build, corpus_inputs(), problems, _details, SAMPLES)
+    answers = await run_live("extractor", _build, inputs, problems, _details, SAMPLES)
 
     assert all(not answer.problems for answer in answers)
 

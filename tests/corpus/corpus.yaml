@@ -296,6 +296,55 @@ notice:
       - The surcharge does not apply to support renewals
       - Fabrikam Networks gives rising component costs as the reason
 
+# Made-up notices, each a different shape of dense news, which only the extractor is given: facts
+# that must be split are listed in apart, pairs of words no one fact may hold together.
+dense_notices:
+  - id: d01
+    case: an exception with its own later date
+    sender_name: Ben Carter
+    sender_address: ben.carter@example.org
+    subject: "FW: Litware X200 laptop"
+    unique_body: For anyone ordering laptops for customers.
+    body: |-
+      For anyone ordering laptops for customers.
+
+      From: Litware Supplies <updates@example.com>
+      Sent: 2 February 2027
+      Subject: Litware X200 laptop
+
+      From 1 March 2027, Litware Supplies will stop selling the X200 laptop, except to education customers (effective 1 June 2027). Existing X200 warranties continue until they expire.
+    expect:
+      extractor: {category: company_notices, has_facts: true, people: [], mention: [Litware Supplies, X200, 1 March, 1 June, education, warranties], omit: [Ben Carter], apart: [[1 March, 1 June]]}
+  - id: d02
+    case: a general change and different figures for listed products in one sentence
+    sender_name: Priya Shah
+    sender_address: priya.shah@example.org
+    subject: "FW: Adventure Works training prices"
+    unique_body: Worth knowing before you book courses for customers.
+    body: |-
+      Worth knowing before you book courses for customers.
+
+      From: Adventure Works <news@example.com>
+      Sent: 3 February 2027
+      Subject: Training prices
+
+      Adventure Works is raising its training course prices from 1 April 2027: all online courses will rise, with Security Basics up 12% and Cloud Fundamentals up 8%. Courses booked before 15 March 2027 keep their current price.
+    expect:
+      extractor: {category: company_notices, has_facts: true, people: [], mention: [Adventure Works, online, Security Basics, '12', Cloud Fundamentals, '8', 15 March], omit: [Priya Shah], apart: [['12', '8'], [Security Basics, Cloud Fundamentals]]}
+  - id: d03
+    case: conditions on amounts in one sentence
+    sender_name: Aisha Khan
+    sender_address: aisha.khan@example.org
+    subject: Expenses changes
+    body: |-
+      Hi all,
+
+      From 1 May, expense claims over £500 need director approval, and claims under £50 no longer need a receipt. Mileage stays at 45p a mile.
+
+      Aisha
+    expect:
+      extractor: {category: company_notices, has_facts: true, people: [], mention: ['500', director, '50', receipt, 45p], omit: [Aisha Khan], apart: [['500', '50']]}
+
 expect:
   consolidator:
     items:

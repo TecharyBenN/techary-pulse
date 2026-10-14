@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from collections import Counter, defaultdict
@@ -75,6 +76,7 @@ from tests.emails import (
     corpus_expectation,
     corpus_messages,
     corpus_notice,
+    dense_notices,
     graph_corpus_emails,
     screen_email,
 )
@@ -355,6 +357,8 @@ class ExtractorExpectation(StrictEntity):
     # Words the facts must contain, and words they must not.
     mention: tuple[str, ...] = ()
     omit: tuple[str, ...] = ()
+    # Pairs of words no one fact may hold together, because they belong to separate facts.
+    apart: tuple[tuple[str, str], ...] = ()
 
 
 def expectations[E: BaseModel](agent: str, model: type[E]) -> dict[str, E]:
@@ -388,7 +392,29 @@ def extractor_problems(output: ExtractorOutput, expected: ExtractorExpectation) 
         for word in expected.omit
         if word not in _missing([word], output.facts)
     ]
+    problems += [
+        f"{first} and {second} are in one fact"
+        for first, second in expected.apart
+        if any(not _missing([first, second], [fact]) for fact in output.facts)
+    ]
     return problems
+
+
+def dense_notice_inputs() -> list[Input[ScreenedEmail]]:
+    """The made-up dense notices as the pre-filter passes them, received after every corpus
+    email."""
+    start = len(corpus_messages())
+    return [
+        Input(m["id"], m["subject"], "synthetic", screen_email(corpus_email(m, start + n)))
+        for n, m in enumerate(dense_notices())
+    ]
+
+
+def dense_notice_expectations() -> dict[str, ExtractorExpectation]:
+    return {
+        m["id"]: ExtractorExpectation.model_validate(m["expect"]["extractor"])
+        for m in dense_notices()
+    }
 
 
 class SensitivityExpectation(StrictEntity):
@@ -718,6 +744,44 @@ class Results(Entity):
             answers=answers,
             requests=recorder.requests,
         )
+
+
+def save_live_run(
+    name: str, config: Config, started: AwareDatetime, recorder: Recorder, store: Path
+) -> Path:
+    """Save a live check's every gateway request and response, as one answer named `name`
+    recorded with `record_call`, and a copy of its store beside them, so its run can be traced."""
+    exchanges = recorder.take(name, 1)
+    answer = Answer(
+        input_id=name,
+        form="live",
+        sample=1,
+        output=None,
+        error=None,
+        problems=[],
+        exchanges=exchanges,
+    )
+    results = Results.of(
+        agent=name,
+        model=", ".join(sorted(set(config.llm.models.values()))),
+        base_url=config.llm.base_url,
+        samples=1,
+        started=started,
+        finished=datetime.now(UTC),
+        answers=[answer],
+        recorder=recorder,
+    )
+    path = save_results(results)
+    copy = path.with_suffix(".db")
+    shutil.copyfile(store, copy)
+    copy.chmod(0o600)
+    return path
+
+
+def record_call(input_id: str, sample: int = 1) -> None:
+    """Name the requests made from here on in this task, for a live check that is not run
+    through `evaluate`."""
+    _CALL.set((input_id, sample))
 
 
 def save_results(results: Results, folder: Path = EVALUATIONS) -> Path:

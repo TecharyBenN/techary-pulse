@@ -187,6 +187,12 @@ def corpus_messages() -> list[dict[str, Any]]:
     return messages
 
 
+def dense_notices() -> list[dict[str, Any]]:
+    """The corpus's made-up dense notices, which only the extractor is given."""
+    notices: list[dict[str, Any]] = _corpus()["dense_notices"]
+    return notices
+
+
 def corpus_notice() -> dict[str, Any]:
     """The corpus's dense supplier notice, which only the writer and judge are given."""
     notice: dict[str, Any] = _corpus()["notice"]

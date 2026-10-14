@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx2
 import pytest
 from msgraph.graph_service_client import GraphServiceClient
 
@@ -21,6 +22,7 @@ from pulse.config import Config, load_config
 from pulse.main import build_delivery, build_outbox
 from pulse.services.delivery import Delivery
 from tests.emails import seedable_corpus_messages
+from tests.evaluation import Recorder, record_call, save_live_run
 from tests.live import (
     check_seeded_inbox,
     conversation_id,
@@ -32,6 +34,9 @@ from tests.live import (
 from tests.messages import make_message
 
 pytestmark = [pytest.mark.live, pytest.mark.anyio]
+
+# The name the phase 10 check's gateway requests and store are saved under in evaluations/.
+RUN = "phase-10"
 
 
 class _Live:
@@ -58,7 +63,12 @@ class _Live:
 
 
 @contextlib.asynccontextmanager
-async def _live(config: Config, tmp_path: Path, extra: int = 0) -> AsyncIterator[_Live]:
+async def _live(
+    config: Config,
+    tmp_path: Path,
+    extra: int = 0,
+    http_client: httpx2.AsyncClient | None = None,
+) -> AsyncIterator[_Live]:
     """`extra` is how many inbox messages besides the seeded corpus the check expects."""
     assert config.send.mode == "on_approval", "the check expects the dev send mode"
     store = SqliteStore(tmp_path / "pulse.db")
@@ -69,7 +79,9 @@ async def _live(config: Config, tmp_path: Path, extra: int = 0) -> AsyncIterator
         submissions = graph_mailbox(config, client, config.mailboxes.submissions)
         conversation = graph_mailbox(config, client, config.mailboxes.conversation)
         check_seeded_inbox(config, await submissions.list_inbox(), extra)
-        orchestrator = live_orchestrator(config, store, submissions, conversation, clock, lock)
+        orchestrator = live_orchestrator(
+            config, store, submissions, conversation, clock, lock, http_client
+        )
         renderer = Renderer(config.timezone)
         outbox = build_outbox(config, conversation, store, renderer)
         delivery = build_delivery(
@@ -119,23 +131,31 @@ async def test_flagged_entries_reach_the_reviewers_and_never_all_staff(tmp_path:
     config = load_config(Path("config.yaml"))
     assert "company_notices" in config.categories, "add the company_notices section"
     corpus = {m["subject"]: m["id"] for m in seedable_corpus_messages()}
-    async with _live(config, tmp_path, extra=1) as live:
-        await live.say("r01", "Please draft a newsletter.")
-        newsletter = await live.store.get_open_newsletter()
-        assert newsletter is not None
-        newsletter_id = newsletter.newsletter_id
-        version = await live.store.get_version(newsletter_id, 1)
-        assert version is not None
-        print(f"--- v1 notes\n{version.notes}")
+    # Every gateway request and the store are saved, even when the run fails, so it can be traced.
+    recorder = Recorder()
+    record_call(RUN)
+    run_started = datetime.now(UTC)
+    try:
+        async with _live(config, tmp_path, extra=1, http_client=recorder.client()) as live:
+            await live.say("r01", "Please draft a newsletter.")
+            newsletter = await live.store.get_open_newsletter()
+            assert newsletter is not None
+            newsletter_id = newsletter.newsletter_id
+            version = await live.store.get_version(newsletter_id, 1)
+            assert version is not None
+            print(f"--- v1 notes\n{version.notes}")
 
-        await live.say("r02", "approve v1")
-        started = datetime.now(UTC)
-        await live.delivery.deliver()
-        sent = await live.store.get_latest_newsletter()
-        assert sent is not None and sent.state == "sent"
-        all_staff = await sent_to(
-            live.client, config.mailboxes.conversation, config.all_staff, started
-        )
+            await live.say("r02", "approve v1")
+            started = datetime.now(UTC)
+            await live.delivery.deliver()
+            sent = await live.store.get_latest_newsletter()
+            assert sent is not None and sent.state == "sent"
+            all_staff = await sent_to(
+                live.client, config.mailboxes.conversation, config.all_staff, started
+            )
+    finally:
+        saved = save_live_run(RUN, config, run_started, recorder, tmp_path / "pulse.db")
+        print(f"--- run saved to {saved}")
 
     emails = await live.store.list_screened_emails(newsletter_id)
     by_corpus = {corpus[e.subject]: e.message_id for e in emails if e.subject in corpus}

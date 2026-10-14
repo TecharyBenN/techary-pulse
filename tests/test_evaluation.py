@@ -65,6 +65,8 @@ from tests.evaluation import (
     consolidator_inputs,
     consolidator_problems,
     corpus_inputs,
+    dense_notice_expectations,
+    dense_notice_inputs,
     evaluate,
     expectations,
     extractor_problems,
@@ -194,6 +196,24 @@ def test_every_corpus_email_that_passes_the_pre_filter_is_an_input_with_an_expec
     # Only emails kept out of the dev inbox are built locally; the rest are as Graph returned them.
     local = {m["id"] for m in messages if not m.get("seed", True)}
     assert {i.input_id for i in inputs if i.form == "local"} == local & passing
+
+
+def test_words_that_must_be_apart_in_one_fact_are_a_problem() -> None:
+    expected = EXPECTED.model_copy(update={"mention": (), "apart": (("1 March", "1 June"),)})
+    packed = _output(facts=["Litware stops selling from 1 March, except to schools (1 June)."])
+    split = _output(facts=["Litware stops selling from 1 March.", "For schools, from 1 June."])
+
+    assert extractor_problems(split, expected) == []
+    assert extractor_problems(packed, expected) == ["1 March and 1 June are in one fact"]
+
+
+def test_every_dense_notice_is_an_input_with_an_expectation() -> None:
+    inputs = dense_notice_inputs()
+    expected = dense_notice_expectations()
+
+    assert [i.input_id for i in inputs] == list(expected)
+    assert all(i.task.rejection is None and i.form == "synthetic" for i in inputs)
+    assert all(e.apart and e.mention for e in expected.values())
 
 
 FLAGGED = SensitivityExpectation(flags={"named_person": False, "personal_information": False})

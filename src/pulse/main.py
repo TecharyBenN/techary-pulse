@@ -95,7 +95,8 @@ async def _serve(config: Config) -> None:
         lock = asyncio.Lock()
         outbox = build_outbox(config, conversation, store, renderer)
         operations = build_operations(config, store, submissions, outbox, renderer, clock)
-        orchestrator = build_orchestrator(config, store, operations, llm_key, lock)
+        provider = OpenAIProvider(base_url=config.llm.base_url, api_key=llm_key)
+        orchestrator = build_orchestrator(config, store, operations, provider, lock)
         delivery = build_delivery(
             config, store, submissions, conversation, outbox, renderer, clock, lock
         )
@@ -165,9 +166,12 @@ def build_operations(
 
 
 def build_orchestrator(
-    config: Config, store: Store, operations: Operations, llm_key: str, lock: asyncio.Lock
+    config: Config,
+    store: Store,
+    operations: Operations,
+    provider: OpenAIProvider,
+    lock: asyncio.Lock,
 ) -> Orchestrator:
-    provider = OpenAIProvider(base_url=config.llm.base_url, api_key=llm_key)
 
     def model(agent: str) -> Model:
         return OpenAIChatModel(config.llm.models[agent], provider=provider)

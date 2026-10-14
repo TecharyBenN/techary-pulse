@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx2
 from azure.identity.aio import CertificateCredential
 from kiota_abstractions.base_request_configuration import RequestConfiguration
 from msgraph.generated.models.body_type import BodyType
@@ -27,6 +28,7 @@ from msgraph.generated.users.item.messages.item.message_item_request_builder imp
     MessageItemRequestBuilder,
 )
 from msgraph.graph_service_client import GraphServiceClient
+from pydantic_ai.providers.openai import OpenAIProvider
 
 from pulse.adapters.graph import GraphMailbox, graph_client
 from pulse.adapters.render import Renderer
@@ -79,14 +81,20 @@ def live_orchestrator(
     conversation: Mailbox,
     clock: Callable[[], datetime] | None = None,
     lock: asyncio.Lock | None = None,
+    http_client: httpx2.AsyncClient | None = None,
 ) -> Orchestrator:
-    """The orchestrator as main builds it, with the gateway key from the environment."""
+    """The orchestrator as main builds it, with the gateway key from the environment, sending
+    its gateway requests through `http_client` when one is given, such as a recording one."""
     renderer = Renderer(config.timezone)
     outbox = build_outbox(config, conversation, store, renderer)
     now = clock or functools.partial(datetime.now, UTC)
     operations = build_operations(config, store, submissions, outbox, renderer, now)
-    llm_key = os.environ[config.llm.api_key_env]
-    return build_orchestrator(config, store, operations, llm_key, lock or asyncio.Lock())
+    provider = OpenAIProvider(
+        base_url=config.llm.base_url,
+        api_key=os.environ[config.llm.api_key_env],
+        http_client=http_client,
+    )
+    return build_orchestrator(config, store, operations, provider, lock or asyncio.Lock())
 
 
 async def conversation_id(client: GraphServiceClient, address: str, message_id: str) -> str:
