@@ -248,6 +248,16 @@ def saved_writer_inputs(run: SavedRun) -> list[Input[WriterTask]]:
     ]
 
 
+def saved_email_inputs(run: SavedRun) -> list[Input[ScreenedEmail]]:
+    """Every email the saved run's pre-filter passed, as the store holds it, numbered in the order
+    the store lists them."""
+    passed = [email for email in run.emails if email.rejection is None]
+    return [
+        Input(f"saved-email-{n}", email.subject, "saved", email)
+        for n, email in enumerate(passed, start=1)
+    ]
+
+
 def saved_judge_inputs(run: SavedRun, writer_results: Path | None) -> list[Input[JudgeTask]]:
     """Each text version 1's judge found unsupported, with what `judge` gave it; or, given
     `writer_results`, the same parts of each draft in it."""
