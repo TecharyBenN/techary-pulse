@@ -37,8 +37,9 @@ class Sensitivity(StrictEntity):
     """A short phrase, in your own words, saying what triggered the flag."""
 
 
-class ExtractorOutput(StrictEntity):
-    """The news in one email that a member of staff sent to Techary's newsletter."""
+class News(StrictEntity):
+    """The news in one email that a member of staff sent to Techary's newsletter, apart from its
+    facts."""
 
     # Each field's docstring is its description in the schema the extractor is given.
     model_config = ConfigDict(use_attribute_docstrings=True)
@@ -53,11 +54,41 @@ class ExtractorOutput(StrictEntity):
     summary: str
     """One short sentence stating the news."""
 
+    people: list[str]
+    """The full name of every person the facts name."""
+
+
+class LineFacts(StrictEntity):
+    """The facts one line of the email states."""
+
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+    line: int
+    """The number of a line in <lines>."""
+
+    facts: list[str]
+    """The facts that line states, one short sentence each."""
+
+
+class ExtractorOutput(News):
+    """The extractor's answer for one email: its news, line by line."""
+
+    lines: list[LineFacts]
+    """Every line in <lines> with the facts it states."""
+
+
+class ExtractedNews(News):
+    """The news in one email with its facts in line order, as code joins them."""
+
     facts: list[str]
     """The facts of the news, one short sentence each."""
 
-    people: list[str]
-    """The full name of every person the facts name."""
+
+def extracted_news(output: ExtractorOutput) -> ExtractedNews:
+    """The extractor's answer with each line's facts joined in line order."""
+    ordered = sorted(output.lines, key=lambda line: line.line)
+    facts = [fact for line in ordered for fact in line.facts]
+    return ExtractedNews(**output.model_dump(exclude={"lines"}), facts=facts)
 
 
 class SensitivityOutput(StrictEntity):
@@ -69,7 +100,7 @@ class SensitivityOutput(StrictEntity):
     """One flag for each sensitive thing in the email; empty when there is none."""
 
 
-class Extraction(ExtractorOutput, SensitivityOutput):
+class Extraction(ExtractedNews, SensitivityOutput):
     """Both agents' answers for one screened email, as code combines them."""
 
 

@@ -17,7 +17,8 @@ from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.sensitivity.agent import SensitivityAgent
 from pulse.entities.errors import SpecialistFailed
 from pulse.entities.extracts import ExtractorOutput, SensitivityOutput
-from tests.emails import make_output, make_screened_email, share
+from pulse.entities.mail import message_lines
+from tests.emails import answer_for, make_output, make_screened_email, share
 from tests.fakes.models import gateway_error
 
 pytestmark = pytest.mark.anyio
@@ -25,8 +26,8 @@ pytestmark = pytest.mark.anyio
 CATEGORIES = {"customer_win": "A new customer has signed."}
 EMAIL = make_screened_email("m01")
 FLAGS = share(make_output(), SensitivityOutput).model_dump_json()
-EXTRACT = share(make_output(), ExtractorOutput).model_dump_json()
-GOSSIP = share(make_output(category="gossip"), ExtractorOutput).model_dump_json()
+EXTRACT = answer_for(make_output(), message_lines(EMAIL)).model_dump_json()
+GOSSIP = answer_for(make_output(category="gossip"), message_lines(EMAIL)).model_dump_json()
 
 
 def _model(*answers: ModelResponse | Exception) -> tuple[FunctionModel, list[list[ModelMessage]]]:

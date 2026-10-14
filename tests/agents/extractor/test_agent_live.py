@@ -11,7 +11,7 @@ from pydantic_ai.models import Model
 
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.config import Config
-from pulse.entities.extracts import ExtractorOutput
+from pulse.entities.extracts import ExtractorOutput, extracted_news
 from tests.evaluation import (
     STORE_VARIABLE,
     ExtractorExpectation,
@@ -36,7 +36,7 @@ async def test_the_extractor_gives_the_expected_answer_for_every_corpus_email() 
     inputs = [*corpus_inputs(), *dense_notice_inputs()]
 
     def problems(corpus_id: str, output: ExtractorOutput) -> list[str]:
-        return extractor_problems(output, expected[corpus_id])
+        return extractor_problems(extracted_news(output), expected[corpus_id])
 
     answers = await run_live("extractor", _build, inputs, problems, _details, SAMPLES)
 

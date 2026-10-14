@@ -169,4 +169,9 @@ class EmailAgent[O](SpecialistAgent[ScreenedEmail, O]):
         )
 
     def message(self, task: ScreenedEmail) -> str:
-        return self._data_block("email", task.model_dump(mode="json", include=_EMAIL_FIELDS))
+        return self._email_block(task)
+
+    def _email_block(self, task: ScreenedEmail, without: frozenset[str] = frozenset()) -> str:
+        """The email's fields the agent is given, less `without`, as untrusted data."""
+        fields = _EMAIL_FIELDS - without
+        return self._data_block("email", task.model_dump(mode="json", include=fields))

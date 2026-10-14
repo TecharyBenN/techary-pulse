@@ -1,7 +1,8 @@
 """Synthetic inbox messages, and the screened emails, extract records, items and drafts
 derived from them."""
 
-from collections.abc import Mapping
+import json
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,9 @@ from pulse.entities.extracts import (
     Consolidation,
     ConsolidatorItem,
     ConsolidatorOutput,
+    ExtractedNews,
     Extraction,
+    ExtractorOutput,
     ExtractRecord,
     Item,
     make_record,
@@ -120,6 +123,20 @@ def make_output(**changes: object) -> Extraction:
 def share[M: BaseModel](extraction: Extraction, model: type[M]) -> M:
     """One agent's share of a combined extraction: the fields its output type holds."""
     return model.model_validate(extraction.model_dump(include=set(model.model_fields)))
+
+
+def answer_for(extraction: ExtractedNews, lines: Sequence[str]) -> ExtractorOutput:
+    """The extractor's answer giving the extraction's news, with every line listed and all its
+    facts under line 0."""
+    news = extraction.model_dump(include={"category", "exclusion_reason", "summary", "people"})
+    listed = [{"line": n, "facts": extraction.facts if n == 0 else []} for n in range(len(lines))]
+    return ExtractorOutput.model_validate(news | {"lines": listed})
+
+
+def prompt_lines(prompt: str) -> list[str]:
+    """The text of each numbered line in the extractor's message."""
+    block = prompt.split("<lines>\n")[1].split("\n</lines>")[0]
+    return [line["text"] for line in json.loads(block)]
 
 
 def make_extract_record(message_id: str = "m01", **changes: object) -> ExtractRecord:

@@ -25,10 +25,18 @@ from pulse.agents.orchestrator.agent import OrchestratorAgent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import ShowResult
 from pulse.entities.conversation import ReviewerMessage
-from pulse.entities.extracts import Extraction, ExtractorOutput, SensitivityOutput
+from pulse.entities.extracts import Extraction, SensitivityOutput
+from pulse.entities.mail import body_lines
 from pulse.entities.store import Store
 from pulse.services.operations import PresentResult
-from tests.emails import CORPUS_ITEM_SOURCES, corpus_consolidation, corpus_messages, share
+from tests.emails import (
+    CORPUS_ITEM_SOURCES,
+    answer_for,
+    corpus_consolidation,
+    corpus_messages,
+    prompt_lines,
+    share,
+)
 
 ModelFunction = Callable[[list[ModelMessage], AgentInfo], Awaitable[ModelResponse]]
 
@@ -136,7 +144,19 @@ def _email_model(outputs: Mapping[str, Extraction], answer: type[BaseModel]) -> 
 
 
 def extractor_model(outputs: Mapping[str, Extraction]) -> FunctionModel:
-    return _email_model(outputs, ExtractorOutput)
+    """Answer each email with the extraction set for its body, found by the numbered lines in the
+    first prompt, every line listed and all the facts under line 0."""
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        request = messages[0]
+        assert isinstance(request, ModelRequest)
+        [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
+        assert isinstance(prompt, str)
+        lines = prompt_lines(prompt)
+        [body] = [body for body in outputs if body_lines(body) == lines[1:]]
+        return text_response(answer_for(outputs[body], lines).model_dump_json())
+
+    return FunctionModel(model)
 
 
 def sensitivity_model(outputs: Mapping[str, Extraction]) -> FunctionModel:

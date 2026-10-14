@@ -59,8 +59,8 @@ from pulse.entities.extracts import (
     Consolidation,
     ConsolidatorItem,
     ConsolidatorOutput,
+    ExtractedNews,
     Extraction,
-    ExtractorOutput,
     ExtractRecord,
     Item,
     SensitivityKind,
@@ -370,7 +370,7 @@ def expectations[E: BaseModel](agent: str, model: type[E]) -> dict[str, E]:
     }
 
 
-def extractor_problems(output: ExtractorOutput, expected: ExtractorExpectation) -> list[str]:
+def extractor_problems(output: ExtractedNews, expected: ExtractorExpectation) -> list[str]:
     """How the answer departs from the expected one; empty when it is right."""
     problems = []
     if output.category != expected.category:

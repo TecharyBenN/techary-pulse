@@ -32,17 +32,21 @@ from pulse.entities.content import (
 from pulse.entities.extracts import (
     ConsolidatorItem,
     ConsolidatorOutput,
+    ExtractedNews,
     ExtractorOutput,
     SensitivityOutput,
+    extracted_news,
     with_sources,
 )
 from tests.emails import (
+    answer_for,
     corpus_email,
     corpus_expectation,
     corpus_messages,
     make_item,
     make_output,
     make_screened_email,
+    prompt_lines,
     share,
 )
 from tests.emails import screen_email as screened
@@ -101,8 +105,8 @@ RIGHT = make_output(
 API_KEY = "stand-in-key"
 
 
-def _output(**changes: object) -> ExtractorOutput:
-    return share(RIGHT.model_copy(update=changes), ExtractorOutput)
+def _output(**changes: object) -> ExtractedNews:
+    return share(RIGHT.model_copy(update=changes), ExtractedNews)
 
 
 def test_a_right_answer_has_no_problems() -> None:
@@ -516,13 +520,16 @@ def _gateway(recorder: Recorder, invalid: Mapping[str, int] | None = None) -> Ex
     remaining = dict(invalid or {})
 
     def handler(request: httpx2.Request) -> httpx2.Response:
-        prompt = json.dumps(json.loads(request.content)["messages"])
+        messages = json.loads(request.content)["messages"]
+        # A retry adds its reason after the email's message, which stays first.
+        prompt = next(m["content"] for m in messages if m["role"] == "user")
         output = _output()
         for body, count in remaining.items():
-            if body in prompt and count:
+            if body in json.dumps(messages) and count:
                 remaining[body] = count - 1
                 output = _output(category="gossip")
-        return httpx2.Response(200, json=_completion(output.model_dump_json()))
+        answer = answer_for(output, prompt_lines(prompt))
+        return httpx2.Response(200, json=_completion(answer.model_dump_json()))
 
     client = recorder.client(transport=httpx2.MockTransport(handler))
     provider = OpenAIProvider(
@@ -547,7 +554,11 @@ async def test_evaluate_scores_every_sample_with_the_exchanges_that_produced_it(
     agent = _gateway(recorder)
 
     answers = await evaluate(
-        agent.answer, lambda _, output: extractor_problems(output, EXPECTED), INPUTS, 2, recorder
+        agent.answer,
+        lambda _, output: extractor_problems(extracted_news(output), EXPECTED),
+        INPUTS,
+        2,
+        recorder,
     )
 
     assert [(a.input_id, a.form, a.sample) for a in answers] == [
@@ -557,7 +568,10 @@ async def test_evaluate_scores_every_sample_with_the_exchanges_that_produced_it(
         ("m02", "local", 2),
     ]
     assert all(a.problems == [] and a.error is None for a in answers)
-    assert all(a.output == _output().model_dump(mode="json") for a in answers)
+    assert all(
+        a.output and extracted_news(ExtractorOutput.model_validate(a.output)) == _output()
+        for a in answers
+    )
     for answer in answers:
         [exchange] = answer.exchanges
         assert (exchange.status, exchange.model, exchange.finish_reason) == (
@@ -592,7 +606,11 @@ async def test_evaluate_keeps_the_retry_with_the_answer_it_belongs_to() -> None:
     agent = _gateway(recorder, {"Tom Evans closed Contoso today.": 1})
 
     answers = await evaluate(
-        agent.answer, lambda _, output: extractor_problems(output, EXPECTED), INPUTS, 1, recorder
+        agent.answer,
+        lambda _, output: extractor_problems(extracted_news(output), EXPECTED),
+        INPUTS,
+        1,
+        recorder,
     )
 
     exchanges = {a.input_id: len(a.exchanges) for a in answers}
@@ -606,7 +624,7 @@ async def test_a_wrong_answer_is_recorded_with_its_problems() -> None:
 
     answers = await evaluate(
         _gateway(recorder).answer,
-        lambda _, output: extractor_problems(output, expected),
+        lambda _, output: extractor_problems(extracted_news(output), expected),
         INPUTS[:1],
         1,
         recorder,
@@ -623,7 +641,7 @@ async def test_no_valid_answer_is_recorded_as_a_problem_with_both_exchanges() ->
 
     answers = await evaluate(
         agent.answer,
-        lambda _, output: extractor_problems(output, EXPECTED),
+        lambda _, output: extractor_problems(extracted_news(output), EXPECTED),
         INPUTS[1:],
         1,
         recorder,

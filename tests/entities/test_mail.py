@@ -18,10 +18,11 @@ from pulse.entities.mail import (
     domain_in,
     header_value,
     is_automatic_reply,
+    message_lines,
     screen,
     subject,
 )
-from tests.emails import make_email
+from tests.emails import make_email, make_screened_email
 from tests.fakes.graph import MAILBOX, FakeGraph
 from tests.fakes.mailbox import FakeMailbox
 
@@ -364,3 +365,17 @@ def test_subject_fills_in_the_opening_date_after_the_prefix() -> None:
     assert subject("Pulse: {date}", opened, LONDON, "Draft v2:") == (
         "Draft v2: Pulse: 5 September 2026"
     )
+
+
+def test_message_lines_start_with_the_subject_and_keep_each_non_empty_line_stripped() -> None:
+    email = make_screened_email(
+        subject="Prices", body="Hi all,\r\n\r\n  Prices rise.  \n\n- Plus: 5%\n"
+    )
+
+    assert message_lines(email) == ["Prices", "Hi all,", "Prices rise.", "- Plus: 5%"]
+
+
+def test_message_lines_of_an_email_with_no_body_are_its_subject() -> None:
+    email = make_screened_email(subject="Prices").model_copy(update={"body": None})
+
+    assert message_lines(email) == ["Prices"]

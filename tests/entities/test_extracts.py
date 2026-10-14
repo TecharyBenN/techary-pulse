@@ -6,13 +6,16 @@ import pytest
 from pulse.entities.errors import Refusal
 from pulse.entities.extracts import (
     Consolidation,
+    ExtractedNews,
     Extraction,
+    ExtractorOutput,
     ExtractRecord,
     Item,
     Sensitivity,
     SourcedItem,
     consolidation_input,
     exclusion_outcome,
+    extracted_news,
     items_up_to_date,
     make_consolidation,
     make_record,
@@ -317,3 +320,34 @@ def test_sender_names_are_each_sender_once_in_order() -> None:
     ]
 
     assert sender_names(emails) == ["Tom Evans", "Priya Shah"]
+
+
+def test_extracted_news_joins_the_facts_in_line_order() -> None:
+    output = ExtractorOutput.model_validate(
+        {
+            "category": "customer_win",
+            "exclusion_reason": None,
+            "summary": "Northwind Retail signed.",
+            "people": ["Priya Shah"],
+            "lines": [
+                {"line": 2, "facts": ["Onboarding starts in October."]},
+                {"line": 0, "facts": []},
+                {
+                    "line": 1,
+                    "facts": ["Priya Shah signed Northwind Retail.", "It is for three years."],
+                },
+            ],
+        }
+    )
+
+    assert extracted_news(output) == ExtractedNews(
+        category="customer_win",
+        exclusion_reason=None,
+        summary="Northwind Retail signed.",
+        people=["Priya Shah"],
+        facts=[
+            "Priya Shah signed Northwind Retail.",
+            "It is for three years.",
+            "Onboarding starts in October.",
+        ],
+    )

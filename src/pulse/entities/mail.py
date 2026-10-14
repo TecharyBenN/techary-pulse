@@ -156,6 +156,17 @@ def destination(email: ScreenedEmail, extracted: bool) -> Destination | None:
     return "processed" if extracted else None
 
 
+def body_lines(body: str) -> list[str]:
+    """Every non-empty line of an email body, without the spaces around it."""
+    return [line.strip() for line in body.splitlines() if line.strip()]
+
+
+def message_lines(email: ScreenedEmail) -> list[str]:
+    """The lines the extractor works through, numbered by their position: the subject, then every
+    non-empty line of the whole message."""
+    return [email.subject, *body_lines(email.body or "")]
+
+
 def display_date(moment: datetime, timezone: ZoneInfo) -> str:
     """The date in `timezone`, as in 25 September 2026."""
     local = moment.astimezone(timezone)

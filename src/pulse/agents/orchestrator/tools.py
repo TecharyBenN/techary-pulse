@@ -25,6 +25,7 @@ from pulse.entities.extracts import (
     ExtractRecord,
     SourcedItem,
     consolidation_input,
+    extracted_news,
     make_consolidation,
     with_sources,
 )
@@ -243,7 +244,7 @@ class Tools:
                     raise result
             failures = [str(r) for r in (extracted, flagged) if isinstance(r, SpecialistFailed)]
             return ExtractOutcome(message_id=message_id, error="; ".join(failures))
-        extraction = Extraction(**extracted.model_dump(), **flagged.model_dump())
+        extraction = Extraction(**extracted_news(extracted).model_dump(), **flagged.model_dump())
         record = await self._store.save_extract(newsletter_id, message_id, extraction)
         return ExtractOutcome(
             message_id=message_id, exclusion=record.exclusion, excluded_id=record.excluded_id
