@@ -5,7 +5,8 @@ import re
 from typing import Annotated, Literal, get_args
 from zoneinfo import ZoneInfo
 
-from pydantic import AwareDatetime, Field, PositiveInt, field_validator
+from croniter import croniter
+from pydantic import AfterValidator, AwareDatetime, Field, PositiveInt, field_validator
 
 from pulse.entities.base import Entity, StrictEntity
 from pulse.entities.errors import Refusal
@@ -44,6 +45,16 @@ class Scheduled(StrictEntity):
 
 
 SendRule = Annotated[OnApproval | Scheduled, Field(discriminator="mode")]
+
+
+def _cron(value: str) -> str:
+    if not croniter.is_valid(value):
+        raise ValueError(f"{value!r} is not a cron expression")
+    return value
+
+
+# The draft schedule: a cron expression, read in the configured time zone.
+DraftCron = Annotated[str, AfterValidator(_cron)]
 
 
 class Newsletter(Entity):
@@ -180,6 +191,12 @@ def is_due(newsletter: Newsletter, now: dt.datetime) -> bool:
     )
 
 
+def awaiting_send(newsletter: Newsletter) -> bool:
+    """Whether the newsletter is approved and its send has not happened, so no start instruction
+    is posted."""
+    return newsletter.state == "approved"
+
+
 def start_send(newsletter: Newsletter) -> Newsletter:
     """Re-check the approval and record `send_started`."""
     if newsletter.state != "approved" or newsletter.send_started:
@@ -223,6 +240,21 @@ def _send_slot(rule: Scheduled, timezone: ZoneInfo, opened_at: dt.datetime) -> d
     if slot <= opened:
         slot = dt.datetime.combine(day + dt.timedelta(days=7), rule.time, tzinfo=timezone)
     return slot.astimezone(dt.UTC)
+
+
+def next_start(cron: str, timezone: ZoneInfo, after: dt.datetime) -> dt.datetime:
+    """The draft schedule's first start after `after`, read in `timezone`, in UTC.
+
+    The schedule is read on the local clock without its offset, so each local time comes once a
+    day: a time the clocks go back over runs at its first occurrence, and a time they skip runs
+    an hour later. A start before `after`, as after a restart in a repeated hour, is skipped.
+    """
+    starts = croniter(cron, after.astimezone(timezone).replace(tzinfo=None))
+    while True:
+        local: dt.datetime = starts.get_next(dt.datetime)
+        start = local.replace(tzinfo=timezone).astimezone(dt.UTC)
+        if start > after:
+            return start
 
 
 def require_changeable(newsletter: Newsletter) -> None:

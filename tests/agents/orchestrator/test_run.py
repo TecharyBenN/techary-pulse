@@ -23,9 +23,10 @@ from pulse.adapters.store import SqliteStore
 from pulse.agents.orchestrator.agent import OrchestratorAgent
 from pulse.agents.orchestrator.run import Orchestrator, RunReply, history_note
 from pulse.entities.content import EntryNotes, Version, version_of
+from pulse.entities.conversation import StartInstruction
 from pulse.entities.errors import MailboxError, RunError
 from pulse.entities.extracts import Sensitivity
-from pulse.entities.lifecycle import abandon, open_newsletter, present
+from pulse.entities.lifecycle import abandon, approve, open_newsletter, present
 from pulse.entities.store import DELIVERY_NOTE, HistoryRow
 from tests.emails import (
     NO_NOTES,
@@ -852,3 +853,74 @@ async def test_a_completed_run_returns_its_reply_before_resuming_another(
     reply = await make_orchestrator(store, responses(), Tools().toolset()).handle(first)
 
     assert reply.text == "First reply."
+
+
+async def test_a_start_instruction_runs_with_no_feedback_and_tags_its_steps(
+    store: SqliteStore, db_path: Path
+) -> None:
+    instruction = StartInstruction.new("scheduler")
+
+    reply = await make_orchestrator(store, reply_with("Drafted.")).handle(instruction)
+
+    assert reply.text == "Drafted."
+    assert _feedback_ids(db_path) == []
+    assert await _owners(store, "n-1") == [instruction.message_id] * 2
+    assert _prompts([m for _, m in await _history(store)]) == [
+        OrchestratorAgent.message(instruction, None)
+    ]
+
+
+async def test_a_start_instruction_that_opens_a_newsletter_records_no_feedback(
+    store: SqliteStore,
+) -> None:
+    await _close(store)
+    instruction = StartInstruction.new("scheduler")
+
+    await _opening(store, responses(_opening_call(), text_response("Started."))).handle(instruction)
+
+    assert await _owners(store, "n-2") == [instruction.message_id] * 4
+    assert await _feedback(store, "n-2") == []
+
+
+async def test_an_interrupted_start_instruction_run_resumes_at_the_next_message(
+    store: SqliteStore,
+) -> None:
+    tools = Tools()
+    instruction = StartInstruction.new("scheduler")
+    for saved in (
+        ModelRequest(parts=[UserPromptPart(OrchestratorAgent.message(instruction, None))]),
+        caller_call(),
+    ):
+        data = ModelMessagesTypeAdapter.dump_json([saved])
+        await store.append_history("n-1", instruction.message_id, data)
+    model = responses(text_response("Drafted."), caller_call(), text_response("Done."))
+
+    reply = await make_orchestrator(store, model, tools.toolset()).handle(make_message("r02"))
+
+    assert reply.text == "Done."
+    # The resumed run is the start instruction's, so its tools act for no reviewer.
+    assert tools.callers == [instruction.message_id, "r02"]
+    assert await _owners(store, "n-1") == [instruction.message_id] * 4 + ["r02"] * 4
+    assert await _feedback(store, "n-1") == ["r02"]
+
+
+async def test_a_start_instruction_is_skipped_while_the_newsletter_awaits_its_send(
+    store: SqliteStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    approved = approve(
+        present(make_newsletter()), 1, REVIEWER, "approve v1", OPENED, OPENED + timedelta(days=3)
+    )
+    await store.save_newsletter(approved)
+    seen: list[list[ModelMessage]] = []
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(messages)
+        return text_response("Drafted.")
+
+    reply = await make_orchestrator(store, model).handle(StartInstruction.new("scheduler"))
+
+    assert (reply.text, reply.newsletter, reply.version) == (None, None, None)
+    assert seen == []
+    assert await _owners(store, "n-1") == []
+    assert _logged(caplog, "start_skipped")["conversation_id"] == "n-1"

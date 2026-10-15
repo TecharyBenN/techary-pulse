@@ -64,6 +64,15 @@ def test_draft_cron_can_be_unset(tmp_path: Path) -> None:
     assert _load(tmp_path, data).schedule.draft_cron is None
 
 
+@pytest.mark.parametrize("cron", ["", "every friday", "30 17 * * FRIDAY", "61 17 * * FRI"])
+def test_invalid_draft_cron_is_rejected(tmp_path: Path, cron: str) -> None:
+    data = _example()
+    data["schedule"]["draft_cron"] = cron
+
+    with pytest.raises(ConfigError):
+        _load(tmp_path, data)
+
+
 def _set_reviewers(data: dict[str, Any]) -> None:
     data["reviewers"] = "someone@example.com"
 

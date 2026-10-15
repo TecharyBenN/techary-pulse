@@ -4,6 +4,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets import FunctionToolset
 
 from pulse.agents.orchestrator.agent import NO_REPLY, OrchestratorAgent
+from pulse.entities.conversation import StartInstruction
 from tests.messages import REVIEWER, make_message
 
 
@@ -72,6 +73,24 @@ def test_message_gives_the_newsletter_state_from_code_outside_the_reviewer_text(
         'The newsletter now: {"state": "approved", "latest_version": 2, "draft_changed": false}'
     )
     assert lines[2] == "<reviewer_message>"
+
+
+def test_start_instruction_names_its_source_and_gives_the_state() -> None:
+    state = {"state": "in_review", "latest_version": 1}
+
+    scheduled = OrchestratorAgent.message(StartInstruction.new("scheduler"), state)
+    by_hand = OrchestratorAgent.message(StartInstruction.new("pulse draft"), None)
+
+    assert scheduled.splitlines() == [
+        "Message from the scheduler:",
+        'The newsletter now: {"state": "in_review", "latest_version": 1}',
+        "Draft a newsletter.",
+    ]
+    assert by_hand.splitlines() == [
+        "Message from pulse draft:",
+        "No newsletter exists yet.",
+        "Draft a newsletter.",
+    ]
 
 
 def test_message_says_when_no_newsletter_exists() -> None:

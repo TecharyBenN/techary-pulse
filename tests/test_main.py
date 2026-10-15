@@ -69,13 +69,39 @@ def test_serve_takes_a_config_path() -> None:
     )
 
 
+def test_draft_reads_config_yaml_by_default() -> None:
+    args = parse_args(["draft"])
+
+    assert (args.command, args.config) == ("draft", Path("config.yaml"))
+
+
+def test_draft_takes_a_config_path() -> None:
+    assert parse_args(["draft", "--config", "/config/config.yaml"]).config == Path(
+        "/config/config.yaml"
+    )
+
+
+def test_draft_stops_when_the_llm_key_is_not_set(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("PULSE_LLM_API_KEY", raising=False)
+
+    with pytest.raises(SystemExit) as stopped:
+        main(["draft", "--config", str(EXAMPLE)])
+
+    assert stopped.value.code == 1
+    assert "PULSE_LLM_API_KEY" in capsys.readouterr().out
+
+
 def test_a_command_is_required() -> None:
     with pytest.raises(SystemExit):
         parse_args([])
 
 
-def test_serve_runs_the_chat_endpoint_and_delivery(capsys: pytest.CaptureFixture[str]) -> None:
+def test_help_describes_each_command(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         parse_args(["--help"])
 
-    assert "run the chat endpoint and delivery until stopped" in capsys.readouterr().out
+    out = " ".join(capsys.readouterr().out.split())
+    assert "run the chat endpoint, the email channel, the draft schedule and delivery" in out
+    assert "post the start instruction, unless a newsletter awaits its send" in out

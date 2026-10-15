@@ -99,9 +99,9 @@ src/pulse/
 │   │                  save, email
 │   ├── outbox.py      Emails to reviewers in the newsletter's email thread, and operator alerts
 │   └── delivery.py    Sends an approved newsletter, moves its screened emails, recovers a partial send
-├── adapters/          Microsoft Graph mail through Microsoft's Graph SDK, the SQLite store, bearer
-│                      token verification, and the newsletter and the orchestrator's email
-│                      replies in HTML and Markdown with their templates
+├── adapters/          Microsoft Graph mail through Microsoft's Graph SDK, the SQLite store, the run
+│                      lock, bearer token verification, and the newsletter and the orchestrator's
+│                      email replies in HTML and Markdown with their templates
 ├── entrypoints/       The email channel, the LibreChat endpoint, the scheduler and the command line
 ├── config.py          Reading and validating config.yaml
 └── main.py            Configures logging, creates the gateway models and the adapters, and
@@ -174,9 +174,9 @@ Presenting a new version of an approved newsletter withdraws the approval first.
 
 A newsletter starts when the orchestrator calls `start_newsletter`. It does so in response to the start instruction, a fixed message asking it to draft a newsletter, or to a reviewer asking for one. The scheduler posts the start instruction on `schedule.draft_cron`, and `pulse draft` posts the same message.
 
-When a newsletter is already open, `start_newsletter` adds the emails that have arrived since it was opened or last updated. The orchestrator folds any new screened emails into the working draft, keeping all feedback, and presents a new version only if the draft changed. The scheduler and `pulse draft` do not post the start instruction while the open newsletter is approved and its send has not happened; they log the skipped trigger instead.
+When a newsletter is already open, `start_newsletter` adds the emails that have arrived since it was opened or last updated. The orchestrator folds any new screened emails into the working draft, keeping all feedback, and presents a new version only if the draft changed. The start instruction is skipped while the open newsletter is approved and its send has not happened, checked once the run lock is taken, so an approval made by the run before it counts; the skipped trigger is logged. The scheduler works out each start from `schedule.draft_cron` on the local clock in `timezone`, so each start time comes once a day: a time the clocks go back over runs at its first occurrence, and a time they skip runs an hour later. A start that falls while Pulse is stopped is not caught up.
 
-A run started by the start instruction has no reviewer present and no channel to reply through. When it presents a version, the reviewer email opens the conversation with the reviewers, or continues it if the newsletter was already open.
+A run started by the start instruction has no reviewer present and no channel to reply through, so `approve`, `restore`, `withdraw_approval` and `abandon` refuse in it. When it presents a version, the reviewer email opens the conversation with the reviewers, or continues it if the newsletter was already open. The start instruction is never feedback. Its prompt names what posted it, the scheduler or `pulse draft`, before the newsletter's state and the instruction itself. Its run's steps are tagged `start-scheduler-` or `start-draft-` followed by a new unique ID, in place of a reviewer message ID, so an unfinished run is recognised by its tag and resumed like any other.
 
 ## Orchestrator
 
@@ -184,8 +184,8 @@ A run started by the start instruction has no reviewer present and no channel to
 
 Every channel passes each incoming message to one entry point, which returns the reply, or no reply, and sends progress notes while the run works. Each orchestrator run:
 
-1. takes the run lock, so runs are processed one at a time, in the order their messages arrived; delivery takes the same lock, so a run and a delivery never change a newsletter at the same time;
-2. records a reviewer message as feedback for the latest newsletter, once per message ID;
+1. takes the run lock, so runs are processed one at a time, in the order their messages arrived; delivery takes the same lock, so a run and a delivery never change a newsletter at the same time. The lock is shared by every Pulse process on the store, through a lock on a file beside it, because `pulse draft` runs beside `pulse serve`;
+2. records a reviewer message as feedback for the latest newsletter, once per message ID; the start instruction is not recorded;
 3. loads the latest newsletter's stored conversation history;
 4. if the history ends in an unfinished run, one whose last saved step is a request, other than delivery's note, or a response with tool calls not yet run, resumes it from its saved steps with no new prompt. When the unfinished run belongs to this message, as when a failed message is retried, the resumed run is this message's run. Otherwise the resumed run's reply is saved but not delivered, and the run continues with step 5;
 5. runs the orchestrator with the history as `message_history` and the incoming message as the user prompt: a reviewer message with its author and channel, or the start instruction. It iterates the run with Pydantic AI's `agent.iter` and saves each model request, response and tool result to the store as it completes, serialised with `ModelMessagesTypeAdapter` and tagged with the ID of the message whose run produced it;
@@ -547,7 +547,7 @@ Logs are JSON objects on standard output, one per line, with `time`, `level` and
 | Command | Effect |
 | --- | --- |
 | `pulse serve` | Runs the channels, the scheduler and delivery until stopped. |
-| `pulse draft` | Posts the start instruction, under the same rules as the scheduler, and exits once the run completes. |
+| `pulse draft` | Posts the start instruction, under the same rules as the scheduler, and exits once the run completes, with a non-zero status if it failed. |
 
 Each command reads the configuration file named by `--config`, which defaults to `./config.yaml`.
 
@@ -650,7 +650,7 @@ state:
 retention_days: 90
 ```
 
-`send.day` takes `MON` to `SUN` and `send.time` a 24-hour `HH:MM` time; both are required when `send.mode` is `scheduled`, and neither is accepted when it is `on_approval`. Configuration fails to load if it has a key not shown above, if a count, interval, limit or port is not a positive integer, if `graph.max_retries` is above 10, the Graph SDK's limit, or if two sections share a category. With `schedule.draft_cron` unset, newsletters start only when a reviewer asks or an operator runs `pulse draft`. `reviewers` is the address of one distribution list. `auth.jwks` is the issuer's key set, as a URL or a file path; Pulse fetches a URL and caches it, and reads a file on every verification, so a rotated key takes effect without a restart.
+`schedule.draft_cron` is a cron expression, read in `timezone`, and configuration fails to load if it is not one. `send.day` takes `MON` to `SUN` and `send.time` a 24-hour `HH:MM` time; both are required when `send.mode` is `scheduled`, and neither is accepted when it is `on_approval`. Configuration fails to load if it has a key not shown above, if a count, interval, limit or port is not a positive integer, if `graph.max_retries` is above 10, the Graph SDK's limit, or if two sections share a category. With `schedule.draft_cron` unset, newsletters start only when a reviewer asks or an operator runs `pulse draft`. `reviewers` is the address of one distribution list. `auth.jwks` is the issuer's key set, as a URL or a file path; Pulse fetches a URL and caches it, and reads a file on every verification, so a rotated key takes effect without a restart.
 
 ## Development and testing
 

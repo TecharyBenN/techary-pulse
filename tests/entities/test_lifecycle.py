@@ -10,9 +10,11 @@ from pulse.entities.lifecycle import (
     Scheduled,
     abandon,
     approve,
+    awaiting_send,
     cancel_approval,
     is_due,
     mark_sent,
+    next_start,
     open_newsletter,
     present,
     require_latest,
@@ -386,3 +388,74 @@ def test_a_send_time_at_the_approval_is_now() -> None:
 def test_a_later_send_time_gives_its_day_date_and_time_in_the_time_zone() -> None:
     # 08:00 UTC is 09:00 in London in September.
     assert send_time_text(SEND_TIME, OPENED, LONDON) == "Monday 28 September at 09:00"
+
+
+@pytest.mark.parametrize(
+    ("newsletter", "awaiting"),
+    [
+        (_in_review(), False),
+        (_approved(), True),
+        # The send has started but not finished, so it has still not happened.
+        (_started(), True),
+        (_sent(), False),
+        (_abandoned(), False),
+    ],
+)
+def test_awaiting_send_while_approved_until_sent(newsletter: Newsletter, awaiting: bool) -> None:
+    assert awaiting_send(newsletter) is awaiting
+
+
+FRIDAY_HALF_FIVE = "30 17 * * FRI"
+
+
+def test_next_start_is_the_next_slot_in_the_time_zone_in_utc() -> None:
+    # 16:30 UTC is 17:30 in London in October, before the clocks change.
+    result = next_start(FRIDAY_HALF_FIVE, LONDON, _london(2026, 10, 15, 12, 0))
+
+    assert result == datetime(2026, 10, 16, 16, 30, tzinfo=UTC)
+    assert result.tzinfo == UTC
+
+
+def test_next_start_is_strictly_after_the_given_time() -> None:
+    slot = _london(2026, 10, 16, 17, 30)
+
+    assert next_start(FRIDAY_HALF_FIVE, LONDON, slot) == _london(2026, 10, 23, 17, 30)
+
+
+def test_next_start_keeps_local_time_when_summer_time_ends() -> None:
+    # British Summer Time ends on Sunday 25 October 2026.
+    after = datetime(2026, 10, 23, 16, 30, tzinfo=UTC)
+
+    assert next_start(FRIDAY_HALF_FIVE, LONDON, after) == datetime(2026, 10, 30, 17, 30, tzinfo=UTC)
+
+
+def test_next_start_keeps_local_time_when_summer_time_begins() -> None:
+    # British Summer Time begins on Sunday 29 March 2026.
+    after = datetime(2026, 3, 27, 17, 30, tzinfo=UTC)
+
+    assert next_start(FRIDAY_HALF_FIVE, LONDON, after) == datetime(2026, 4, 3, 16, 30, tzinfo=UTC)
+
+
+def test_next_start_in_the_skipped_hour_runs_once_after_the_clocks_go_forward() -> None:
+    # 01:30 does not exist in London on 29 March 2026; the clocks go from 01:00 to 02:00.
+    after = _london(2026, 3, 28, 12, 0)
+
+    first = next_start("30 1 * * *", LONDON, after)
+
+    assert first == _london(2026, 3, 29, 2, 30)
+    assert next_start("30 1 * * *", LONDON, first) == _london(2026, 3, 30, 1, 30)
+
+
+def test_next_start_in_the_repeated_hour_runs_once_when_the_clocks_go_back() -> None:
+    # 01:30 happens twice in London on 25 October 2026, first in summer time.
+    first = next_start("30 1 * * *", LONDON, _london(2026, 10, 24, 12, 0))
+
+    assert first == datetime(2026, 10, 25, 0, 30, tzinfo=UTC)
+    assert next_start("30 1 * * *", LONDON, first) == datetime(2026, 10, 26, 1, 30, tzinfo=UTC)
+
+
+def test_next_start_after_a_restart_in_the_repeated_hour_is_the_next_day() -> None:
+    # 01:10 UTC is 01:10 in winter time, after the summer time 01:30 has passed.
+    after = datetime(2026, 10, 25, 1, 10, tzinfo=UTC)
+
+    assert next_start("30 1 * * *", LONDON, after) == datetime(2026, 10, 26, 1, 30, tzinfo=UTC)

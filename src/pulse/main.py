@@ -2,11 +2,13 @@
 
 import argparse
 import asyncio
+import contextlib
+import dataclasses
 import functools
 import logging
 import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -18,6 +20,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pythonjsonlogger.json import JsonFormatter
 
 from pulse.adapters.graph import GraphMailbox, certificate_thumbprint, graph_client
+from pulse.adapters.lock import RunLock
 from pulse.adapters.render import Renderer
 from pulse.adapters.store import SqliteStore
 from pulse.adapters.tokens import JwtVerifier
@@ -36,7 +39,7 @@ from pulse.entities.mail import InboundEmail, Mailbox, ScreenedEmail, screen
 from pulse.entities.store import Store
 from pulse.entrypoints.chat import create_app, serve
 from pulse.entrypoints.email import EmailChannel
-from pulse.entrypoints.scheduler import poll
+from pulse.entrypoints.scheduler import poll, schedule, start
 from pulse.services.delivery import Delivery
 from pulse.services.operations import Operations
 from pulse.services.outbox import Outbox
@@ -49,11 +52,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     configure_logging()
     # Standard output carries JSON logs only.
     pydantic_ai.BANNER_ENABLED = False
+    command = _serve if args.command == "serve" else _draft
     try:
         config = load_config(args.config)
-        asyncio.run(_serve(config))
+        asyncio.run(command(config))
     except PulseError as error:
-        _log.exception("start_failed")
+        _log.exception("command_failed", extra={"command": args.command})
         raise SystemExit(1) from error
 
 
@@ -68,12 +72,35 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="pulse")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser(
-        "serve", parents=[common], help="run the chat endpoint and delivery until stopped"
+        "serve",
+        parents=[common],
+        help="run the chat endpoint, the email channel, the draft schedule and delivery until"
+        " stopped",
+    )
+    commands.add_parser(
+        "draft",
+        parents=[common],
+        help="post the start instruction, unless a newsletter awaits its send, and exit once"
+        " the run completes",
     )
     return parser.parse_args(argv)
 
 
-async def _serve(config: Config) -> None:
+@dataclasses.dataclass(frozen=True)
+class _Components:
+    """Everything both commands run, connected."""
+
+    clock: Callable[[], datetime]
+    renderer: Renderer
+    outbox: Outbox
+    orchestrator: Orchestrator
+    delivery: Delivery
+    channel: EmailChannel
+
+
+@contextlib.asynccontextmanager
+async def _components(config: Config) -> AsyncIterator[_Components]:
+    """Create the adapters and connect them; the Graph credential stays open until exit."""
     llm_key = _environment(config.llm.api_key_env)
     store = SqliteStore(config.state.db_path)
     await store.initialise()
@@ -92,34 +119,59 @@ async def _serve(config: Config) -> None:
             GraphMailbox(client, address, graph.max_retries)
             for address in (config.mailboxes.submissions, config.mailboxes.conversation)
         )
-        # One run lock for orchestrator runs and delivery.
-        lock = asyncio.Lock()
+        # One run lock for orchestrator runs and delivery, in this process and in any other
+        # Pulse process on the same store, such as pulse draft beside pulse serve.
+        lock = RunLock(config.state.db_path.with_suffix(".lock"))
         outbox = build_outbox(config, conversation, store, renderer)
         operations = build_operations(config, store, submissions, outbox, renderer, clock)
         provider = OpenAIProvider(base_url=config.llm.base_url, api_key=llm_key)
         orchestrator = build_orchestrator(config, store, operations, provider, lock)
-        delivery = build_delivery(
-            config, store, submissions, conversation, outbox, renderer, clock, lock
+        yield _Components(
+            clock=clock,
+            renderer=renderer,
+            outbox=outbox,
+            orchestrator=orchestrator,
+            delivery=build_delivery(
+                config, store, submissions, conversation, outbox, renderer, clock, lock
+            ),
+            channel=build_email_channel(
+                config, store, conversation, orchestrator, operations, outbox, renderer
+            ),
         )
-        channel = build_email_channel(
-            config, store, conversation, orchestrator, operations, outbox, renderer
-        )
+
+
+async def _serve(config: Config) -> None:
+    async with _components(config) as pulse:
         auth = config.auth
         verifier = JwtVerifier(auth.issuer, auth.audience, auth.jwks)
         app = create_app(
-            orchestrator, verifier.verify, auth.reviewer_role, clock, renderer.markdown
+            pulse.orchestrator,
+            verifier.verify,
+            auth.reviewer_role,
+            pulse.clock,
+            pulse.renderer.markdown,
         )
         stop = asyncio.Event()
         interval = timedelta(seconds=config.schedule.poll_interval_seconds)
         # Email first, so a withdrawal by email takes effect before a send due in the same poll.
-        jobs = {"email": channel.poll, "delivery": delivery.deliver}
-        polling = asyncio.create_task(poll(jobs, interval, stop))
+        jobs = {"email": pulse.channel.poll, "delivery": pulse.delivery.deliver}
+        tasks = [asyncio.create_task(poll(jobs, interval, stop))]
+        if (cron := config.schedule.draft_cron) is not None:
+            post = functools.partial(start, pulse.orchestrator, pulse.outbox, "scheduler")
+            tasks.append(
+                asyncio.create_task(schedule(cron, config.timezone, pulse.clock, post, stop))
+            )
         try:
             await serve(app, config.chat.port)
         finally:
-            # A poll job in progress finishes before Pulse exits.
+            # A job in progress finishes before Pulse exits.
             stop.set()
-            await polling
+            await asyncio.gather(*tasks)
+
+
+async def _draft(config: Config) -> None:
+    async with _components(config) as pulse:
+        await start(pulse.orchestrator, pulse.outbox, "pulse draft")
 
 
 def build_outbox(config: Config, conversation: Mailbox, store: Store, renderer: Renderer) -> Outbox:
@@ -171,7 +223,7 @@ def build_orchestrator(
     store: Store,
     operations: Operations,
     provider: OpenAIProvider,
-    lock: asyncio.Lock,
+    lock: contextlib.AbstractAsyncContextManager[None],
 ) -> Orchestrator:
 
     def model(agent: str) -> Model:
@@ -212,7 +264,7 @@ def build_delivery(
     outbox: Outbox,
     renderer: Renderer,
     clock: Callable[[], datetime],
-    lock: asyncio.Lock,
+    lock: contextlib.AbstractAsyncContextManager[None],
 ) -> Delivery:
     mailboxes = config.mailboxes
     return Delivery(

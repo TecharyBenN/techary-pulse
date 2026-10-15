@@ -39,7 +39,8 @@ A phase with a live check is complete only when the check has passed against the
 | Microsoft Graph calls | Microsoft Graph SDK for Python (`msgraph-sdk`), on Kiota's client factory | Microsoft maintains the requests, models, retries and paging. The client is built on Kiota's factory because `msgraph-core` 1.5.1's transport skips the SDK middleware, so throttled requests would not be retried. |
 | Rendering | Jinja2 with autoescaping on | Escapes model output and email-derived text by default. |
 | Email replies | `markdown-it-py` with its linkify extra, raw HTML off | Converts the orchestrator's Markdown replies to HTML for email, following CommonMark, and escapes any raw HTML in them; Python-Markdown cannot escape raw HTML. |
-| Scheduling | A cron library that supports IANA time zones, chosen in phase 11 | Computes the next start in `Europe/London` correctly across daylight saving changes. |
+| Scheduling | croniter | The established cron library, maintained under Pallets Eco; it computes the next start from a time-zone-aware time, so `Europe/London` starts keep their local time across daylight saving changes. |
+| Run lock across processes | Standard library `fcntl.flock` on a lock file beside the store, tried without blocking | `pulse draft` runs beside `pulse serve`; a lock the kernel holds per open file needs no dependency and is released when the process exits. |
 | Logging | Standard library `logging` with python-json-logger | The established JSON formatter, which logs exceptions in full. |
 | Command line | `argparse` | Two commands do not need a framework. |
 | Container | `python:3.14-slim`, running as a non-root user | Small image with no build tools. |

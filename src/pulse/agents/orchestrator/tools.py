@@ -20,7 +20,7 @@ from pulse.agents.sensitivity.agent import SensitivityAgent
 from pulse.agents.writer.agent import WriterAgent, WriterTask
 from pulse.entities.base import Entity
 from pulse.entities.content import Verdict, draft_changed
-from pulse.entities.conversation import ReviewerMessage
+from pulse.entities.conversation import ReviewerMessage, RunMessage
 from pulse.entities.errors import Refusal, SpecialistError
 from pulse.entities.extracts import (
     Consolidation,
@@ -136,6 +136,18 @@ def _reported[**P, T](tool: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[
     return wrapper
 
 
+def _reviewer_message(ctx: RunContext[RunMessage]) -> ReviewerMessage | None:
+    """The reviewer message the run answers, or None in a start instruction's run, which has no
+    reviewer; the caller and their words come from the run, never from the model."""
+    return ctx.deps if isinstance(ctx.deps, ReviewerMessage) else None
+
+
+def _caller(ctx: RunContext[RunMessage]) -> str | None:
+    """The reviewer the channel verified, or None in a run with no reviewer."""
+    message = _reviewer_message(ctx)
+    return message.author if message else None
+
+
 def _named(email: ScreenedEmail) -> dict[str, Any]:
     """The fields that name an email in its extract outcome."""
     return email.model_dump(include={"message_id", "sender_name", "received"})
@@ -188,7 +200,7 @@ class Tools:
         self._writer = writer
         self._judge = judge
 
-    def toolset(self) -> FunctionToolset[ReviewerMessage]:
+    def toolset(self) -> FunctionToolset[RunMessage]:
         # A tool can read what an earlier tool in the same response stored, such as consolidate
         # reading extract's records, so tools called together run one at a time, in call order.
         return FunctionToolset(
@@ -283,14 +295,13 @@ class Tools:
 
     @_reported
     async def restore(
-        self, ctx: RunContext[ReviewerMessage], excluded_id: str, section: str | None = None
+        self, ctx: RunContext[RunMessage], excluded_id: str, section: str | None = None
     ) -> RestoreResult:
         """Include the named excluded record, only when a reviewer's feedback asks for it. A
         record that fits no section needs `section`, the title of the section the reviewer
         wants it in; without one, the refusal lists the sections to ask the reviewer about. The
         items are then out of date, so call consolidate next with every included record."""
-        # The caller comes from the run, never from the model.
-        return await self._operations.restore(excluded_id, ctx.deps.author, section)
+        return await self._operations.restore(excluded_id, _caller(ctx), section)
 
     @_reported
     async def consolidate(self) -> dict[str, Any]:
@@ -410,7 +421,7 @@ class Tools:
         }
 
     @_reported
-    async def present_draft(self, ctx: RunContext[ReviewerMessage]) -> PresentResult:
+    async def present_draft(self, ctx: RunContext[RunMessage]) -> PresentResult:
         """Save the working draft as the next version and email it to the reviewers,
         withdrawing any approval first. When the working draft is unchanged since the latest
         version, email that version again instead, with the same number and no other change.
@@ -420,28 +431,31 @@ class Tools:
         the text; whether it was resent; and whether an approval was withdrawn and, if so,
         whether the reviewers were told."""
         # In the email channel, the reply carries the version, so reviewers get one email.
-        email_reviewers = ctx.deps.channel != "email"
+        message = _reviewer_message(ctx)
+        email_reviewers = message is None or message.channel != "email"
         return await self._operations.present_draft(email_reviewers=email_reviewers)
 
     @_reported
-    async def approve(self, ctx: RunContext[ReviewerMessage], version: int) -> ApproveResult:
+    async def approve(self, ctx: RunContext[RunMessage], version: int) -> ApproveResult:
         """Record the reviewer's approval of the named version, which must be the latest
         presented version, and set its send time. Pulse checks that the reviewer's own message
         starts with approve v{version}. Returns the version and the send time."""
-        # The caller and their words come from the run, never from the model.
-        return await self._operations.approve(version, ctx.deps.author, ctx.deps.text)
+        message = _reviewer_message(ctx)
+        return await self._operations.approve(
+            version, _caller(ctx), message.text if message else None
+        )
 
     @_reported
-    async def withdraw_approval(self, ctx: RunContext[ReviewerMessage]) -> NoticeResult:
+    async def withdraw_approval(self, ctx: RunContext[RunMessage]) -> NoticeResult:
         """Withdraw the approval, so the newsletter is not sent, and email the reviewers that
         the send is cancelled. Returns whether that email was sent."""
-        return await self._operations.withdraw_approval(ctx.deps.author)
+        return await self._operations.withdraw_approval(_caller(ctx))
 
     @_reported
-    async def abandon(self, ctx: RunContext[ReviewerMessage]) -> NoticeResult:
+    async def abandon(self, ctx: RunContext[RunMessage]) -> NoticeResult:
         """Close the newsletter unsent, only when a reviewer explicitly asks, and email the
         reviewers that it was abandoned. Returns whether that email was sent."""
-        return await self._operations.abandon(ctx.deps.author)
+        return await self._operations.abandon(_caller(ctx))
 
     async def _items(
         self, newsletter_id: str

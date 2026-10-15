@@ -2,7 +2,7 @@
 
 Techary Pulse turns staff updates emailed to a Microsoft 365 submissions mailbox into a newsletter. An orchestrator agent drafts each newsletter, discusses it with reviewers over email or LibreChat, revises it from their feedback and, once a reviewer approves it, sends it to an all-staff distribution list. This README covers what Pulse needs to run and how to work on it. Behaviour is defined in the [design document](docs/techary-pulse-design.md), and delivery is planned in the [development plan](docs/development-plan.md).
 
-Pulse is being rebuilt to the current design. So far, `pulse serve` runs the chat endpoint and the email channel, where reviewers talk to the orchestrator, and delivery. The orchestrator can start a newsletter from the submissions mailbox, draft, check and present it, record approval, withdraw an approval and abandon a newsletter; delivery sends an approved newsletter to all staff at its send time. Reviewers can reply to any reviewer email, and the reply comes back in the same thread. The schedule is still to come, as the development plan sets out.
+Pulse is being rebuilt to the current design. So far, `pulse serve` runs the chat endpoint and the email channel, where reviewers talk to the orchestrator, the draft schedule and delivery, and `pulse draft` asks for a newsletter once. The orchestrator can start a newsletter from the submissions mailbox, draft, check and present it, record approval, withdraw an approval and abandon a newsletter; delivery sends an approved newsletter to all staff at its send time. Reviewers can reply to any reviewer email, and the reply comes back in the same thread. Retention and the remaining failure handling are still to come, as the development plan sets out.
 
 ## How it works
 
@@ -69,11 +69,11 @@ A container runtime on a server with outbound access to `graph.microsoft.com`, `
 - `/etc/pulse/pulse.pem`, the certificate and its private key;
 - `/var/lib/pulse/state`, a writable directory for the store.
 
-The files under `/etc/pulse` must be readable only by the account that runs the container. The container runs `pulse serve --config /config/config.yaml`, so `config.yaml` is mounted at `/config/config.yaml`, and `state.db_path` points into the mounted state directory.
+The files under `/etc/pulse` must be readable only by the account that runs the container. The container runs `pulse serve --config /config/config.yaml`, so `config.yaml` is mounted at `/config/config.yaml`, and `state.db_path` points into the mounted state directory. To draft a newsletter outside the schedule, run `pulse draft --config /config/config.yaml` in the running container; it shares the store's run lock with `pulse serve`.
 
 ## Configuration
 
-Pulse reads `config.yaml`, described in the [design](docs/techary-pulse-design.md#configuration). It stops at start-up if any recipient is outside `allowed_recipient_domains`.
+Pulse reads `config.yaml`, described in the [design](docs/techary-pulse-design.md#configuration). It stops at start-up if any recipient is outside `allowed_recipient_domains`, or if `schedule.draft_cron` is not a cron expression.
 
 ## Development
 
@@ -100,6 +100,12 @@ Copy [config/config.dev.example.yaml](config/config.dev.example.yaml) to `config
 
 ```sh
 uv run --env-file .env pulse serve
+```
+
+The dev configuration leaves `schedule.draft_cron` unset, so to draft a newsletter as the schedule would, run this beside `pulse serve`; it emails version 1 to the reviewers and exits once the run completes:
+
+```sh
+uv run --env-file .env pulse draft
 ```
 
 Every `schedule.poll_interval_seconds`, delivery sends an approved newsletter whose send time has come; with the dev configuration's `send.mode: on_approval`, that is the first poll after approval. A sent newsletter's emails move out of the dev submissions inbox; before drafting again, empty the inbox and reseed the corpus with `uv run --env-file .env pytest -m live -k test_seed_the_corpus -s`. To start again from a clean dev inbox, stop Pulse and delete `state/pulse.db`, so the store and the mailbox match. The store has no migrations, so also delete `state/pulse.db` after a change to its tables.

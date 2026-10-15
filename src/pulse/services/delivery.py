@@ -1,6 +1,6 @@
 """Delivery: sends an approved newsletter to all staff and moves its screened emails."""
 
-import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from datetime import datetime
@@ -36,7 +36,7 @@ class Delivery:
         render_newsletter: Callable[[Content, EntryCredits], str],
         history_note: Callable[[str], bytes],
         clock: Callable[[], datetime],
-        lock: asyncio.Lock,
+        lock: contextlib.AbstractAsyncContextManager[None],
         *,
         all_staff: str,
         reply_to: str,

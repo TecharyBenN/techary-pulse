@@ -2,6 +2,7 @@
 newsletter's history."""
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 import time
@@ -27,8 +28,15 @@ from pulse.agents.orchestrator.agent import NO_REPLY, OrchestratorAgent
 from pulse.agents.orchestrator.tools import ShowResult, Tools, progress_note
 from pulse.entities.base import Entity
 from pulse.entities.content import Content, EntryNotes, Version
-from pulse.entities.conversation import ReviewerMessage, channel_changed
+from pulse.entities.conversation import (
+    ReviewerMessage,
+    RunMessage,
+    StartInstruction,
+    channel_changed,
+    start_instruction,
+)
 from pulse.entities.errors import PulseError, RunError
+from pulse.entities.lifecycle import awaiting_send
 from pulse.entities.store import DELIVERY_NOTE, Store
 from pulse.services.operations import entry_notes
 
@@ -90,8 +98,8 @@ class _History:
         # The latest newsletter each message's run presented or showed, by message ID.
         self.shown: dict[str, _Shown] = {}
 
-    async def load(self, message: ReviewerMessage) -> None:
-        """Record the message as feedback, then load the saved steps."""
+    async def load(self, message: RunMessage) -> None:
+        """Record a reviewer message as feedback, then load the saved steps."""
         if self.newsletter_id is None:
             return
         await self._record(message)
@@ -106,8 +114,10 @@ class _History:
         self.messages = _superseded_results_replaced([step for _, step in self._steps])
         self.owner = rows[-1].message_id if rows else None
 
-    async def recorded(self, message_id: str) -> ReviewerMessage:
-        """The recorded reviewer message whose run saved the given steps."""
+    async def message_of(self, message_id: str) -> RunMessage:
+        """The start instruction or recorded reviewer message whose run saved the given steps."""
+        if (instruction := start_instruction(message_id)) is not None:
+            return instruction
         feedback = await self._store.list_feedback(self.newsletter_id) if self.newsletter_id else []
         recorded = next((m for m in feedback if m.message_id == message_id), None)
         if recorded is None:
@@ -135,7 +145,7 @@ class _History:
             or (isinstance(last, ModelResponse) and bool(last.tool_calls))
         )
 
-    async def add(self, message: ReviewerMessage, step: ModelMessage) -> None:
+    async def add(self, message: RunMessage, step: ModelMessage) -> None:
         """Add a step of the message's run, saving it to the latest newsletter."""
         message_id = message.message_id
         self.messages.append(step)
@@ -156,8 +166,13 @@ class _History:
         await self._record(message)
         await self._save(latest.newsletter_id, message_id, [step])
 
-    async def _record(self, message: ReviewerMessage) -> None:
-        if self.newsletter_id is not None and message.message_id not in self._recorded:
+    async def _record(self, message: RunMessage) -> None:
+        """Record a reviewer message as feedback; the start instruction is never feedback."""
+        if (
+            isinstance(message, ReviewerMessage)
+            and self.newsletter_id is not None
+            and message.message_id not in self._recorded
+        ):
             await self._store.record_feedback(self.newsletter_id, message)
             self._recorded.add(message.message_id)
 
@@ -186,22 +201,21 @@ class Orchestrator:
         summary: Callable[[], Awaitable[dict[str, Any] | None]],
         max_tool_calls: int,
         max_run_time: timedelta,
-        lock: asyncio.Lock,
+        lock: contextlib.AbstractAsyncContextManager[None],
     ) -> None:
         """`summary` gives the latest newsletter's state for each message. `lock` is the run
-        lock, which delivery also takes, so a run and a delivery never change a newsletter at the
-        same time."""
+        lock, which delivery and `pulse draft` also take, so a run and a delivery never change a
+        newsletter at the same time; it keeps arrival order."""
         self._agent = agent
         self._store = store
         self._summary = summary
         self._max_tool_calls = max_tool_calls
         self._max_run_time = max_run_time
-        # asyncio.Lock wakes its waiters first in, first out, which keeps arrival order.
         self._lock = lock
 
     async def handle(
         self,
-        message: ReviewerMessage,
+        message: RunMessage,
         on_progress: Progress = _no_progress,
         *,
         on_reply: DeliverReply | None = None,
@@ -213,15 +227,21 @@ class Orchestrator:
         does; an error it raises is raised as it is, because the run itself completed.
         `new_chat` says the message opens a new chat, so the reply starts with a recap, as it
         does when the conversation's previous message came through the other channel.
+
+        A start instruction is skipped while the newsletter awaits its send, checked under the
+        lock, so an approval in a run just finished is seen.
         """
         async with self._lock:
             started = time.monotonic()
             newsletter = await self._store.get_latest_newsletter()
             newsletter_id = newsletter.newsletter_id if newsletter else None
+            if isinstance(message, StartInstruction) and newsletter and awaiting_send(newsletter):
+                _log.info("start_skipped", extra={"conversation_id": newsletter_id})
+                return RunReply(text=None, newsletter=None, notes=_NO_NOTES, version=None)
             fields: dict[str, object] = {
                 "conversation_id": newsletter_id,
                 "message_id": message.message_id,
-                "channel": message.channel,
+                "channel": _channel(message),
             }
             history = _History(self._store, newsletter_id)
             try:
@@ -247,7 +267,7 @@ class Orchestrator:
             return run_reply
 
     async def _shown(
-        self, message: ReviewerMessage, history: _History
+        self, message: RunMessage, history: _History
     ) -> tuple[Content | None, EntryNotes, Version | None]:
         """The newsletter this message's run last presented or showed, including in an earlier
         attempt, with its notes, and the version when the run presented it.
@@ -270,7 +290,7 @@ class Orchestrator:
         return version.content, version.notes, version if shown.presented else None
 
     async def _converse(
-        self, message: ReviewerMessage, history: _History, on_progress: Progress, new_chat: bool
+        self, message: RunMessage, history: _History, on_progress: Progress, new_chat: bool
     ) -> str:
         await history.load(message)
         if (reply := history.completed_reply(message.message_id)) is not None:
@@ -281,19 +301,26 @@ class Orchestrator:
             if owner == message.message_id:
                 # A retried message is complete once its own run is.
                 return await self._run(None, message, history, on_progress)
-            await self._run(None, await history.recorded(owner), history, on_progress)
+            await self._run(None, await history.message_of(owner), history, on_progress)
+        prompt = self._agent.message(
+            message, await self._summary(), recap=await self._recap(message, history, new_chat)
+        )
+        return await self._run(prompt, message, history, on_progress)
+
+    async def _recap(self, message: RunMessage, history: _History, new_chat: bool) -> bool:
+        """Whether the reply starts with a recap, because the reviewer's screen shows nothing of
+        the conversation; a start instruction's reply has no reader."""
+        if not isinstance(message, ReviewerMessage):
+            return False
         feedback = (
             await self._store.list_feedback(history.newsletter_id) if history.newsletter_id else []
         )
-        # The reviewer's screen shows nothing of the conversation in either case.
-        recap = new_chat or channel_changed(feedback, message)
-        prompt = self._agent.message(message, await self._summary(), recap=recap)
-        return await self._run(prompt, message, history, on_progress)
+        return new_chat or channel_changed(feedback, message)
 
     async def _run(
         self,
         prompt: str | None,
-        message: ReviewerMessage,
+        message: RunMessage,
         history: _History,
         on_progress: Progress,
     ) -> str:
@@ -324,8 +351,8 @@ class Orchestrator:
 
 
 async def _call_tools(
-    node: CallToolsNode[ReviewerMessage, str],
-    run: AgentRun[ReviewerMessage, str],
+    node: CallToolsNode[RunMessage, str],
+    run: AgentRun[RunMessage, str],
     newsletter_id: str | None,
     on_progress: Progress,
 ) -> None:
@@ -347,6 +374,11 @@ async def _call_tools(
                         "duration_ms": _ms_since(started.pop(part.tool_call_id)),
                     },
                 )
+
+
+def _channel(message: RunMessage) -> str:
+    """The channel a message came through, for the log; the start instruction has none."""
+    return message.channel if isinstance(message, ReviewerMessage) else "start_instruction"
 
 
 def history_note(text: str) -> bytes:

@@ -16,7 +16,7 @@ from pydantic import (
 
 from pulse.entities.base import StrictEntity
 from pulse.entities.errors import ConfigError
-from pulse.entities.lifecycle import SendRule
+from pulse.entities.lifecycle import DraftCron, SendRule
 from pulse.entities.mail import domain_in
 
 AGENT_NAMES = (
@@ -52,7 +52,7 @@ class MailboxesConfig(StrictEntity):
 class ScheduleConfig(StrictEntity):
     """The schedule section: the draft schedule and the poll interval."""
 
-    draft_cron: str | None = None
+    draft_cron: DraftCron | None = None
     poll_interval_seconds: PositiveInt
 
 

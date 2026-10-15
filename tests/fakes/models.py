@@ -26,7 +26,7 @@ from pulse.agents.base import SpecialistAgent
 from pulse.agents.orchestrator.agent import OrchestratorAgent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import ShowResult
-from pulse.entities.conversation import ReviewerMessage
+from pulse.entities.conversation import RunMessage
 from pulse.entities.extracts import DecomposerOutput, Extraction, SensitivityOutput
 from pulse.entities.mail import body_lines
 from pulse.entities.store import Store
@@ -55,7 +55,7 @@ class Tools:
         self.calls += 1
         return "pong"
 
-    def caller(self, ctx: RunContext[ReviewerMessage]) -> str:
+    def caller(self, ctx: RunContext[RunMessage]) -> str:
         self.callers.append(ctx.deps.message_id)
         return "noted"
 
@@ -67,14 +67,14 @@ class Tools:
         """Stands in for the real tool, showing the working draft, which the test stores."""
         return ShowResult(version=None)
 
-    def toolset(self) -> FunctionToolset[ReviewerMessage]:
+    def toolset(self) -> FunctionToolset[RunMessage]:
         return FunctionToolset([self.ping, self.caller, self.present_draft, self.show_draft])
 
 
 def make_orchestrator(
     store: Store,
     model: ModelFunction,
-    toolset: AbstractToolset[ReviewerMessage] | None = None,
+    toolset: AbstractToolset[RunMessage] | None = None,
     max_tool_calls: int = 40,
     max_run_time: timedelta = timedelta(minutes=15),
     lock: asyncio.Lock | None = None,

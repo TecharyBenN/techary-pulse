@@ -1,4 +1,12 @@
-from pulse.entities.conversation import ReviewerMessage, channel_changed
+import pytest
+
+from pulse.entities.conversation import (
+    ReviewerMessage,
+    StartInstruction,
+    StartSource,
+    channel_changed,
+    start_instruction,
+)
 from tests.messages import make_message
 
 
@@ -43,3 +51,22 @@ def test_a_message_not_yet_recorded_compares_with_the_latest() -> None:
     message = make_message("c02", channel="email")
 
     assert channel_changed(_feedback(make_message("r01")), message)
+
+
+def test_a_new_start_instruction_has_its_own_id_tagged_with_its_source() -> None:
+    first, second = StartInstruction.new("scheduler"), StartInstruction.new("scheduler")
+
+    assert first.message_id.startswith("start-scheduler-")
+    assert StartInstruction.new("pulse draft").message_id.startswith("start-draft-")
+    assert first.message_id != second.message_id
+
+
+@pytest.mark.parametrize("source", ["scheduler", "pulse draft"])
+def test_a_start_instruction_tag_gives_back_its_instruction(source: StartSource) -> None:
+    instruction = StartInstruction.new(source)
+
+    assert start_instruction(instruction.message_id) == instruction
+
+
+def test_a_reviewer_message_id_is_no_start_instruction() -> None:
+    assert start_instruction("r01") is None

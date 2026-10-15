@@ -32,7 +32,7 @@ from pulse.agents.orchestrator.tools import (
 from pulse.agents.sensitivity.agent import SensitivityAgent
 from pulse.agents.writer.agent import WriterAgent
 from pulse.entities.content import Entry, JudgeOutput
-from pulse.entities.conversation import ReviewerMessage
+from pulse.entities.conversation import RunMessage, StartInstruction
 from pulse.entities.extracts import DecomposerOutput, Extraction, ExtractorOutput, LineFacts
 from pulse.entities.lifecycle import abandon, start_send
 from pulse.entities.mail import ScreenedEmail, message_lines
@@ -723,6 +723,23 @@ async def test_present_draft_in_the_email_channel_sends_no_email(store: SqliteSt
     assert (conversation.sent, conversation.replies) == ([], [])
 
 
+async def test_present_draft_from_the_start_instruction_emails_the_reviewers(
+    store: SqliteStore,
+) -> None:
+    conversation = FakeMailbox()
+    tools = _tools(store, conversation=conversation)
+    await _consolidated(tools)
+    await tools.write("Write the first draft.")
+
+    result = await tools.present_draft(_run_for(StartInstruction.new("scheduler")))
+
+    assert not isinstance(result, str)
+    assert result.version == 1
+    # The reviewer email opens the conversation, because no reviewer is present.
+    [email] = conversation.sent
+    assert email.to == [REVIEWERS]
+
+
 async def test_get_newsletter_shows_whether_the_draft_changed(store: SqliteStore) -> None:
     tools = _tools(store)
     newsletter_id = await _consolidated(tools)
@@ -855,8 +872,9 @@ async def test_judge_reports_an_invalid_response_and_stores_nothing(store: Sqlit
     assert await store.get_verdicts(newsletter_id) is None
 
 
-def _run_for(message: ReviewerMessage) -> RunContext[ReviewerMessage]:
-    """The context a run gives its tools: the reviewer message it answers."""
+def _run_for(message: RunMessage) -> RunContext[RunMessage]:
+    """The context a run gives its tools: the reviewer message or start instruction it
+    answers."""
     return RunContext(deps=message, model=TestModel(), usage=RunUsage())
 
 
@@ -948,6 +966,19 @@ async def test_approve_refuses_without_the_reviewers_own_words(store: SqliteStor
     result = await tools.approve(_run_for(make_message(text="Looks good to me")), 1)
 
     assert result == "Refused: the reviewer's message does not start with approve v1"
+
+
+async def test_reviewer_tools_refuse_in_a_start_instruction_run(store: SqliteStore) -> None:
+    tools = _tools(store)
+    newsletter_id = await _presented(tools)
+    excluded_id = await _excluded_id(store, newsletter_id, "m02")
+    run = _run_for(StartInstruction.new("scheduler"))
+    refused = "Refused: no reviewer is present in this run"
+
+    assert await tools.approve(run, 1) == refused
+    assert await tools.restore(run, excluded_id, "Customer wins") == refused
+    assert await tools.withdraw_approval(run) == refused
+    assert await tools.abandon(run) == refused
 
 
 async def test_withdraw_approval_returns_the_newsletter_to_review(store: SqliteStore) -> None:
