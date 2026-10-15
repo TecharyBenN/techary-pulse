@@ -242,3 +242,11 @@ Exit criteria: crash-recovery tests inject a failure at each step boundary and a
 Scope: the deployment requirements in the production tenant, including the Pulse app registration's reviewer role and the conversation mailbox's sender restriction, the production configuration with Entra ID as the issuer, the container deployed on the Pulse server, and LibreChat connected through the production gateway, passing each user's Entra ID token.
 
 Exit criteria: the first real newsletter is drafted, reviewed, approved and sent to all staff.
+
+
+# Additional points to consider / features to add
+
+* Styling, email templates, and writing guideline skills - skills and templates exist, just need adding
+* Stat collection and inclusion in the newsletter - retrieval of stats from company systems, high level stat rundown at the top of every newsletter
+* Teams adapter - we have email and api channels (libre via api), but we dont have a teams integration
+* Deployable unit - is the project deploy ready
