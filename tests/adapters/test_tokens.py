@@ -9,7 +9,7 @@ import pytest
 
 from pulse.adapters.tokens import JwtVerifier
 from pulse.entities.auth import Caller
-from pulse.entities.errors import InvalidToken
+from pulse.entities.errors import InvalidTokenError
 from tests.tokens import (
     AUDIENCE,
     ISSUER,
@@ -90,7 +90,7 @@ async def test_token_without_roles_has_none(jwks: str) -> None:
     ],
 )
 async def test_invalid_token_is_refused(jwks: str, token: str) -> None:
-    with pytest.raises(InvalidToken):
+    with pytest.raises(InvalidTokenError):
         await _verifier(jwks).verify(token)
 
 
@@ -103,19 +103,19 @@ async def test_token_with_one_matching_audience_is_accepted(jwks: str) -> None:
 async def test_expired_token_is_refused(jwks: str) -> None:
     token = make_token(exp=datetime.now(UTC) - timedelta(minutes=1))
 
-    with pytest.raises(InvalidToken):
+    with pytest.raises(InvalidTokenError):
         await _verifier(jwks).verify(token)
 
 
 async def test_token_not_valid_yet_is_refused(jwks: str) -> None:
     token = make_token(nbf=datetime.now(UTC) + timedelta(minutes=10))
 
-    with pytest.raises(InvalidToken):
+    with pytest.raises(InvalidTokenError):
         await _verifier(jwks).verify(token)
 
 
 async def test_missing_key_set_refuses_every_token(tmp_path: Path) -> None:
-    with pytest.raises(InvalidToken):
+    with pytest.raises(InvalidTokenError):
         await _verifier(str(tmp_path / "missing.json")).verify(make_token())
 
 
@@ -123,7 +123,7 @@ async def test_key_set_file_is_read_again_after_rotation(tmp_path: Path) -> None
     path = tmp_path / "jwks.json"
     path.write_text('{"keys": []}')
     verifier = _verifier(str(path))
-    with pytest.raises(InvalidToken):
+    with pytest.raises(InvalidTokenError):
         await verifier.verify(make_token())
 
     write_jwks(path)

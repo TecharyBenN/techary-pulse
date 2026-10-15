@@ -18,9 +18,11 @@ from pydantic_ai.messages import (
     ToolCallPart,
     UserPromptPart,
 )
+from pydantic_ai.models import Model
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
+from pulse.agents.base import SpecialistAgent
 from pulse.agents.orchestrator.agent import OrchestratorAgent
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import ShowResult
@@ -65,20 +67,22 @@ class Tools:
         """Stands in for the real tool, showing the working draft, which the test stores."""
         return ShowResult(version=None)
 
+    def toolset(self) -> FunctionToolset[ReviewerMessage]:
+        return FunctionToolset([self.ping, self.caller, self.present_draft, self.show_draft])
+
 
 def make_orchestrator(
     store: Store,
     model: ModelFunction,
-    tools: Tools | None = None,
+    toolset: AbstractToolset[ReviewerMessage] | None = None,
     max_tool_calls: int = 40,
     max_run_time: timedelta = timedelta(minutes=15),
     lock: asyncio.Lock | None = None,
     summary: Callable[[], Awaitable[dict[str, Any] | None]] | None = None,
 ) -> Orchestrator:
-    toolset = FunctionToolset(
-        [tools.ping, tools.caller, tools.present_draft, tools.show_draft] if tools else []
-    )
-    agent = OrchestratorAgent(FunctionModel(model), toolset)
+    """The orchestrator with the stand-in model, the toolset, which has no tools by default, and
+    the example configuration's run limits."""
+    agent = OrchestratorAgent(FunctionModel(model), toolset or FunctionToolset([]))
     return Orchestrator(
         agent, store, summary or no_state, max_tool_calls, max_run_time, lock or asyncio.Lock()
     )
@@ -115,11 +119,16 @@ def reply_with(text: str) -> ModelFunction:
     return model
 
 
-def responses(*answers: ModelResponse | Exception) -> ModelFunction:
-    """Answer each model request with the next response, or raise the next exception."""
+def responses(
+    *answers: ModelResponse | Exception, seen: list[list[ModelMessage]] | None = None
+) -> ModelFunction:
+    """Answer each model request with the next response, or raise the next exception; `seen`
+    collects the messages of each request."""
     remaining = list(answers)
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if seen is not None:
+            seen.append(list(messages))
         answer = remaining.pop(0)
         if isinstance(answer, Exception):
             raise answer
@@ -128,16 +137,55 @@ def responses(*answers: ModelResponse | Exception) -> ModelFunction:
     return model
 
 
+def first_prompt(messages: list[ModelMessage]) -> str:
+    """The user prompt of a run's first request, which holds the agent's task."""
+    request = messages[0]
+    assert isinstance(request, ModelRequest)
+    [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
+    assert isinstance(prompt, str)
+    return prompt
+
+
+def data_block(prompt: str, tag: str) -> Any:
+    """The JSON in the prompt's data block with this tag."""
+    return json.loads(prompt.split(f"<{tag}>\n", 1)[1].split(f"\n</{tag}>", 1)[0])
+
+
+async def specialist_request[T, O: BaseModel](
+    build: Callable[[Model], SpecialistAgent[T, O]], task: T, output: O
+) -> ModelRequest:
+    """Run the agent built by `build` once, answering `output`, and check what every specialist
+    agent sends: no tools, native output, the task as its only user prompt, and a description for
+    every field of its output schema, nested fields too. Return the request for the agent's own
+    checks."""
+    seen: list[tuple[list[ModelMessage], AgentInfo]] = []
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append((messages, info))
+        return text_response(output.model_dump_json())
+
+    agent = build(FunctionModel(model))
+    assert await agent.answer(task) == output
+    [(messages, info)] = seen
+    assert (info.function_tools, info.output_tools) == ([], [])
+    assert info.model_request_parameters.output_mode == "native"
+    assert first_prompt(messages) == agent.message(task)
+    schema = info.model_request_parameters.output_object
+    assert schema is not None
+    models = [schema.json_schema, *schema.json_schema.get("$defs", {}).values()]
+    assert all(field.get("description") for m in models for field in m["properties"].values())
+    [request] = messages
+    assert isinstance(request, ModelRequest)
+    return request
+
+
 def _email_model(outputs: Mapping[str, Extraction], answer: type[BaseModel]) -> FunctionModel:
     """Answer each email with the share of the extraction set for its body, found in the first
     prompt, so a retry gets the same answer."""
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        request = messages[0]
-        assert isinstance(request, ModelRequest)
-        [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
-        assert isinstance(prompt, str)
-        email = json.loads(prompt.split("\n")[1])
+        prompt = first_prompt(messages)
+        email = data_block(prompt, "email")
         return text_response(share(outputs[email["body"]], answer).model_dump_json())
 
     return FunctionModel(model)
@@ -148,10 +196,7 @@ def extractor_model(outputs: Mapping[str, Extraction]) -> FunctionModel:
     first prompt, every line listed and all the facts under line 0."""
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        request = messages[0]
-        assert isinstance(request, ModelRequest)
-        [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
-        assert isinstance(prompt, str)
+        prompt = first_prompt(messages)
         lines = prompt_lines(prompt)
         [body] = [body for body in outputs if body_lines(body) == lines[1:]]
         return text_response(answer_for(outputs[body], lines).model_dump_json())
@@ -163,11 +208,8 @@ def decomposer_model(splits: Mapping[str, list[str]]) -> FunctionModel:
     """Return each fact unchanged, unless `splits` gives the facts it splits into."""
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        request = messages[0]
-        assert isinstance(request, ModelRequest)
-        [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
-        assert isinstance(prompt, str)
-        facts = json.loads(prompt.split("\n")[1])
+        prompt = first_prompt(messages)
+        facts = data_block(prompt, "facts")
         split = [part for fact in facts for part in splits.get(fact, [fact])]
         return text_response(DecomposerOutput(facts=split).model_dump_json())
 
@@ -188,11 +230,8 @@ def corpus_consolidator_model() -> FunctionModel:
     assert len(by_facts) == len(sources)
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        request = messages[0]
-        assert isinstance(request, ModelRequest)
-        [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
-        assert isinstance(prompt, str)
-        records = json.loads(prompt.split("\n")[1])
+        prompt = first_prompt(messages)
+        records = data_block(prompt, "extract_records")
         record_ids = {by_facts[tuple(r["facts"])]: r["record_id"] for r in records}
         return text_response(corpus_consolidation(record_ids).model_dump_json())
 

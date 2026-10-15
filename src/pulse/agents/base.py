@@ -16,7 +16,7 @@ from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import Model, ModelRequestContext
 
 from pulse.entities.conversation import ReviewerMessage
-from pulse.entities.errors import SpecialistFailed
+from pulse.entities.errors import SpecialistError
 from pulse.entities.mail import ScreenedEmail
 
 _INVALID_FINISH_REASONS = ("length", "content_filter")
@@ -104,7 +104,7 @@ class SpecialistAgent[T, O](PulseAgent[T, O]):
         self.output_validator(self._validate)
 
     async def answer(self, task: T) -> O:
-        """Return the first valid output; raise SpecialistFailed when the retry is invalid too."""
+        """Return the first valid output; raise SpecialistError when the retry is invalid too."""
         try:
             result = await self.run(self.message(task), deps=task)
         except UnexpectedModelBehavior as error:
@@ -116,7 +116,7 @@ class SpecialistAgent[T, O](PulseAgent[T, O]):
                     problems = cause.problems
                     break
                 cause = cause.__cause__
-            raise SpecialistFailed(
+            raise SpecialistError(
                 f"{self.name} gave no valid response: {'; '.join(problems)}"
             ) from error
         return result.output

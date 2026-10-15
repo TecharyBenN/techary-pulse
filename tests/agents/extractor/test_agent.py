@@ -3,8 +3,6 @@ import re
 from pathlib import Path
 
 import pytest
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from pulse.agents import extractor
@@ -12,6 +10,7 @@ from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.entities.extracts import ExtractorOutput, LineFacts
 from pulse.entities.mail import message_lines
 from tests.emails import answer_for, make_output, make_screened_email
+from tests.fakes.models import specialist_request
 
 pytestmark = pytest.mark.anyio
 
@@ -59,31 +58,12 @@ def test_unconfigured_category_is_a_problem() -> None:
 
 
 async def test_extractor_has_no_tools_and_lists_the_categories() -> None:
-    seen: list[AgentInfo] = []
-    prompts: list[ModelMessage] = []
+    request = await specialist_request(
+        lambda model: ExtractorAgent(model, CATEGORIES), EMAIL, _answer()
+    )
 
-    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        seen.append(info)
-        prompts.extend(messages)
-        return ModelResponse(parts=[TextPart(_answer().model_dump_json())])
-
-    agent = ExtractorAgent(FunctionModel(model), CATEGORIES)
-
-    assert await agent.answer(EMAIL) == _answer()
-    [info] = seen
-    assert (info.function_tools, info.output_tools) == ([], [])
-    assert info.model_request_parameters.output_mode == "native"
-    [request] = prompts
-    assert isinstance(request, ModelRequest)
     assert request.instructions is not None
     assert "customer_win: A new customer has signed." in request.instructions
-    assert [p.content for p in request.parts if isinstance(p, UserPromptPart)] == [
-        agent.message(EMAIL)
-    ]
-    # Each field says what it holds in the schema the model is given.
-    schema = info.model_request_parameters.output_object
-    assert schema is not None
-    assert all(field.get("description") for field in schema.json_schema["properties"].values())
 
 
 def test_the_message_holds_the_email_without_its_body_and_its_numbered_lines() -> None:

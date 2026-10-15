@@ -96,16 +96,25 @@ class DecomposerOutput(StrictEntity):
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 
 
+def _numbers(facts: Sequence[str]) -> list[str]:
+    """Each number in the facts once, in order."""
+    return list(dict.fromkeys(n for fact in facts for n in _NUMBER.findall(fact)))
+
+
+def added_numbers(facts: Sequence[str], source: str) -> list[str]:
+    """The numbers in the facts that `source` does not hold, each once."""
+    known = set(_NUMBER.findall(source))
+    return [n for n in _numbers(facts) if n not in known]
+
+
 def number_problems(before: Sequence[str], after: Sequence[str], source: str) -> list[str]:
     """How splitting `before` into `after` lost or invented a detail: a number of `before` that
     `after` drops, or a number of `after` that neither `before` nor `source`, the line the facts
     came from, holds."""
-    given = dict.fromkeys(n for fact in before for n in _NUMBER.findall(fact))
-    split = dict.fromkeys(n for fact in after for n in _NUMBER.findall(fact))
-    known = set(given) | set(_NUMBER.findall(source))
+    split = set(_numbers(after))
     problems = ["no facts"] if before and not after else []
-    problems += [f"dropped {n}" for n in given if n not in split]
-    problems += [f"added {n}" for n in split if n not in known]
+    problems += [f"dropped {n}" for n in _numbers(before) if n not in split]
+    problems += [f"added {n}" for n in added_numbers(after, "\n".join([*before, source]))]
     return problems
 
 

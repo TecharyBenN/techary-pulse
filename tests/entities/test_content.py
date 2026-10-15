@@ -7,7 +7,6 @@ from pulse.entities.content import (
     CheckFailure,
     Content,
     Entry,
-    EntryNotes,
     FlaggedEntry,
     UnsupportedText,
     Verdict,
@@ -23,34 +22,32 @@ from pulse.entities.content import (
 )
 from pulse.entities.errors import Refusal
 from pulse.entities.extracts import Sensitivity, restored
-from pulse.entities.mail import ScreenedEmail, screen
+from pulse.entities.mail import ScreenedEmail
 from tests.emails import (
+    NO_NOTES,
     make_draft,
     make_email,
     make_extract_record,
     make_item,
     make_screened_email,
+    screen_email,
 )
-
-SECTION_TITLES = {"customer_win": "Customer wins", "shout_out": "Shout-outs"}
-NOTES = EntryNotes(credits={}, flags={})
-
-
-def _source(sender_name: str, subject: str, body: str) -> ScreenedEmail:
-    email = make_email(sender_name=sender_name, subject=subject, body=body)
-    return screen(email, ["example.org"], [], [])
-
+from tests.operations import SECTIONS
 
 SOURCES = {
     "item-1": [
-        _source(
-            "Priya Shah",
-            "Signed Northwind Retail",
-            "Tom Evans and I signed Northwind Retail on 22 September.",
+        make_screened_email(
+            sender_name="Priya Shah",
+            subject="Signed Northwind Retail",
+            body="Tom Evans and I signed Northwind Retail on 22 September.",
         )
     ],
     "item-2": [
-        _source("Dan Wood", "Thank you Sam", "Huge thanks to Sam Patel for covering the desk.")
+        make_screened_email(
+            sender_name="Dan Wood",
+            subject="Thank you Sam",
+            body="Huge thanks to Sam Patel for covering the desk.",
+        )
     ],
 }
 
@@ -82,7 +79,7 @@ def _content(
             "headline": headline,
             "intro": intro,
             "sections": [
-                {"category": c, "title": SECTION_TITLES.get(c, c), "entries": e}
+                {"category": c, "title": SECTIONS.get(c, c), "entries": e}
                 for c, e in sections.items()
             ],
             "item_ids": ["item-1", "item-2"] if item_ids is None else item_ids,
@@ -100,7 +97,7 @@ def _check(
         content,
         SOURCES if sources is None else sources,
         feedback or [],
-        list(SECTION_TITLES),
+        list(SECTIONS),
         max_words,
     )
 
@@ -191,7 +188,15 @@ def test_name_matches_ignoring_case() -> None:
 
 
 def test_name_from_sender_names_passes() -> None:
-    sources = SOURCES | {"item-1": [_source("Priya Shah", "Signed", "Signed today.")]}
+    sources = SOURCES | {
+        "item-1": [
+            make_screened_email(
+                sender_name="Priya Shah",
+                subject="Signed",
+                body="Signed today.",
+            )
+        ]
+    }
 
     assert _check(_entry_one("Priya Shah signed.", ["Priya Shah"]), sources=sources) == []
 
@@ -319,7 +324,7 @@ def test_item_sources_maps_each_included_item_to_its_emails() -> None:
 
 def test_draft_changed_compares_the_content_with_the_latest_version() -> None:
     draft = make_draft()
-    latest = version_of(draft, 1, datetime(2026, 9, 26, 9, 0, tzinfo=UTC), [], None, NOTES)
+    latest = version_of(draft, 1, datetime(2026, 9, 26, 9, 0, tzinfo=UTC), [], None, NO_NOTES)
     revised = make_draft(Entry(item_id="item-1", text="Shorter.", people=[]))
 
     assert draft_changed(None, None) is False
@@ -335,7 +340,11 @@ def test_require_draft_refuses_when_there_is_no_working_draft() -> None:
 
 
 def test_source_text_is_subject_and_body() -> None:
-    text = source_text(_source("Priya Shah", "Signed Northwind Retail", "On 22 September."))
+    text = source_text(
+        make_screened_email(
+            sender_name="Priya Shah", subject="Signed Northwind Retail", body="On 22 September."
+        )
+    )
 
     assert text == "Signed Northwind Retail\nOn 22 September."
 
@@ -343,7 +352,7 @@ def test_source_text_is_subject_and_body() -> None:
 def test_source_text_of_rejected_screened_email_is_subject_only() -> None:
     email = make_email(sender_address="alex.morgan@example.com", subject="Signed Northwind Retail")
 
-    assert source_text(screen(email, ["example.org"], [], [])) == "Signed Northwind Retail"
+    assert source_text(screen_email(email)) == "Signed Northwind Retail"
 
 
 def test_names_in_a_forwarded_message_are_in_the_sources() -> None:
@@ -354,7 +363,7 @@ def test_names_in_a_forwarded_message_are_in_the_sources() -> None:
         body="Sharing this for everyone who orders laptops.\n\n"
         "From: Jo King, Litware\nLaptop prices rise by 5 percent on 1 November.",
     )
-    sources = {"item-1": [screen(email, ["example.org"], [], [])]}
+    sources = {"item-1": [screen_email(email)]}
     content = _content(
         entries=[
             (

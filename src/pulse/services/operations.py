@@ -163,7 +163,7 @@ class Operations:
     ) -> RestoreResult:
         """Include the named excluded record, recording the reviewer who asked; one with no
         category goes in `section`, the section the reviewer named."""
-        newsletter_id = require_open(await self._store.get_open_newsletter()).newsletter_id
+        newsletter_id = (await self._open()).newsletter_id
         records = await self._store.list_extract_records(newsletter_id)
         record = restored(
             records, excluded_id, caller, section=section, sections=self._section_titles
@@ -183,7 +183,7 @@ class Operations:
         again. With `email_reviewers` False, the email channel's reply carries the version
         instead, so reviewers receive one email.
         """
-        newsletter = require_open(await self._store.get_open_newsletter())
+        newsletter = await self._open()
         newsletter_id = newsletter.newsletter_id
         draft = await self.draft_or_version(newsletter, None)
         latest = await self.latest_version(newsletter)
@@ -217,7 +217,7 @@ class Operations:
 
     async def approve(self, version: int, caller: str | None, message: str | None) -> ApproveResult:
         """Record the reviewer's approval of the named version and set its send time."""
-        newsletter = require_open(await self._store.get_open_newsletter())
+        newsletter = await self._open()
         now = self._clock()
         send_at = send_time(self._send_rule, self._timezone, newsletter.opened_at, now)
         approved = lifecycle.approve(newsletter, version, caller, message, now, send_at)
@@ -229,13 +229,13 @@ class Operations:
     async def withdraw_approval(self, caller: str | None) -> NoticeResult:
         """Return the approved newsletter to review, and tell the reviewers the send is
         cancelled."""
-        newsletter = require_open(await self._store.get_open_newsletter())
+        newsletter = await self._open()
         _, sent = await self._withdrawn(newsletter, lifecycle.withdraw(newsletter, caller))
         return NoticeResult(notice_sent=sent)
 
     async def abandon(self, caller: str | None) -> NoticeResult:
         """Close the newsletter unsent, and tell the reviewers."""
-        newsletter = require_open(await self._store.get_open_newsletter())
+        newsletter = await self._open()
         abandoned = lifecycle.abandon(newsletter, caller, self._clock())
         await self._store.save_newsletter(abandoned)
         text = "This newsletter was abandoned and will not be sent. Its emails stay pending."
@@ -298,6 +298,9 @@ class Operations:
         if presented is None:
             raise Refusal(f"v{version} has not been presented")
         return presented
+
+    async def _open(self) -> Newsletter:
+        return require_open(await self._store.get_open_newsletter())
 
     async def _review(self, newsletter_id: str, version: Version) -> Review:
         return build_review(

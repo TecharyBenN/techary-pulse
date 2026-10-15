@@ -23,7 +23,7 @@ from pulse.agents.orchestrator.run import Orchestrator, RunReply
 from pulse.entities.auth import Caller
 from pulse.entities.content import Content, EntryNotes
 from pulse.entities.conversation import ReviewerMessage
-from pulse.entities.errors import InvalidToken, PulseError
+from pulse.entities.errors import InvalidTokenError, PulseError
 
 PATH = "/v1/chat/completions"
 NOT_A_REVIEWER = "You are not a Pulse reviewer."
@@ -194,7 +194,7 @@ async def _caller(
         return None
     try:
         return await verify(token)
-    except InvalidToken as error:
+    except InvalidTokenError as error:
         # The reason says why without repeating the token, so a misconfigured issuer shows here.
         _log.info("token_rejected", extra={"reason": str(error)})
         return None

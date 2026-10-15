@@ -26,7 +26,6 @@ from pydantic_ai.messages import (
     ModelResponse,
     ToolCallPart,
     ToolReturnPart,
-    UserPromptPart,
 )
 from pydantic_ai.models import Model
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -55,7 +54,7 @@ from pulse.entities.content import (
     check_content,
     item_sources,
 )
-from pulse.entities.errors import SpecialistFailed
+from pulse.entities.errors import SpecialistError
 from pulse.entities.extracts import (
     Consolidation,
     ConsolidatorItem,
@@ -85,8 +84,10 @@ from tests.emails import (
 from tests.fakes.clock import ControlledClock
 from tests.fakes.mailbox import FakeMailbox
 from tests.fakes.models import (
+    data_block,
     decomposer_model,
     extractor_model,
+    first_prompt,
     responses,
     sensitivity_model,
     text_response,
@@ -692,7 +693,7 @@ async def evaluate[T, O: BaseModel](
         output: O | None = None
         try:
             output = await answer(item.task)
-        except (SpecialistFailed, AgentRunError) as failure:
+        except (SpecialistError, AgentRunError) as failure:
             error: str | None = str(failure)
             found = [f"no valid response: {failure}"]
         else:
@@ -1146,7 +1147,7 @@ def _standin_agents(
     )
 
     async def consolidator(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        given = json.loads(_prompt(messages).split("\n")[1])
+        given = data_block(first_prompt(messages), "extract_records")
         record_ids = {by_facts[tuple(record["facts"])]: record["record_id"] for record in given}
         items = [
             ConsolidatorItem(
@@ -1167,7 +1168,7 @@ def _standin_agents(
     )
 
     async def writer(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        prompt = _prompt(messages)
+        prompt = first_prompt(messages)
         if "<working_draft>" not in prompt:
             return text_response((long_draft if fixes else draft).model_dump_json())
         if fixes:
@@ -1183,7 +1184,7 @@ def _standin_agents(
 
     async def judge(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         unsupported = []
-        if fixes and added in _prompt(messages):
+        if fixes and added in first_prompt(messages):
             reason = "The facts do not say this is Litware Supplies' first price rise this year."
             unsupported = [UnsupportedText(text=added, reason=reason)]
         return text_response(JudgeOutput(unsupported=unsupported).model_dump_json())
@@ -1202,11 +1203,3 @@ def _standin_agents(
         ),
         JudgeAgent(FunctionModel(judge)),
     )
-
-
-def _prompt(messages: list[ModelMessage]) -> str:
-    request = messages[0]
-    assert isinstance(request, ModelRequest)
-    [prompt] = [part.content for part in request.parts if isinstance(part, UserPromptPart)]
-    assert isinstance(prompt, str)
-    return prompt

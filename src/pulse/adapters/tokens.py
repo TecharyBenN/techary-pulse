@@ -8,7 +8,7 @@ import jwt
 from pydantic import ValidationError
 
 from pulse.entities.auth import Caller
-from pulse.entities.errors import InvalidToken
+from pulse.entities.errors import InvalidTokenError
 
 # Entra ID signs with RS256; accepting only it rules out algorithm confusion.
 _ALGORITHMS = ["RS256"]
@@ -29,7 +29,7 @@ class JwtVerifier:
         self._path = Path(jwks)
 
     async def verify(self, token: str) -> Caller:
-        """The token's caller; raises InvalidToken when the token does not verify."""
+        """The token's caller; raises InvalidTokenError when the token does not verify."""
         return await asyncio.to_thread(self._verify, token)
 
     def _verify(self, token: str) -> Caller:
@@ -44,7 +44,7 @@ class JwtVerifier:
             )
             return Caller.model_validate({"oid": claims["oid"], "roles": claims.get("roles", [])})
         except (jwt.PyJWTError, OSError, KeyError, ValidationError) as error:
-            raise InvalidToken(f"the token did not verify: {type(error).__name__}") from error
+            raise InvalidTokenError(f"the token did not verify: {type(error).__name__}") from error
 
     def _signing_key(self, token: str) -> Any:
         if self._client is not None:

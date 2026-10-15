@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 import pytest
 import yaml
 
-from pulse.config import AGENT_NAMES, Config, ConfigError, load_config
+from pulse.config import AGENT_NAMES, Config, load_config
+from pulse.entities.errors import ConfigError
 from pulse.entities.lifecycle import OnApproval, Scheduled
 
 EXAMPLES = Path(__file__).parent.parent / "config"

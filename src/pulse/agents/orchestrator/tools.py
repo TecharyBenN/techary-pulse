@@ -1,4 +1,5 @@
-"""The orchestrator's tools: Tools and the results they return."""
+"""The orchestrator's tools: Tools, the results they return, and extract_news, the extraction
+steps extract runs on each email."""
 
 import asyncio
 import functools
@@ -20,7 +21,7 @@ from pulse.agents.writer.agent import WriterAgent, WriterTask
 from pulse.entities.base import Entity
 from pulse.entities.content import Verdict, draft_changed
 from pulse.entities.conversation import ReviewerMessage
-from pulse.entities.errors import Refusal, SpecialistFailed
+from pulse.entities.errors import Refusal, SpecialistError
 from pulse.entities.extracts import (
     Consolidation,
     ExclusionReason,
@@ -129,7 +130,7 @@ def _reported[**P, T](tool: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[
             return await tool(*args, **kwargs)
         except Refusal as refusal:
             return f"Refused: {refusal}"
-        except SpecialistFailed as failure:
+        except SpecialistError as failure:
             return f"Failed: {failure}"
 
     return wrapper
@@ -270,9 +271,9 @@ class Tools:
         )
         if isinstance(extracted, BaseException) or isinstance(flagged, BaseException):
             for result in (extracted, flagged):
-                if isinstance(result, BaseException) and not isinstance(result, SpecialistFailed):
+                if isinstance(result, BaseException) and not isinstance(result, SpecialistError):
                     raise result
-            failures = [str(r) for r in (extracted, flagged) if isinstance(r, SpecialistFailed)]
+            failures = [str(r) for r in (extracted, flagged) if isinstance(r, SpecialistError)]
             return ExtractOutcome(**_named(email), error="; ".join(failures))
         extraction = Extraction(**extracted_news(extracted).model_dump(), **flagged.model_dump())
         record = await self._store.save_extract(newsletter_id, message_id, extraction)

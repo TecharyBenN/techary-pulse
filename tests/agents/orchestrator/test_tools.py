@@ -1,7 +1,6 @@
 import asyncio
 import json
 from collections.abc import Mapping
-from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -23,8 +22,6 @@ from pulse.agents.consolidator.agent import ConsolidatorAgent
 from pulse.agents.decomposer.agent import DecomposerAgent, DecomposerTask
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.judge.agent import JudgeAgent
-from pulse.agents.orchestrator.agent import OrchestratorAgent
-from pulse.agents.orchestrator.run import Orchestrator
 from pulse.agents.orchestrator.tools import (
     PROGRESS_NOTES,
     ShowResult,
@@ -60,10 +57,12 @@ from tests.emails import (
 from tests.fakes.mailbox import FakeMailbox
 from tests.fakes.models import (
     corpus_consolidator_model,
+    data_block,
     decomposer_model,
     extractor_model,
+    first_prompt,
     gateway_error,
-    no_state,
+    make_orchestrator,
     reply_with,
     responses,
     sensitivity_model,
@@ -99,13 +98,9 @@ def judge_model(seen: list[dict[str, Any]] | None = None) -> FunctionModel:
     supported. `seen` collects each call's text and item IDs."""
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        request = messages[0]
-        assert isinstance(request, ModelRequest)
-        [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
-        assert isinstance(prompt, str)
-        blocks = prompt.split("\n\n")
-        text = json.loads(blocks[0].split("\n")[1])
-        items = json.loads(blocks[1].split("\n")[1])
+        prompt = first_prompt(messages)
+        text = data_block(prompt, "text")
+        items = data_block(prompt, "items")
         if seen is not None:
             seen.append(text | {"items": [item["item_id"] for item in items]})
         verdict = make_verdict(claim="Signed two customers" if text["text"] == ENTRY else None)
@@ -181,14 +176,7 @@ async def test_tools_called_together_run_one_at_a_time_in_call_order(store: Sqli
         ModelResponse(parts=[ToolCallPart("extract", {}), ToolCallPart("consolidate", {})]),
         text_response("Done."),
     )
-    orchestrator = Orchestrator(
-        OrchestratorAgent(FunctionModel(model), _tools(store).toolset()),
-        store,
-        no_state,
-        40,
-        timedelta(minutes=15),
-        asyncio.Lock(),
-    )
+    orchestrator = make_orchestrator(store, model, _tools(store).toolset())
 
     await orchestrator.handle(make_message(text="Please draft a newsletter."))
 
@@ -351,9 +339,7 @@ async def test_extract_news_splits_each_line_with_facts_in_its_own_call() -> Non
     sent: list[str] = []
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        request = messages[0]
-        assert isinstance(request, ModelRequest)
-        sent.extend(str(p.content) for p in request.parts if isinstance(p, UserPromptPart))
+        sent.append(first_prompt(messages))
         return text_response(DecomposerOutput(facts=split).model_dump_json())
 
     decomposer = DecomposerAgent(FunctionModel(model))
@@ -508,14 +494,7 @@ async def test_corpus_starts_and_extracts_as_the_corpus_expects(store: SqliteSto
         _call("consolidate"),
         text_response("Done."),
     )
-    orchestrator = Orchestrator(
-        OrchestratorAgent(FunctionModel(model), tools.toolset()),
-        store,
-        no_state,
-        40,
-        timedelta(minutes=15),
-        asyncio.Lock(),
-    )
+    orchestrator = make_orchestrator(store, model, tools.toolset())
 
     reply = await orchestrator.handle(make_message(text="Please draft a newsletter."))
     assert reply.text == "Done."
@@ -633,10 +612,6 @@ def _writer_prompts(prompts: list[str]) -> FunctionModel:
     return FunctionModel(model)
 
 
-def _block(prompt: str, tag: str) -> object:
-    return json.loads(prompt.split(f"<{tag}>\n", 1)[1].split(f"\n</{tag}>", 1)[0])
-
-
 async def test_write_stores_the_first_draft(store: SqliteStore) -> None:
     prompts: list[str] = []
     tools = _tools(store, writer=_writer_prompts(prompts))
@@ -652,7 +627,7 @@ async def test_write_stores_the_first_draft(store: SqliteStore) -> None:
     }
     assert await store.get_draft(newsletter_id) == DRAFT
     [prompt] = prompts
-    assert _block(prompt, "instruction") == "Write the first draft."
+    assert data_block(prompt, "instruction") == "Write the first draft."
     assert "<working_draft>" not in prompt
 
 
@@ -670,8 +645,8 @@ async def test_write_revises_the_working_draft_with_all_feedback(store: SqliteSt
     # The stand-in returns the same draft again, so it has not changed since v1.
     assert isinstance(revised, dict)
     assert revised["draft_changed"] is False
-    assert _block(prompts[-1], "working_draft") == DRAFT.content.model_dump(mode="json")
-    assert _block(prompts[-1], "feedback") == [
+    assert data_block(prompts[-1], "working_draft") == DRAFT.content.model_dump(mode="json")
+    assert data_block(prompts[-1], "feedback") == [
         {"received": "2026-09-26T10:00:00Z", "text": "Shorter intro, please."}
     ]
 
@@ -794,10 +769,7 @@ async def test_a_gateway_error_fails_judge_once_every_other_call_has_finished(
     finished: list[str] = []
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        request = messages[0]
-        assert isinstance(request, ModelRequest)
-        prompt = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
-        if '"part": "intro"' in str(prompt):
+        if '"part": "intro"' in first_prompt(messages):
             raise gateway_error()
         await asyncio.sleep(0.05)
         finished.append("entry")

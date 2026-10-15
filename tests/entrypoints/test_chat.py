@@ -82,7 +82,7 @@ async def _post(
     headers: dict[str, str] = HEADERS,
     tools: Tools | None = None,
 ) -> httpx.Response:
-    app = _app(make_orchestrator(store, model, tools))
+    app = _app(make_orchestrator(store, model, tools.toolset() if tools else None))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://pulse") as client:
         return await client.post(PATH, json=body, headers=headers)

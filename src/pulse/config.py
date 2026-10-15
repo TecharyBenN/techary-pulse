@@ -15,7 +15,7 @@ from pydantic import (
 )
 
 from pulse.entities.base import StrictEntity
-from pulse.entities.errors import PulseError
+from pulse.entities.errors import ConfigError
 from pulse.entities.lifecycle import SendRule
 from pulse.entities.mail import domain_in
 
@@ -28,10 +28,6 @@ AGENT_NAMES = (
     "writer",
     "judge",
 )
-
-
-class ConfigError(PulseError):
-    """config.yaml cannot be read or is invalid."""
 
 
 class GraphConfig(StrictEntity):

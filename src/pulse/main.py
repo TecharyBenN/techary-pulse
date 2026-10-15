@@ -30,8 +30,8 @@ from pulse.agents.orchestrator.run import Orchestrator, history_note
 from pulse.agents.orchestrator.tools import Tools
 from pulse.agents.sensitivity.agent import SensitivityAgent
 from pulse.agents.writer.agent import WriterAgent
-from pulse.config import Config, ConfigError, load_config
-from pulse.entities.errors import PulseError
+from pulse.config import Config, load_config
+from pulse.entities.errors import ConfigError, PulseError
 from pulse.entities.mail import InboundEmail, Mailbox, ScreenedEmail, screen
 from pulse.entities.store import Store
 from pulse.entrypoints.chat import create_app, serve

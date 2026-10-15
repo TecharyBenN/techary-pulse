@@ -1,12 +1,11 @@
 import json
 
 import pytest
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from pulse.agents.consolidator.agent import ConsolidatorAgent, ConsolidatorTask
 from tests.emails import make_consolidator_item, make_consolidator_output, make_extract_record
+from tests.fakes.models import specialist_request
 
 pytestmark = pytest.mark.anyio
 
@@ -81,33 +80,11 @@ def test_unconfigured_category_is_a_problem() -> None:
 
 
 async def test_consolidator_has_no_tools_and_uses_native_output() -> None:
-    seen: list[AgentInfo] = []
-    prompts: list[ModelMessage] = []
     output = make_consolidator_output(make_consolidator_item("record-1", "record-2"))
 
-    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        seen.append(info)
-        prompts.extend(messages)
-        return ModelResponse(parts=[TextPart(output.model_dump_json())])
+    request = await specialist_request(
+        lambda model: ConsolidatorAgent(model, CATEGORIES), TASK, output
+    )
 
-    agent = ConsolidatorAgent(FunctionModel(model), CATEGORIES)
-
-    assert await agent.answer(TASK) == output
-    [info] = seen
-    assert (info.function_tools, info.output_tools) == ([], [])
-    assert info.model_request_parameters.output_mode == "native"
-    [request] = prompts
-    assert isinstance(request, ModelRequest)
     assert request.instructions is not None
     assert "customer_win: A new customer has signed." in request.instructions
-    assert [p.content for p in request.parts if isinstance(p, UserPromptPart)] == [
-        agent.message(TASK)
-    ]
-    # Each field says what it holds in the schema the model is given, the item's fields too.
-    schema = info.model_request_parameters.output_object
-    assert schema is not None
-    fields = [
-        *schema.json_schema["properties"].values(),
-        *schema.json_schema["$defs"]["ConsolidatorItem"]["properties"].values(),
-    ]
-    assert all(field.get("description") for field in fields)

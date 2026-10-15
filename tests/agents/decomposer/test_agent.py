@@ -8,6 +8,7 @@ from pydantic_ai.models.test import TestModel
 from pulse.agents import decomposer
 from pulse.agents.decomposer.agent import DecomposerAgent, DecomposerTask
 from pulse.entities.extracts import DecomposerOutput
+from tests.fakes.models import specialist_request
 
 pytestmark = pytest.mark.anyio
 
@@ -47,3 +48,10 @@ def test_every_prompt_example_keeps_its_numbers() -> None:
         task = DecomposerTask(line="", facts=json.loads(facts_json))
         output = DecomposerOutput.model_validate_json(output_json)
         assert DECOMPOSER.checks(output, task) == []
+
+
+async def test_decomposer_has_no_tools_and_is_given_only_the_facts() -> None:
+    request = await specialist_request(DecomposerAgent, TASK, DecomposerOutput(facts=SPLIT))
+
+    assert request.instructions is not None
+    assert TASK.line not in request.instructions

@@ -28,7 +28,7 @@ from pulse.agents.orchestrator.tools import ShowResult, Tools, progress_note
 from pulse.entities.base import Entity
 from pulse.entities.content import Content, EntryNotes, Version
 from pulse.entities.conversation import ReviewerMessage, channel_changed
-from pulse.entities.errors import PulseError, RunFailed
+from pulse.entities.errors import PulseError, RunError
 from pulse.entities.store import DELIVERY_NOTE, Store
 from pulse.services.operations import entry_notes
 
@@ -111,7 +111,7 @@ class _History:
         feedback = await self._store.list_feedback(self.newsletter_id) if self.newsletter_id else []
         recorded = next((m for m in feedback if m.message_id == message_id), None)
         if recorded is None:
-            raise RunFailed(f"message {message_id} has saved steps but is not recorded")
+            raise RunError(f"message {message_id} has saved steps but is not recorded")
         return recorded
 
     def completed_reply(self, message_id: str) -> str | None:
@@ -207,7 +207,7 @@ class Orchestrator:
         on_reply: DeliverReply | None = None,
         new_chat: bool = False,
     ) -> RunReply:
-        """Raise RunFailed on failure.
+        """Raise RunError on failure.
 
         `on_reply` delivers the reply before the run lock is released, as the email channel
         does; an error it raises is raised as it is, because the run itself completed.
@@ -233,7 +233,7 @@ class Orchestrator:
                 _log.exception(
                     "orchestrator_run", extra=fields | {"duration_ms": _ms_since(started)}
                 )
-                raise RunFailed("the orchestrator run did not complete") from error
+                raise RunError("the orchestrator run did not complete") from error
             no_reply = reply.strip() == NO_REPLY
             fields["conversation_id"] = history.newsletter_id
             fields["outcome"] = "no_reply" if no_reply else "reply"

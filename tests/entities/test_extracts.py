@@ -13,6 +13,7 @@ from pulse.entities.extracts import (
     Item,
     Sensitivity,
     SourcedItem,
+    added_numbers,
     consolidation_input,
     exclusion_outcome,
     extracted_news,
@@ -34,6 +35,7 @@ from tests.emails import (
     make_screened_email,
     share,
 )
+from tests.operations import SECTIONS
 
 FLAG = Sensitivity(
     kind="personal_information", withheld=True, evidence="mentions a colleague's health"
@@ -41,7 +43,6 @@ FLAG = Sensitivity(
 COMMERCIAL = Sensitivity(kind="financial", withheld=False, evidence="a supplier's prices")
 NAMED = Sensitivity(kind="named_person", withheld=False, evidence="thanks a colleague by name")
 REVIEWER = "reviewer-oid"
-SECTIONS = {"customer_win": "Customer wins", "shout_out": "Shout-outs"}
 
 
 def test_included_record_has_no_outcome() -> None:
@@ -343,6 +344,13 @@ SPLIT = [
     "A 15 per cent surcharge applies from 3 October 2026.",
     "For schools, it applies from 1 December 2026.",
 ]
+
+
+def test_added_numbers_are_those_the_source_does_not_hold_each_once() -> None:
+    facts = ["Signed on 22 September 2026.", "Live on 1 May 2026, 1 week early."]
+
+    assert added_numbers(facts, "Signed on 22 September 2026.") == ["1"]
+    assert added_numbers(facts, "1 May 2026 and 22 September") == []
 
 
 def test_split_facts_keeping_every_number_have_no_number_problems() -> None:

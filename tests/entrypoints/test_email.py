@@ -63,7 +63,7 @@ def _channel(
     renderer = make_renderer()
     return EmailChannel(
         conversation,
-        make_orchestrator(store, model, Tools()),
+        make_orchestrator(store, model, Tools().toolset()),
         store,
         make_outbox(conversation, store),
         make_operations(store).reviewer_email,

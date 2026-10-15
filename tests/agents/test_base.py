@@ -8,18 +8,17 @@ from pydantic_ai.messages import (
     ModelResponse,
     RetryPromptPart,
     TextPart,
-    UserPromptPart,
 )
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.sensitivity.agent import SensitivityAgent
-from pulse.entities.errors import SpecialistFailed
+from pulse.entities.errors import SpecialistError
 from pulse.entities.extracts import ExtractorOutput, SensitivityOutput
 from pulse.entities.mail import message_lines
 from tests.emails import answer_for, make_output, make_screened_email, share
-from tests.fakes.models import gateway_error
+from tests.fakes.models import first_prompt, gateway_error, responses
 
 pytestmark = pytest.mark.anyio
 
@@ -31,17 +30,8 @@ GOSSIP = answer_for(make_output(category="gossip"), message_lines(EMAIL)).model_
 
 
 def _model(*answers: ModelResponse | Exception) -> tuple[FunctionModel, list[list[ModelMessage]]]:
-    remaining = list(answers)
     calls: list[list[ModelMessage]] = []
-
-    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        calls.append(list(messages))
-        answer = remaining.pop(0)
-        if isinstance(answer, Exception):
-            raise answer
-        return answer
-
-    return FunctionModel(model), calls
+    return FunctionModel(responses(*answers, seen=calls)), calls
 
 
 def _json(text: str, finish_reason: str | None = None) -> ModelResponse:
@@ -50,13 +40,6 @@ def _json(text: str, finish_reason: str | None = None) -> ModelResponse:
 
 def _empty(finish_reason: str) -> ModelResponse:
     return ModelResponse(parts=[], finish_reason=finish_reason)  # type: ignore[arg-type]
-
-
-def _prompt(request: ModelMessage) -> str:
-    assert isinstance(request, ModelRequest)
-    [prompt] = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
-    assert isinstance(prompt, str)
-    return prompt
 
 
 def _retry(request: ModelMessage) -> str:
@@ -92,7 +75,7 @@ async def test_answer_returns_a_valid_response() -> None:
 
     assert await agent.answer(EMAIL) == SensitivityOutput.model_validate_json(FLAGS)
     [[request]] = calls
-    assert _prompt(request) == agent.message(EMAIL)
+    assert first_prompt([request]) == agent.message(EMAIL)
 
 
 @pytest.mark.parametrize(
@@ -115,7 +98,7 @@ async def test_retry_sends_the_problems_back_with_the_invalid_response(
     first, retry = calls
     assert len(first) == 1
     [request, response, correction] = retry
-    assert _prompt(request) == agent.message(EMAIL)
+    assert first_prompt([request]) == agent.message(EMAIL)
     assert isinstance(response, ModelResponse)
     assert response.parts == invalid.parts
     assert f"- {problem}" in _retry(correction)
@@ -136,7 +119,7 @@ async def test_fails_after_two_responses_that_fail_the_checks() -> None:
     model, _ = _model(_json(GOSSIP), _json(GOSSIP))
 
     with pytest.raises(
-        SpecialistFailed,
+        SpecialistError,
         match=r"^extractor gave no valid response: category gossip is not a configured category$",
     ):
         await ExtractorAgent(model, CATEGORIES).answer(EMAIL)
@@ -146,7 +129,7 @@ async def test_fails_after_two_responses_that_do_not_match_the_output_type() -> 
     model, _ = _model(_json("not json"), _json("not json"))
 
     with pytest.raises(
-        SpecialistFailed,
+        SpecialistError,
         match=r"^sensitivity gave no valid response: the response did not match the output type$",
     ):
         await SensitivityAgent(model).answer(EMAIL)

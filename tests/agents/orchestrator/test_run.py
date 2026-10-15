@@ -16,14 +16,14 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.function import AgentInfo
 from pydantic_ai.toolsets import FunctionToolset
 
 from pulse.adapters.store import SqliteStore
 from pulse.agents.orchestrator.agent import OrchestratorAgent
 from pulse.agents.orchestrator.run import Orchestrator, RunReply, history_note
 from pulse.entities.content import EntryNotes, Version, version_of
-from pulse.entities.errors import MailboxError, RunFailed
+from pulse.entities.errors import MailboxError, RunError
 from pulse.entities.extracts import Sensitivity
 from pulse.entities.lifecycle import abandon, open_newsletter, present
 from pulse.entities.store import DELIVERY_NOTE, HistoryRow
@@ -41,7 +41,6 @@ from tests.fakes.models import (
     caller_call,
     gateway_error,
     make_orchestrator,
-    no_state,
     ping_call,
     present_call,
     reply_with,
@@ -143,7 +142,7 @@ async def test_saves_tool_calls_and_results(store: SqliteStore) -> None:
     tools = Tools()
     model = responses(ping_call(), text_response("Done."))
 
-    await make_orchestrator(store, model, tools).handle(make_message())
+    await make_orchestrator(store, model, tools.toolset()).handle(make_message())
 
     history = [m for _, m in await _history(store)]
     assert [type(m) for m in history] == [ModelRequest, ModelResponse, ModelRequest, ModelResponse]
@@ -197,12 +196,12 @@ async def test_no_reply_returns_none_and_still_records_feedback(
 async def test_truncated_or_refused_reply_fails(store: SqliteStore, finish_reason: str) -> None:
     response = ModelResponse(parts=[TextPart("Partial")], finish_reason=finish_reason)  # type: ignore[arg-type]
 
-    with pytest.raises(RunFailed):
+    with pytest.raises(RunError):
         await make_orchestrator(store, responses(response)).handle(make_message())
 
 
 async def test_gateway_error_fails(store: SqliteStore) -> None:
-    with pytest.raises(RunFailed):
+    with pytest.raises(RunError):
         await make_orchestrator(store, responses(gateway_error())).handle(make_message())
 
 
@@ -210,8 +209,10 @@ async def test_tool_call_limit(store: SqliteStore) -> None:
     tools = Tools()
     model = responses(ping_call(), ping_call(), text_response("Done."))
 
-    with pytest.raises(RunFailed):
-        await make_orchestrator(store, model, tools, max_tool_calls=1).handle(make_message())
+    with pytest.raises(RunError):
+        await make_orchestrator(store, model, tools.toolset(), max_tool_calls=1).handle(
+            make_message()
+        )
 
     assert tools.calls == 1
     history = [m for _, m in await _history(store)]
@@ -225,7 +226,7 @@ async def test_time_limit(store: SqliteStore) -> None:
 
     orchestrator = make_orchestrator(store, slow, max_run_time=timedelta(milliseconds=50))
 
-    with pytest.raises(RunFailed):
+    with pytest.raises(RunError):
         await orchestrator.handle(make_message())
 
     assert [type(m) for _, m in await _history(store)] == [ModelRequest]
@@ -239,7 +240,7 @@ async def test_progress_note_for_each_tool_call(store: SqliteStore) -> None:
 
     model = responses(ping_call(), ping_call(), text_response("Done."))
 
-    await make_orchestrator(store, model, Tools()).handle(make_message(), on_progress)
+    await make_orchestrator(store, model, Tools().toolset()).handle(make_message(), on_progress)
 
     assert notes == ["Working on it (ping)", "Working on it (ping)"]
 
@@ -247,17 +248,17 @@ async def test_progress_note_for_each_tool_call(store: SqliteStore) -> None:
 async def test_retried_message_resumes_from_saved_steps(store: SqliteStore, db_path: Path) -> None:
     tools = Tools()
     message = make_message("r01")
-    with pytest.raises(RunFailed):
-        await make_orchestrator(store, responses(ping_call(), gateway_error()), tools).handle(
-            message
-        )
+    with pytest.raises(RunError):
+        await make_orchestrator(
+            store, responses(ping_call(), gateway_error()), tools.toolset()
+        ).handle(message)
     seen: list[list[ModelMessage]] = []
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         seen.append(messages)
         return text_response("Done.")
 
-    reply = (await make_orchestrator(store, model, tools).handle(message)).text
+    reply = (await make_orchestrator(store, model, tools.toolset()).handle(message)).text
 
     assert reply == "Done."
     assert tools.calls == 1
@@ -278,7 +279,9 @@ async def test_resumes_unprocessed_tool_calls(store: SqliteStore) -> None:
         await store.append_history("n-1", "r01", ModelMessagesTypeAdapter.dump_json([saved]))
 
     reply = (
-        await make_orchestrator(store, responses(text_response("Done.")), tools).handle(message)
+        await make_orchestrator(store, responses(text_response("Done.")), tools.toolset()).handle(
+            message
+        )
     ).text
 
     assert reply == "Done."
@@ -289,10 +292,10 @@ async def test_resumes_unprocessed_tool_calls(store: SqliteStore) -> None:
 
 async def test_unfinished_run_is_resumed_before_a_new_message(store: SqliteStore) -> None:
     tools = Tools()
-    with pytest.raises(RunFailed):
-        await make_orchestrator(store, responses(ping_call(), gateway_error()), tools).handle(
-            make_message("r01", text="First")
-        )
+    with pytest.raises(RunError):
+        await make_orchestrator(
+            store, responses(ping_call(), gateway_error()), tools.toolset()
+        ).handle(make_message("r01", text="First"))
     seen: list[list[ModelMessage]] = []
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -300,7 +303,9 @@ async def test_unfinished_run_is_resumed_before_a_new_message(store: SqliteStore
         return text_response(f"Reply {len(seen)}")
 
     reply = (
-        await make_orchestrator(store, model, tools).handle(make_message("r02", text="Second"))
+        await make_orchestrator(store, model, tools.toolset()).handle(
+            make_message("r02", text="Second")
+        )
     ).text
 
     assert reply == "Reply 2"
@@ -321,7 +326,9 @@ async def test_each_run_gives_its_tools_its_own_message(store: SqliteStore) -> N
         await store.append_history("n-1", "r01", ModelMessagesTypeAdapter.dump_json([saved]))
     model = responses(text_response("Resumed."), caller_call(), text_response("Done."))
 
-    await make_orchestrator(store, model, tools).handle(make_message("r02", text="Second"))
+    await make_orchestrator(store, model, tools.toolset()).handle(
+        make_message("r02", text="Second")
+    )
 
     # The resumed run is r01's, so its tools act for r01's reviewer, not r02's.
     assert tools.callers == ["r01", "r02"]
@@ -359,7 +366,7 @@ async def test_logs_the_run_and_each_tool_call(
     caplog.set_level(logging.INFO)
     model = responses(ping_call(), text_response("Private reply text."))
 
-    await make_orchestrator(store, model, Tools()).handle(make_message("r01"))
+    await make_orchestrator(store, model, Tools().toolset()).handle(make_message("r01"))
 
     tool = _logged(caplog, "tool_call")
     assert (tool["tool"], tool["outcome"]) == ("ping", "returned")
@@ -379,7 +386,7 @@ async def test_logs_a_failed_run_with_its_error(
 ) -> None:
     caplog.set_level(logging.INFO)
 
-    with pytest.raises(RunFailed):
+    with pytest.raises(RunError):
         await make_orchestrator(store, responses(gateway_error())).handle(make_message())
 
     run = _logged(caplog, "orchestrator_run")
@@ -401,8 +408,7 @@ async def test_exchange_that_opens_a_newsletter_becomes_its_history(
     model = responses(
         ModelResponse(parts=[ToolCallPart("opening_tool", {})]), text_response("Started.")
     )
-    agent = OrchestratorAgent(FunctionModel(model), FunctionToolset([opening_tool]))
-    orchestrator = Orchestrator(agent, store, no_state, 40, timedelta(minutes=15), asyncio.Lock())
+    orchestrator = make_orchestrator(store, model, FunctionToolset([opening_tool]))
 
     reply = (await orchestrator.handle(make_message("r01", text="Please draft a newsletter."))).text
 
@@ -506,7 +512,7 @@ async def test_reply_carries_the_version_the_run_presented(store: SqliteStore) -
     version = await _version_1(store)
     model = responses(present_call(), text_response("Version 1 is ready."))
 
-    reply = await make_orchestrator(store, model, Tools()).handle(make_message())
+    reply = await make_orchestrator(store, model, Tools().toolset()).handle(make_message())
 
     assert (reply.text, reply.newsletter) == ("Version 1 is ready.", version.content)
     assert reply.notes == version.notes
@@ -525,12 +531,12 @@ async def test_retried_message_carries_the_version_its_earlier_attempt_presented
 ) -> None:
     version = await _version_1(store)
     message = make_message("r01")
-    with pytest.raises(RunFailed):
-        await make_orchestrator(store, responses(present_call(), gateway_error()), Tools()).handle(
-            message
-        )
+    with pytest.raises(RunError):
+        await make_orchestrator(
+            store, responses(present_call(), gateway_error()), Tools().toolset()
+        ).handle(message)
 
-    reply = await make_orchestrator(store, reply_with("Done."), Tools()).handle(message)
+    reply = await make_orchestrator(store, reply_with("Done."), Tools().toolset()).handle(message)
 
     assert reply.newsletter == version.content
 
@@ -538,7 +544,7 @@ async def test_retried_message_carries_the_version_its_earlier_attempt_presented
 async def test_a_later_message_does_not_carry_an_earlier_version(store: SqliteStore) -> None:
     await _version_1(store)
     model = responses(present_call(), text_response("Version 1 is ready."))
-    await make_orchestrator(store, model, Tools()).handle(make_message("r01"))
+    await make_orchestrator(store, model, Tools().toolset()).handle(make_message("r01"))
 
     reply = await make_orchestrator(store, reply_with("Noted.")).handle(make_message("r02"))
 
@@ -551,7 +557,7 @@ async def test_reply_carries_the_working_draft_the_run_showed(store: SqliteStore
     await store.save_draft("n-1", shown)
     model = responses(show_call(), text_response("Here is the draft."))
 
-    reply = await make_orchestrator(store, model, Tools()).handle(make_message())
+    reply = await make_orchestrator(store, model, Tools().toolset()).handle(make_message())
 
     assert (reply.text, reply.newsletter) == ("Here is the draft.", shown.content)
     # The draft has no items yet, so it has no notes.
@@ -569,7 +575,7 @@ async def test_the_working_draft_shown_carries_its_notes_from_the_items_and_reco
     await store.save_start(make_newsletter(), [make_screened_email("m01", sender_name="Dan Wood")])
     model = responses(show_call(), text_response("Here is the draft."))
 
-    reply = await make_orchestrator(store, model, Tools()).handle(make_message())
+    reply = await make_orchestrator(store, model, Tools().toolset()).handle(make_message())
 
     # Worked out when shown, not taken from version 1.
     assert reply.notes == EntryNotes(credits={"item-1": ["Dan Wood"]}, flags={"item-1": [named]})
@@ -590,8 +596,7 @@ def _opening(store: SqliteStore, model: ModelFunction) -> Orchestrator:
         await store.save_start(open_newsletter("n-2", OPENED + timedelta(days=7)), [])
         return "opened"
 
-    agent = OrchestratorAgent(FunctionModel(model), FunctionToolset([opening_tool]))
-    return Orchestrator(agent, store, no_state, 40, timedelta(minutes=15), asyncio.Lock())
+    return make_orchestrator(store, model, FunctionToolset([opening_tool]))
 
 
 def _opening_call() -> ModelResponse:
@@ -675,7 +680,7 @@ async def test_a_retry_after_a_crash_following_the_opening_runs_in_the_new_newsl
 ) -> None:
     await _close(store)
     message = make_message("r01", text="Please draft a new newsletter.")
-    with pytest.raises(RunFailed):
+    with pytest.raises(RunError):
         await _opening(store, responses(_opening_call(), gateway_error())).handle(message)
 
     reply = await _opening(store, reply_with("Done.")).handle(message)
@@ -723,7 +728,9 @@ async def test_the_delivery_note_after_an_unfinished_run_is_not_resumed(
     await store.append_history("n-1", DELIVERY_NOTE, history_note("Pulse sent version 1."))
     tools = Tools()
 
-    reply = await make_orchestrator(store, reply_with("Done."), tools).handle(make_message("r02"))
+    reply = await make_orchestrator(store, reply_with("Done."), tools.toolset()).handle(
+        make_message("r02")
+    )
 
     assert reply.text == "Done."
     assert tools.calls == 0
@@ -735,7 +742,7 @@ async def test_reply_carries_the_presented_version_for_the_reviewer_email(
     version = await _version_1(store)
     model = responses(present_call(), text_response("Version 1 is ready."))
 
-    reply = await make_orchestrator(store, model, Tools()).handle(make_message())
+    reply = await make_orchestrator(store, model, Tools().toolset()).handle(make_message())
 
     assert reply.version == version
 
@@ -745,7 +752,7 @@ async def test_a_shown_version_is_not_a_presented_one(store: SqliteStore) -> Non
     await store.save_draft("n-1", make_draft())
     model = responses(show_call(), text_response("Here is the draft."))
 
-    reply = await make_orchestrator(store, model, Tools()).handle(make_message())
+    reply = await make_orchestrator(store, model, Tools().toolset()).handle(make_message())
 
     assert reply.newsletter is not None
     assert reply.version is None
@@ -757,11 +764,11 @@ async def test_a_message_whose_run_completed_gets_its_saved_reply_without_a_seco
     version = await _version_1(store)
     message = make_message("c01", channel="email")
     model = responses(present_call(), text_response("Version 1 is ready."))
-    await make_orchestrator(store, model, Tools()).handle(message)
+    await make_orchestrator(store, model, Tools().toolset()).handle(message)
     saved = await _history(store)
 
     # A second run would ask the model, which this stand-in refuses.
-    reply = await make_orchestrator(store, responses(), Tools()).handle(message)
+    reply = await make_orchestrator(store, responses(), Tools().toolset()).handle(message)
 
     assert (reply.text, reply.version) == ("Version 1 is ready.", version)
     assert await _history(store) == saved
@@ -842,6 +849,6 @@ async def test_a_completed_run_returns_its_reply_before_resuming_another(
         await store.append_history("n-1", "r02", ModelMessagesTypeAdapter.dump_json([step]))
     await store.record_feedback("n-1", make_message("r02"))
 
-    reply = await make_orchestrator(store, responses(), Tools()).handle(first)
+    reply = await make_orchestrator(store, responses(), Tools().toolset()).handle(first)
 
     assert reply.text == "First reply."
