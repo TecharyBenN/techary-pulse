@@ -6,7 +6,8 @@
       "sample": 4
     },
     "planted": "the three planted cases edit a real text to break one rule",
-    "notice": "the notice case is written for the corpus notice, naming its surcharges without their rates"
+    "notice": "the notice cases are written for the corpus notice",
+    "added": "opinion-major and planted-biggest-ever edit the intro; the notice-scope cases and notice-commercial mirror writer errors seen on 14 October 2026"
   },
   "cases": [
     {
@@ -105,7 +106,43 @@
       "sources": [
         "n01"
       ],
-      "text": "From 1 December 2026, Fabrikam Networks will add surcharges to Gen 4 Branch and Campus and Data Centre hardware and increase Gen 5 hardware list prices."
+      "text": "From 1 December 2026, Fabrikam Networks will add surcharges to Gen 4 Branch and Campus and Data Centre hardware, from 1 March 2027 for charity customers, and increase Gen 5 hardware list prices."
+    },
+    {
+      "id": "opinion-major",
+      "part": "intro",
+      "sources": null,
+      "text": "This week brings a major new contract with Northwind Retail, an early delivery for Contoso, and celebrations across the team."
+    },
+    {
+      "id": "planted-biggest-ever",
+      "part": "intro",
+      "sources": null,
+      "text": "This week brings our biggest ever contract with Northwind Retail, an early delivery for Contoso, and celebrations across the team."
+    },
+    {
+      "id": "notice-scope-right",
+      "part": "entry",
+      "sources": [
+        "n01"
+      ],
+      "text": "Fabrikam Networks will add surcharges to Gen 4 hardware and increase Gen 5 hardware list prices from 1 December 2026, and for charity customers the Gen 4 surcharges apply from 1 March 2027."
+    },
+    {
+      "id": "notice-scope-wrong",
+      "part": "entry",
+      "sources": [
+        "n01"
+      ],
+      "text": "Fabrikam Networks will add surcharges to Gen 4 hardware and increase Gen 5 hardware list prices from 1 December 2026, and for charity customers all these changes apply from 1 March 2027."
+    },
+    {
+      "id": "notice-commercial",
+      "part": "entry",
+      "sources": [
+        "n01"
+      ],
+      "text": "Fabrikam Networks will increase Gen 5 hardware list prices by 4 per cent for commercial customers from 1 December 2026."
     }
   ]
 }

@@ -269,11 +269,12 @@ def saved_email_inputs(run: SavedRun) -> list[Input[ScreenedEmail]]:
 
 
 def saved_judge_inputs(run: SavedRun, writer_results: Path | None) -> list[Input[JudgeTask]]:
-    """Each text version 1's judge found unsupported, with what `judge` gave it; or, given
-    `writer_results`, the same parts of each draft in it."""
+    """Every part of version 1, its intro and each entry, with what `judge` gave it; or, given
+    `writer_results`, every part of each draft in it."""
     by_id = {item.item_id: item for item in run.task.items}
-    assert run.version.verdicts is not None, "version 1 was not judged"
-    targets = [verdict.target for verdict in run.version.verdicts if not verdict.supported]
+
+    def targets(content: Content) -> list[str]:
+        return ["intro", *(entry.item_id for entry in content.entries())]
 
     def task(target: str, content: Content) -> JudgeTask:
         if target == "intro":
@@ -288,19 +289,18 @@ def saved_judge_inputs(run: SavedRun, writer_results: Path | None) -> list[Input
     if writer_results is None:
         return [
             Input(f"version-1-{target}", target, "saved", task(target, run.version.content))
-            for target in targets
+            for target in targets(run.version.content)
         ]
     saved = json.loads(writer_results.read_text(encoding="utf-8"))
-    return [
-        Input(
-            f"draft-{answer['sample']}-{target}",
-            target,
-            "saved",
-            task(target, WriterOutput.model_validate(answer["output"]).content),
-        )
+    drafts = [
+        (answer["sample"], WriterOutput.model_validate(answer["output"]).content)
         for answer in saved["answers"]
         if answer["output"] is not None
-        for target in targets
+    ]
+    return [
+        Input(f"draft-{sample}-{target}", target, "saved", task(target, content))
+        for sample, content in drafts
+        for target in targets(content)
     ]
 
 

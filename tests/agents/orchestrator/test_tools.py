@@ -366,6 +366,8 @@ async def test_extract_reports_an_invalid_response_and_retries_it_when_called_ag
     assert result.failed == 1
     [failed] = [outcome for outcome in result.outcomes if outcome.error]
     assert failed.message_id == "m01"
+    # The orchestrator can name the email to the reviewer without another tool call.
+    assert (failed.sender_name, failed.received) == (INBOX[0].sender_name, INBOX[0].received)
     assert failed.error is not None and "gossip is not a configured category" in failed.error
     records = await store.list_extract_records(started.newsletter_id)
     assert {r.message_id for r in records} == {"m02", "m03"}
@@ -728,6 +730,32 @@ async def test_judge_runs_the_code_checks_and_returns_every_failure(store: Sqlit
         1,
         [{"check": "dashes", "target": "intro", "detail": "em or en dash"}],
     )
+
+
+async def test_a_gateway_error_fails_judge_once_every_other_call_has_finished(
+    store: SqliteStore,
+) -> None:
+    finished: list[str] = []
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        request = messages[0]
+        assert isinstance(request, ModelRequest)
+        prompt = [p.content for p in request.parts if isinstance(p, UserPromptPart)]
+        if '"part": "intro"' in str(prompt):
+            raise gateway_error()
+        await asyncio.sleep(0.05)
+        finished.append("entry")
+        return text_response(JudgeOutput(unsupported=[]).model_dump_json())
+
+    tools = _tools(store, judge=FunctionModel(model))
+    await _consolidated(tools)
+    await tools.write("Write the first draft.")
+
+    with pytest.raises(ModelHTTPError):
+        await tools.judge()
+
+    # The entry's call finished before the tool failed, so none runs on after it.
+    assert finished == ["entry"]
 
 
 async def test_judge_stores_its_verdicts_and_returns_what_is_unsupported(

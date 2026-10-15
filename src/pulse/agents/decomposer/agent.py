@@ -1,10 +1,8 @@
 """The decomposer agent, which splits one line's facts so each states one thing."""
 
-import asyncio
-
 from pydantic_ai.models import Model
 
-from pulse.agents.base import SpecialistAgent
+from pulse.agents.base import SpecialistAgent, all_finished
 from pulse.entities.base import Entity
 from pulse.entities.extracts import DecomposerOutput, ExtractorOutput, LineFacts, number_problems
 from pulse.entities.mail import ScreenedEmail, message_lines
@@ -34,11 +32,9 @@ class DecomposerAgent(SpecialistAgent[DecomposerTask, DecomposerOutput]):
         """The extractor's answer with each line's facts split, one call per line with facts."""
         lines = message_lines(email)
         with_facts = [line for line in output.lines if line.facts and 0 <= line.line < len(lines)]
-        answers = await asyncio.gather(
-            *(
-                self.answer(DecomposerTask(line=lines[line.line], facts=line.facts))
-                for line in with_facts
-            )
+        answers = await all_finished(
+            self.answer(DecomposerTask(line=lines[line.line], facts=line.facts))
+            for line in with_facts
         )
         split = {line.line: answer.facts for line, answer in zip(with_facts, answers, strict=True)}
         return output.model_copy(

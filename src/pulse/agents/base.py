@@ -1,9 +1,10 @@
 """The base classes every agent extends: PulseAgent for every agent, SpecialistAgent for the
 specialist agents, and EmailAgent for those that read one screened email."""
 
+import asyncio
 import json
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import Any
@@ -23,6 +24,16 @@ _INVALID_FINISH_REASONS = ("length", "content_filter")
 _FEEDBACK_FIELDS = {"received", "text"}
 # Code attaches the message ID to the record, so the model is not given it.
 _EMAIL_FIELDS = {"sender_name", "sender_address", "subject", "received", "unique_body", "body"}
+
+
+async def all_finished[T](calls: Iterable[Awaitable[T]]) -> list[T]:
+    """Await every call, then raise the first error, so no call is still running, or writing to
+    the store, once the caller has failed."""
+    results = await asyncio.gather(*calls, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return [result for result in results if not isinstance(result, BaseException)]
 
 
 def is_truncated_or_refused(response: ModelResponse) -> bool:

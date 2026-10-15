@@ -1,8 +1,10 @@
+import asyncio
 import json
 import re
 from pathlib import Path
 
 import pytest
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
@@ -12,6 +14,7 @@ from pulse.agents.decomposer.agent import DecomposerAgent, DecomposerTask
 from pulse.entities.extracts import DecomposerOutput, ExtractorOutput, LineFacts
 from pulse.entities.mail import message_lines
 from tests.emails import make_screened_email
+from tests.fakes.models import gateway_error
 
 pytestmark = pytest.mark.anyio
 
@@ -86,3 +89,34 @@ def test_every_prompt_example_keeps_its_numbers() -> None:
         task = DecomposerTask(line="", facts=json.loads(facts_json))
         output = DecomposerOutput.model_validate_json(output_json)
         assert DECOMPOSER.checks(output, task) == []
+
+
+async def test_a_gateway_error_fails_split_once_every_other_call_has_finished() -> None:
+    email = make_screened_email(subject="Prices", body="Line one.\nLine two.")
+    finished: list[str] = []
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if "first" in str(messages[0]):
+            raise gateway_error()
+        await asyncio.sleep(0.05)
+        finished.append("second")
+        return ModelResponse(
+            parts=[TextPart(DecomposerOutput(facts=["The second fact."]).model_dump_json())]
+        )
+
+    output = ExtractorOutput(
+        category="company_notices",
+        exclusion_reason=None,
+        summary="Two lines.",
+        people=[],
+        lines=[
+            LineFacts(line=0, facts=[]),
+            LineFacts(line=1, facts=["The first fact."]),
+            LineFacts(line=2, facts=["The second fact."]),
+        ],
+    )
+
+    with pytest.raises(ModelHTTPError):
+        await DecomposerAgent(FunctionModel(model)).split(output, email)
+
+    assert finished == ["second"]

@@ -201,6 +201,7 @@ Scope:
 
 - listing the inbox with Graph's `body` as well as `uniqueBody`, and the screened email keeping both when it passes the pre-filter, with the `screened_emails` table to match;
 - the extractor receiving both, and its instructions for forwarded and quoted messages as the design's extract section states them;
+- the extractor answering line by line over the email's numbered lines, with output checks that every line is listed once and no number is added, and the decomposer splitting each line's facts so each states one thing;
 - the draft checks matching names against a source message's whole body;
 - sensitivity flags as the design states them: each with its kind, whether it is withheld, and its evidence, the sensitivity agent judging whether it is withheld;
 - the exclusion rules: exclude records with a withheld flag, or with no category, and include records with no withheld flag;
@@ -208,7 +209,7 @@ Scope:
 - flagged entries as the design's flagged entries section states them: working them out from the items and extract records, saving them with each version, and returning the count from `present_draft`;
 - rendering each flagged entry's plain-text labels, and the flagged for review list after the newsletter, in the reviewer email, the chat endpoint's Markdown and the email channel's reply when a run shows the newsletter, and neither in the newsletter delivery sends, with golden files for each;
 - credit lines under every entry in every rendering, saved with each version; the writer's instructions to tell the news itself rather than report the email it came in, and no longer to name senders; and the `senders` draft check removed, with credit lines left out of the word count;
-- the judge run once for the intro and once per entry, and the limit on `write` calls in a run;
+- the judge run once for the intro and once per entry, with `judge` running the draft checks first, and the orchestrator calling `judge` after every `write` until no problem remains or a fix leaves a problem it was asked to correct;
 - the judge listing what in a text does not keep to the spirit of its facts, each with its reason; `extract` taking no arguments and extracting each screened email once, and `consolidate` taking every included record;
 - the extractor's `people` limited to the people the facts name, the writer's output check that every name in an entry's `people` appears in its text, and the `people` draft check reduced to the sources;
 - `confidential` covering a partner's or supplier's email marked for partners only or asking not to distribute it further, flagged and not withheld;

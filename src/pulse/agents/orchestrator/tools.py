@@ -3,12 +3,14 @@
 import asyncio
 import functools
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable
 from typing import Any, Self
 
+from pydantic import AwareDatetime
 from pydantic_ai import RunContext
 from pydantic_ai.toolsets import FunctionToolset
 
+from pulse.agents.base import all_finished
 from pulse.agents.consolidator.agent import ConsolidatorAgent, ConsolidatorTask
 from pulse.agents.decomposer.agent import DecomposerAgent
 from pulse.agents.extractor.agent import ExtractorAgent
@@ -75,9 +77,12 @@ _CONSOLIDATED_FIELDS = {"item_id", "category", "source_message_ids"}
 
 
 class ExtractOutcome(Entity):
-    """One email's result from extract."""
+    """One email's result from extract, with who sent it and when, so the orchestrator can name
+    it to a reviewer."""
 
     message_id: MessageId
+    sender_name: str
+    received: AwareDatetime
     exclusion: ExclusionReason | None = None
     excluded_id: str | None = None
     # Why the email was not extracted, when it was not.
@@ -129,14 +134,9 @@ def _reported[**P, T](tool: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[
     return wrapper
 
 
-async def _all_finished[T](calls: Iterable[Awaitable[T]]) -> list[T]:
-    """Await every call, then raise the first error, so no call is still running, or writing to
-    the store, once the tool has failed."""
-    results = await asyncio.gather(*calls, return_exceptions=True)
-    for result in results:
-        if isinstance(result, BaseException):
-            raise result
-    return [result for result in results if not isinstance(result, BaseException)]
+def _named(email: ScreenedEmail) -> dict[str, Any]:
+    """The fields that name an email in its extract outcome."""
+    return email.model_dump(include={"message_id", "sender_name", "received"})
 
 
 class Tools:
@@ -232,7 +232,7 @@ class Tools:
             for email in await self._store.list_screened_emails(newsletter_id)
             if email.rejection is None and email.message_id not in extracted
         ]
-        outcomes = await _all_finished(self._extract_one(newsletter_id, email) for email in pending)
+        outcomes = await all_finished(self._extract_one(newsletter_id, email) for email in pending)
         return ExtractResult.of(outcomes)
 
     async def _extract_one(self, newsletter_id: str, email: ScreenedEmail) -> ExtractOutcome:
@@ -247,11 +247,11 @@ class Tools:
                 if isinstance(result, BaseException) and not isinstance(result, SpecialistFailed):
                     raise result
             failures = [str(r) for r in (extracted, flagged) if isinstance(r, SpecialistFailed)]
-            return ExtractOutcome(message_id=message_id, error="; ".join(failures))
+            return ExtractOutcome(**_named(email), error="; ".join(failures))
         extraction = Extraction(**extracted_news(extracted).model_dump(), **flagged.model_dump())
         record = await self._store.save_extract(newsletter_id, message_id, extraction)
         return ExtractOutcome(
-            message_id=message_id, exclusion=record.exclusion, excluded_id=record.excluded_id
+            **_named(email), exclusion=record.exclusion, excluded_id=record.excluded_id
         )
 
     async def _extracted(self, email: ScreenedEmail) -> ExtractorOutput:
@@ -366,7 +366,7 @@ class Tools:
             own = [by_id[entry.item_id]] if entry.item_id in by_id else []
             targets.append(entry.item_id)
             tasks.append(JudgeTask(part="entry", text=entry.text, items=own, feedback=feedback))
-        outputs = await asyncio.gather(*(self._judge.answer(task) for task in tasks))
+        outputs = await all_finished(self._judge.answer(task) for task in tasks)
         verdicts = [
             Verdict(target=target, **output.model_dump())
             for target, output in zip(targets, outputs, strict=True)

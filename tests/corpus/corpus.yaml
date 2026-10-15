@@ -284,13 +284,14 @@ notice:
       Sent: 2 October 2026
       Subject: Hardware pricing update
 
-      Because of rising component costs, Fabrikam Networks will add a surcharge to Gen 4 hardware from 1 December 2026: 7 percent on Gen 4 Branch models and 11 percent on Gen 4 Campus and Data Centre models. From the same date, list prices for Gen 5 hardware will increase by 4 percent. Quotes issued before 30 November are honoured until 31 January 2027. The surcharge does not apply to support renewals.
+      Because of rising component costs, Fabrikam Networks will add a surcharge to Gen 4 hardware from 1 December 2026: 7 percent on Gen 4 Branch models and 11 percent on Gen 4 Campus and Data Centre models, except for charity customers (effective 1 March 2027). From the same date, list prices for Gen 5 hardware will increase by 4 percent. Quotes issued before 30 November are honoured until 31 January 2027. The surcharge does not apply to support renewals.
   headline: Fabrikam Networks changes its hardware pricing
   item:
     category: company_notices
     facts:
       - Fabrikam Networks will add a 7 per cent surcharge to Gen 4 Branch hardware from 1 December 2026
       - Fabrikam Networks will add an 11 per cent surcharge to Gen 4 Campus and Data Centre hardware from 1 December 2026
+      - For charity customers, the Fabrikam Networks Gen 4 surcharges apply from 1 March 2027
       - Fabrikam Networks will increase Gen 5 hardware list prices by 4 per cent from 1 December 2026
       - Fabrikam Networks quotes issued before 30 November are honoured until 31 January 2027
       - The surcharge does not apply to support renewals
@@ -377,6 +378,14 @@ expect:
     planted-added-effect: {supported: false, mention: [saving]}
     # Leaving out each surcharge's rate leaves out detail; it states nothing the facts do not.
     notice-no-rates: {supported: true}
+    # Judging how big news is, is opinion; claiming a record or a first is a fact the facts do not give.
+    opinion-major: {supported: true}
+    planted-biggest-ever: {supported: false, mention: [biggest]}
+    # The charity customers' later date applies only to the Gen 4 surcharges.
+    notice-scope-right: {supported: true}
+    notice-scope-wrong: {supported: false, mention: [charity]}
+    # "For commercial customers" at most adds an unneeded adjective, so either answer is right.
+    notice-commercial: {supported: null}
   # The items each writer input's draft must hold, with words naming only the main news, because
   # an entry may sum up an item and leave detail out; omit names details no fact gives.
   writer:
