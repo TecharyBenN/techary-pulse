@@ -866,7 +866,7 @@ async def test_a_drafted_scenario_runs_the_orchestrator_on_version_1_with_stand_
 
     assert turn == Turn(tools=["show_draft"], reply="Here is version 1.")
     # The model saw the version the scripted run presented, through the real tools.
-    assert '"version": 1' in seen[0] or "latest_version" in seen[0]
+    assert '"latest_version": 1' in seen[0]
 
 
 @pytest.mark.parametrize(

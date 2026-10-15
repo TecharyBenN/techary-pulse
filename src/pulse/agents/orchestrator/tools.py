@@ -12,7 +12,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from pulse.agents.base import all_finished
 from pulse.agents.consolidator.agent import ConsolidatorAgent, ConsolidatorTask
-from pulse.agents.decomposer.agent import DecomposerAgent
+from pulse.agents.decomposer.agent import DecomposerAgent, DecomposerTask
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.judge.agent import JudgeAgent, JudgeTask
 from pulse.agents.sensitivity.agent import SensitivityAgent
@@ -27,6 +27,7 @@ from pulse.entities.extracts import (
     Extraction,
     ExtractorOutput,
     ExtractRecord,
+    LineFacts,
     SourcedItem,
     consolidation_input,
     extracted_news,
@@ -34,7 +35,7 @@ from pulse.entities.extracts import (
     with_sources,
 )
 from pulse.entities.lifecycle import Newsletter, require_latest, require_open
-from pulse.entities.mail import MessageId, ScreenedEmail
+from pulse.entities.mail import MessageId, ScreenedEmail, message_lines
 from pulse.entities.store import Store
 from pulse.services.operations import (
     ApproveResult,
@@ -139,6 +140,29 @@ def _named(email: ScreenedEmail) -> dict[str, Any]:
     return email.model_dump(include={"message_id", "sender_name", "received"})
 
 
+async def extract_news(
+    extractor: ExtractorAgent, decomposer: DecomposerAgent, email: ScreenedEmail
+) -> ExtractorOutput:
+    """The extractor's answer for the email, with each line's facts split by the decomposer, one
+    call per line that has facts. The extractor's checks ensure every line number is the
+    email's."""
+    output = await extractor.answer(email)
+    lines = message_lines(email)
+    with_facts = [line for line in output.lines if line.facts]
+    answers = await all_finished(
+        decomposer.answer(DecomposerTask(line=lines[line.line], facts=line.facts))
+        for line in with_facts
+    )
+    split = {line.line: answer.facts for line, answer in zip(with_facts, answers, strict=True)}
+    return output.model_copy(
+        update={
+            "lines": [
+                LineFacts(line=line.line, facts=split.get(line.line, [])) for line in output.lines
+            ]
+        }
+    )
+
+
 class Tools:
     """The orchestrator's toolset. Each tool reads the store, runs a specialist agent or calls
     Operations, and returns a refusal's reason as its result."""
@@ -240,7 +264,9 @@ class Tools:
         # Sensitivity is judged in its own call, so a flag is never dropped while the extractor
         # works on the news.
         extracted, flagged = await asyncio.gather(
-            self._extracted(email), self._sensitivity.answer(email), return_exceptions=True
+            extract_news(self._extractor, self._decomposer, email),
+            self._sensitivity.answer(email),
+            return_exceptions=True,
         )
         if isinstance(extracted, BaseException) or isinstance(flagged, BaseException):
             for result in (extracted, flagged):
@@ -253,10 +279,6 @@ class Tools:
         return ExtractOutcome(
             **_named(email), exclusion=record.exclusion, excluded_id=record.excluded_id
         )
-
-    async def _extracted(self, email: ScreenedEmail) -> ExtractorOutput:
-        """The extractor's answer with each line's facts split by the decomposer."""
-        return await self._decomposer.split(await self._extractor.answer(email), email)
 
     @_reported
     async def restore(
@@ -352,10 +374,10 @@ class Tools:
         feedback, and store its verdicts. Returns every check failure and their count, how many
         parts it judged and, for each part that fails, what does not keep to its facts and
         why."""
-        failures = await self._operations.check()
         newsletter = await self._open()
         newsletter_id = newsletter.newsletter_id
         content = (await self._operations.draft_or_version(newsletter, None)).content
+        failures = await self._operations.check(newsletter_id, content)
         _, items, _ = await self._items(newsletter_id)
         feedback = await self._store.list_feedback(newsletter_id)
         by_id = {item.item_id: item for item in items}

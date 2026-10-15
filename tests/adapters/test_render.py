@@ -111,7 +111,7 @@ VERSION = Version(
     version=2,
     created_at=datetime(2026, 9, 26, 9, 0, tzinfo=UTC),
     check_failures=[
-        CheckFailure(check="sentences", target="item-2", detail="3 sentences, limit 2")
+        CheckFailure(check="sentences", target="item-2", detail="6 sentences, limit 5")
     ],
     verdicts=[
         make_verdict("intro"),
@@ -240,7 +240,7 @@ def test_unflagged_entries_have_credit_lines_but_no_labels_or_list(
 @pytest.mark.parametrize(
     ("names", "line"),
     [
-        (["Ben Nicholls"], "Ben Nicholls"),
+        (["Grace Lin"], "Grace Lin"),
         (["Priya Shah", "Tom Evans"], "Priya Shah and Tom Evans"),
         (["Priya Shah", "Tom Evans", "Aisha Khan"], "Priya Shah, Tom Evans and Aisha Khan"),
     ],

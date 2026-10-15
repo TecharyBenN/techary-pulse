@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.models.function import AgentInfo
@@ -40,13 +38,6 @@ pytestmark = pytest.mark.anyio
 REVIEWER_ADDRESS = "priya.shah@example.org"
 INTERNAL = {"X-MS-Exchange-Organization-AuthAs": "Internal"}
 THREADED = make_newsletter().model_copy(update={"thread_message_id": "sent-1"})
-
-
-@pytest.fixture
-async def store(tmp_path: Path) -> SqliteStore:
-    store = SqliteStore(tmp_path / "pulse.db")
-    await store.initialise()
-    return store
 
 
 async def _never(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:

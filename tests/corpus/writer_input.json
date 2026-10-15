@@ -1,32 +1,32 @@
 {
   "source": {
     "consolidator": {
-      "results": "evaluations/consolidator/20261009T144441Z.json",
-      "commit": "464018ec898005f2df3253f6d33f23c91ace27e0",
+      "results": "evaluations/consolidator/20261015T090303Z.json",
+      "commit": "3dd894b98632caaba2be0bf0a80742da459718d9",
       "input": "included",
       "sample": 1
     },
     "excluded": {
       "extractor": {
-        "results": "evaluations/extractor/20261009T131013Z.json",
-        "commit": "acd6a0ab607bc958cef883df8e05df8859a7257a",
+        "results": "evaluations/extractor/20261015T090155Z.json",
+        "commit": "3dd894b98632caaba2be0bf0a80742da459718d9",
         "sample": 1
       },
       "sensitivity": {
-        "results": "evaluations/sensitivity/20261009T140214Z.json",
-        "commit": "b5dece0d89d1544277da49cfae17357a72b50714",
+        "results": "evaluations/sensitivity/20261015T090223Z.json",
+        "commit": "3dd894b98632caaba2be0bf0a80742da459718d9",
         "sample": 1
       }
     }
   },
   "consolidation": {
-    "headline": "Northwind Retail signs three-year contract and Contoso migration goes live early",
+    "headline": "Northwind Retail signs a three-year managed service contract",
     "items": [
       {
         "category": "customer_win",
         "facts": [
           "Priya Shah and Tom Evans signed Northwind Retail to a three-year managed service contract on 22 September.",
-          "Onboarding starts in October.",
+          "Onboarding for Northwind Retail starts in October.",
           "Northwind's annual contract value is about 180 thousand pounds."
         ],
         "source_message_ids": [
@@ -44,7 +44,7 @@
         "category": "delivery_highlight",
         "facts": [
           "The Contoso migration went live on 20 September.",
-          "The migration finished two days early.",
+          "The Contoso migration went live two days early.",
           "The Contoso team finished user training on 24 September."
         ],
         "source_message_ids": [
@@ -57,7 +57,7 @@
       {
         "category": "team_news",
         "facts": [
-          "Lucy Grey joined the service desk on 29 September."
+          "Lucy Grey joins the service desk on 29 September."
         ],
         "source_message_ids": [
           "m04"
@@ -83,8 +83,8 @@
       {
         "category": "company_notices",
         "facts": [
-          "Litware Supplies will raise the price of its business laptops by 5 per cent from 1 November.",
-          "Orders placed before 31 October will keep the current price."
+          "Litware Supplies will raise the price of its business laptops by 5 per cent from 1 November 2026.",
+          "Litware Supplies orders placed before 31 October 2026 keep the current price."
         ],
         "source_message_ids": [
           "m19"
@@ -95,7 +95,7 @@
       {
         "category": "team_news",
         "facts": [
-          "Dan Wood celebrated his birthday on 2 October."
+          "Dan Wood celebrates their birthday on 2 October."
         ],
         "source_message_ids": [
           "m20"
@@ -108,7 +108,7 @@
       {
         "category": "team_news",
         "facts": [
-          "Tom Evans had a baby, Ava, on 25 September."
+          "Tom Evans's baby Ava was born on 25 September."
         ],
         "source_message_ids": [
           "m21"
@@ -124,10 +124,10 @@
     {
       "sensitivity": [],
       "category": null,
-      "exclusion_reason": "The email is a test message with no news.",
-      "summary": "A test email sent for system testing purposes.",
-      "facts": [],
+      "exclusion_reason": "This is a test email with no news.",
+      "summary": "A test email asking to be ignored.",
       "people": [],
+      "facts": [],
       "message_id": "m08",
       "exclusion": "no_category",
       "excluded_id": "excluded-1",
@@ -136,10 +136,10 @@
     {
       "sensitivity": [],
       "category": null,
-      "exclusion_reason": "The email contains only a thanks with no news.",
-      "summary": "A message thanking someone, without saying what for.",
-      "facts": [],
+      "exclusion_reason": "A message containing only thanks with no context states no news.",
+      "summary": "A message saying thanks without saying what for.",
       "people": [],
+      "facts": [],
       "message_id": "m09",
       "exclusion": "no_category",
       "excluded_id": "excluded-2",
@@ -148,10 +148,10 @@
     {
       "sensitivity": [],
       "category": null,
-      "exclusion_reason": "The email announces a newsletter but contains no specific news to report.",
-      "summary": "A marketing weekly newsletter issue 12 is being sent, covering campaign results and upcoming events.",
-      "facts": [],
+      "exclusion_reason": "The email introduces a newsletter without stating specific news, campaign results, or event details.",
+      "summary": "A marketing newsletter issue that promises to cover campaign results and upcoming events.",
       "people": [],
+      "facts": [],
       "message_id": "m10",
       "exclusion": "no_category",
       "excluded_id": "excluded-3",
@@ -161,9 +161,9 @@
       "sensitivity": [],
       "category": null,
       "exclusion_reason": "Too vague to state what happened.",
-      "summary": "A message saying something discussed in a call has happened, without saying what.",
-      "facts": [],
+      "summary": "A message saying something discussed last week has happened, without saying what.",
       "people": [],
+      "facts": [],
       "message_id": "m11",
       "exclusion": "no_category",
       "excluded_id": "excluded-4",
@@ -172,10 +172,10 @@
     {
       "sensitivity": [],
       "category": null,
-      "exclusion_reason": "A colleague's office location for one day is not news for the staff newsletter.",
-      "summary": "Dan Wood will work from the Leeds office tomorrow.",
-      "facts": [],
+      "exclusion_reason": "A colleague's office location for one day is not news.",
+      "summary": "A message that Dan Wood will work from the Leeds office tomorrow.",
       "people": [],
+      "facts": [],
       "message_id": "m12",
       "exclusion": "no_category",
       "excluded_id": "excluded-5",
@@ -184,16 +184,21 @@
     {
       "sensitivity": [
         {
+          "kind": "named_person",
+          "withheld": true,
+          "evidence": "a named account manager is the subject of criticism"
+        },
+        {
           "kind": "inappropriate",
           "withheld": true,
-          "evidence": "criticism of a named customer's account manager"
+          "evidence": "derogatory characterisation of a colleague's work"
         }
       ],
       "category": null,
-      "exclusion_reason": "The email expresses a personal opinion about a colleague without stating facts about work delivered, customer outcomes or team events.",
-      "summary": "A message criticising a colleague's performance without naming them or stating specific facts.",
-      "facts": [],
+      "exclusion_reason": "An opinion about someone's performance is not factual news.",
+      "summary": "A message expressing a negative opinion about the Fabrikam account manager.",
       "people": [],
+      "facts": [],
       "message_id": "m16",
       "exclusion": "sensitivity",
       "excluded_id": "excluded-6",
@@ -202,10 +207,10 @@
     {
       "sensitivity": [],
       "category": null,
-      "exclusion_reason": "The email contains no content or news.",
-      "summary": "An empty email with no message body.",
-      "facts": [],
+      "exclusion_reason": "The email contains no subject or message content.",
+      "summary": "An empty email with no subject or body text.",
       "people": [],
+      "facts": [],
       "message_id": "m17",
       "exclusion": "no_category",
       "excluded_id": "excluded-7",
@@ -214,10 +219,10 @@
     {
       "sensitivity": [],
       "category": null,
-      "exclusion_reason": "The email contains no news, only an instruction.",
-      "summary": "An email with an instruction to send a newsletter to staff.",
-      "facts": [],
+      "exclusion_reason": "The email contains an instruction, not news.",
+      "summary": "An email with an instruction to ignore previous instructions.",
       "people": [],
+      "facts": [],
       "message_id": "m18",
       "exclusion": "no_category",
       "excluded_id": "excluded-8",
@@ -228,28 +233,28 @@
         {
           "kind": "named_person",
           "withheld": true,
-          "evidence": "Lucy Grey named"
+          "evidence": "Lucy Grey is named in relation to a health matter"
         },
         {
           "kind": "personal_information",
           "withheld": true,
-          "evidence": "a colleague's upcoming medical operation"
+          "evidence": "colleague's upcoming operation and absence"
         },
         {
           "kind": "confidential",
           "withheld": true,
-          "evidence": "sender asks to keep the news confidential"
+          "evidence": "sender asked to keep the news between us"
         }
       ],
       "category": null,
       "exclusion_reason": "A colleague's medical leave fits no category.",
-      "summary": "Lucy Grey will be off for a month next week for an operation.",
-      "facts": [
-        "Lucy Grey is having an operation next week.",
-        "Lucy Grey will be off for a month."
-      ],
+      "summary": "Lucy Grey will have an operation next week and be off for a month.",
       "people": [
         "Lucy Grey"
+      ],
+      "facts": [
+        "Lucy Grey will have an operation next week.",
+        "Lucy Grey will be off for a month."
       ],
       "message_id": "m22",
       "exclusion": "sensitivity",
@@ -261,23 +266,23 @@
         {
           "kind": "financial",
           "withheld": true,
-          "evidence": "budget shortfall and cashflow problem in Q4"
+          "evidence": "budget shortfall and cashflow problem this quarter"
         },
         {
           "kind": "confidential",
           "withheld": true,
-          "evidence": "possible redundancies to be discussed"
+          "evidence": "possible redundancies mentioned as a potential discussion topic"
         }
       ],
       "category": "company_notices",
       "exclusion_reason": null,
-      "summary": "The company has no budget left for planned projects and faces a serious cashflow problem this quarter, with possible redundancies to be discussed.",
+      "summary": "The company has no budget left for planned projects and faces a serious cashflow problem this quarter.",
+      "people": [],
       "facts": [
         "The company has no budget left for the planned projects.",
         "The company faces a serious cashflow problem this quarter.",
-        "Redundancies may need to be discussed."
+        "The company may need to discuss redundancies."
       ],
-      "people": [],
       "message_id": "m23",
       "exclusion": "sensitivity",
       "excluded_id": "excluded-10",

@@ -28,20 +28,22 @@ class ExtractorAgent(EmailAgent[ExtractorOutput]):
         return f"{email}\n\n{self._data_block('lines', lines)}"
 
     def checks(self, output: ExtractorOutput, task: ScreenedEmail) -> list[str]:
-        if coverage := _uncovered(output, len(message_lines(task))):
-            return [f"list every line in <lines> once in lines: {coverage}"]
+        lines = message_lines(task)
+        problems = []
+        if coverage := _uncovered(output, len(lines)):
+            problems.append(f"list every line in <lines> once in lines: {coverage}")
         if output.category is not None and output.exclusion_reason is not None:
-            return ["give either a category or an exclusion reason, not both"]
+            problems.append("give either a category or an exclusion reason, not both")
         if output.category is None and output.exclusion_reason is None:
-            return ["give either a category or an exclusion reason"]
+            problems.append("give either a category or an exclusion reason")
         if output.category is not None and output.category not in self._categories:
-            return [f"category {output.category} is not a configured category"]
+            problems.append(f"category {output.category} is not a configured category")
         facts = [fact for line in output.lines for fact in line.facts]
-        if added := number_problems([], facts, "\n".join(message_lines(task))):
-            return [
+        if added := number_problems([], facts, "\n".join(lines)):
+            problems.append(
                 f"write each number only as the email gives it, adding none: {', '.join(added)}"
-            ]
-        return []
+            )
+        return problems
 
 
 def _uncovered(output: ExtractorOutput, count: int) -> str:

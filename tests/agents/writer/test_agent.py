@@ -142,13 +142,13 @@ def test_entry_outside_item_ids_is_a_problem() -> None:
 def test_a_person_listed_but_not_named_in_the_text_is_a_problem() -> None:
     entry = Entry(
         item_id="item-1",
-        text="Palo Alto Networks is raising prices from 3 October.",
-        people=["Ben Nicholls", "jeff mattan"],
+        text="Woodgrove Supplies is raising prices from 3 October.",
+        people=["Nina Shaw", "Sam Lee"],
     )
 
     assert WRITER.checks(make_draft(entry), TASK) == [
-        "remove Ben Nicholls from the people of the item-1 entry: its text does not name them",
-        "remove jeff mattan from the people of the item-1 entry: its text does not name them",
+        "remove Nina Shaw from the people of the item-1 entry: its text does not name them",
+        "remove Sam Lee from the people of the item-1 entry: its text does not name them",
     ]
 
 

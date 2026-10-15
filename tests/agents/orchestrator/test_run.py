@@ -55,14 +55,8 @@ pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
-def db_path(tmp_path: Path) -> Path:
-    return tmp_path / "state" / "pulse.db"
-
-
-@pytest.fixture
-async def store(db_path: Path) -> SqliteStore:
-    store = SqliteStore(db_path)
-    await store.initialise()
+async def store(store: SqliteStore) -> SqliteStore:
+    """The store with an open newsletter."""
     await store.save_start(make_newsletter(), [])
     return store
 
@@ -97,7 +91,7 @@ def _logged(caplog: pytest.LogCaptureFixture, event: str) -> dict[str, object]:
     return vars(next(r for r in caplog.records if r.getMessage() == event))
 
 
-async def test_returns_thereply_with(store: SqliteStore) -> None:
+async def test_returns_the_reply(store: SqliteStore) -> None:
     reply = (
         await make_orchestrator(store, reply_with("Happy to help.")).handle(make_message())
     ).text
@@ -190,7 +184,9 @@ async def test_without_an_open_newsletter_nothing_is_saved(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("text", ["NO_REPLY", "  NO_REPLY\n"])
-async def test_noreply_with(store: SqliteStore, db_path: Path, text: str) -> None:
+async def test_no_reply_returns_none_and_still_records_feedback(
+    store: SqliteStore, db_path: Path, text: str
+) -> None:
     reply = (await make_orchestrator(store, reply_with(text)).handle(make_message())).text
 
     assert reply is None

@@ -7,7 +7,7 @@ from pulse.adapters.store import SqliteStore
 from pulse.entities.content import CheckFailure, EntryNotes, Version, WriterOutput
 from pulse.entities.errors import MailboxError, Refusal, StoreError
 from pulse.entities.extracts import Sensitivity
-from pulse.entities.lifecycle import Newsletter, Scheduled, abandon, start_send
+from pulse.entities.lifecycle import Newsletter, Scheduled, start_send
 from pulse.entities.review import Finding
 from pulse.services.operations import ApproveResult, NoticeResult, Operations, PresentResult
 from tests.emails import (
@@ -29,13 +29,6 @@ PRESENTED = OPENED + timedelta(hours=2)
 MONDAY_NINE = Scheduled(mode="scheduled", day="MON", time=time(9, 0))
 
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture
-async def store(tmp_path: Path) -> SqliteStore:
-    store = SqliteStore(tmp_path / "pulse.db")
-    await store.initialise()
-    return store
 
 
 @pytest.fixture
@@ -277,19 +270,21 @@ async def test_present_saves_the_entry_flags_and_returns_how_many_are_flagged(
     assert "- Priya Shah" in email.body.content
 
 
-async def test_a_version_keeps_its_flags_when_the_items_change(
+async def test_a_version_keeps_its_flags_and_credit_lines_when_the_items_change(
     operations: Operations, store: SqliteStore
 ) -> None:
     await _drafted(store, [PRICE])
     await operations.present_draft()
 
-    # m01 is no longer the item's source, so the working draft's flags would now differ.
-    await store.save_start(await _newsletter(store), [screen_email(make_email("m02"))])
+    # m01 is no longer the item's source, so the working draft's notes would now differ.
+    other = make_email("m02", sender_name="Tom Evans", sender_address="tom.evans@example.org")
+    await store.save_start(await _newsletter(store), [screen_email(other)])
     await store.save_extract("n-1", "m02", make_output())
     await store.save_items("n-1", make_consolidation(make_item(source_message_ids=["m02"])))
 
     [version] = await _versions(store)
     assert version.notes.flags == {"item-1": [PRICE]}
+    assert version.notes.credits == {"item-1": ["Priya Shah"]}
     # Resending shows the version as it was presented.
     assert await operations.present_draft() == PresentResult(
         problems=[], version=1, flagged=1, resent=True
@@ -364,24 +359,13 @@ DASHED = make_draft().model_copy(
 DASH_FAILURE = CheckFailure(check="dashes", target="intro", detail="em or en dash")
 
 
-async def test_check_returns_every_failure_of_the_working_draft(
+async def test_check_returns_every_failure_of_the_content(
     operations: Operations, store: SqliteStore
 ) -> None:
     await _drafted(store)
-    assert await operations.check() == []
 
-    await store.save_draft("n-1", DASHED)
-
-    assert await operations.check() == [DASH_FAILURE]
-
-
-async def test_check_refuses_without_a_working_draft(
-    operations: Operations, store: SqliteStore
-) -> None:
-    await store.save_start(make_newsletter(), [])
-
-    with pytest.raises(Refusal, match="there is no working draft"):
-        await operations.check()
+    assert await operations.check("n-1", make_draft().content) == []
+    assert await operations.check("n-1", DASHED.content) == [DASH_FAILURE]
 
 
 async def test_present_saves_the_check_failures_and_the_latest_verdicts(
@@ -715,13 +699,3 @@ async def test_present_without_an_approval_withdraws_nothing(
     await _drafted(store)
 
     assert await operations.present_draft() == PresentResult(problems=[], version=1, flagged=0)
-
-
-async def test_check_works_on_a_closed_newsletter(
-    operations: Operations, store: SqliteStore
-) -> None:
-    await _drafted(store)
-    await store.save_draft("n-1", DASHED)
-    await store.save_newsletter(abandon(make_newsletter(), REVIEWER, OPENED))
-
-    assert await operations.check() == [DASH_FAILURE]

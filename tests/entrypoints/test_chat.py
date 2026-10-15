@@ -46,14 +46,8 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
 
 @pytest.fixture
-def db_path(tmp_path: Path) -> Path:
-    return tmp_path / "pulse.db"
-
-
-@pytest.fixture
-async def store(db_path: Path) -> SqliteStore:
-    store = SqliteStore(db_path)
-    await store.initialise()
+async def store(store: SqliteStore) -> SqliteStore:
+    """The store with an open newsletter."""
     await store.save_start(make_newsletter(), [])
     return store
 

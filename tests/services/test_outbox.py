@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 
 import pytest
 
@@ -22,9 +21,8 @@ def mailbox() -> FakeMailbox:
 
 
 @pytest.fixture
-async def store(tmp_path: Path) -> SqliteStore:
-    store = SqliteStore(tmp_path / "pulse.db")
-    await store.initialise()
+async def store(store: SqliteStore) -> SqliteStore:
+    """The store with an open newsletter."""
     await store.save_start(make_newsletter(), [])
     return store
 

@@ -2,10 +2,9 @@
 
 from pydantic_ai.models import Model
 
-from pulse.agents.base import SpecialistAgent, all_finished
+from pulse.agents.base import SpecialistAgent
 from pulse.entities.base import Entity
-from pulse.entities.extracts import DecomposerOutput, ExtractorOutput, LineFacts, number_problems
-from pulse.entities.mail import ScreenedEmail, message_lines
+from pulse.entities.extracts import DecomposerOutput, number_problems
 
 
 class DecomposerTask(Entity):
@@ -27,21 +26,3 @@ class DecomposerAgent(SpecialistAgent[DecomposerTask, DecomposerOutput]):
 
     def checks(self, output: DecomposerOutput, task: DecomposerTask) -> list[str]:
         return number_problems(task.facts, output.facts, task.line)
-
-    async def split(self, output: ExtractorOutput, email: ScreenedEmail) -> ExtractorOutput:
-        """The extractor's answer with each line's facts split, one call per line with facts."""
-        lines = message_lines(email)
-        with_facts = [line for line in output.lines if line.facts and 0 <= line.line < len(lines)]
-        answers = await all_finished(
-            self.answer(DecomposerTask(line=lines[line.line], facts=line.facts))
-            for line in with_facts
-        )
-        split = {line.line: answer.facts for line, answer in zip(with_facts, answers, strict=True)}
-        return output.model_copy(
-            update={
-                "lines": [
-                    LineFacts(line=line.line, facts=split.get(line.line, line.facts))
-                    for line in output.lines
-                ]
-            }
-        )

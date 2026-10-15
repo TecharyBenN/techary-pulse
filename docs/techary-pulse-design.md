@@ -375,7 +375,6 @@ The writer's instructions give `headline_title`, and the configured sections wit
 
 - each entry is as short as its news allows: one or two sentences for most news, and at most five;
 - each entry tells the news itself, as a newsletter does, and never reports the email it came in, such as who sent it or who sends wishes to whom: "Happy birthday to Dan Wood", never "Lucy Grey sends birthday wishes to Dan Wood";
-- each entry lists every person it names in `people`;
 - entries use only the facts of their item and facts stated in reviewer feedback, and give the main news: what is happening, to whom, when and how much; when an item holds more detail than a short entry carries, such as a supplier's full price list, the entry sums up the main changes and leaves out the rest, because readers who need the detail ask the person who shared it;
 - when a fact gives different dates or amounts for different people or products, the entry keeps each date or amount with the people or products it applies to;
 - the newsletter is under `max_words` words;

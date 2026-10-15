@@ -1,4 +1,4 @@
-"""Evaluates the judge on its own, on texts from a tested writer draft and three that each break
+"""Evaluates the judge on its own, on texts from a tested writer draft and texts that each break
 one rule, through the dev gateway, using ./config.yaml and .env. Every call is paid; the results,
 with every request sent, go to evaluations/judge/."""
 

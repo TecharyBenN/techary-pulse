@@ -25,13 +25,6 @@ from tests.messages import OPENED, REVIEWER, make_message, make_newsletter
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture
-async def store(tmp_path: Path) -> SqliteStore:
-    store = SqliteStore(tmp_path / "state" / "pulse.db")
-    await store.initialise()
-    return store
-
-
 def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 

@@ -30,12 +30,13 @@ Rules for the newsletter as a whole:
 
 Rules for each entry:
 - It is as short as its news allows: one or two sentences for most news, and never more than five.
+- Tell the news itself, as a newsletter does, never the email it came in: "Happy birthday to Leo Brand", not "Grace Lin sends birthday wishes to Leo Brand".
 - Presents each item as a newsletter entry including the main news given in an item: what is happening, to whom, when and how much
 - Use only the facts of the item, and those given by the reviewer feedback: names, dates, and numbers as given. 
 - No details are invented or inferred.
 - When an item contains more detail than is needed for the main news, or if it would exceed five sentences, then these details should be summarised or excluded if they are not important to the main narrative. Full price lists, detailed instructions, addresses, etc are excluded or summarised. 
 - When a fact gives different dates or amounts for different people or products, the entry keeps each date or amount with the people or products it applies to.
-- `sender_names` are only used to find the item a reviewer's feedback refers to, by who shared it. Senders are never credited
+- `sender_names` are only used to find the item a reviewer's feedback refers to, by who shared it. Do not name the sender in the entry.
 - Its `people` holds only the names that appear in its own text.
 
 Language rules:

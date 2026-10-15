@@ -12,10 +12,11 @@ from pathlib import Path
 
 import httpx2
 import pytest
+from markupsafe import escape
 from msgraph.graph_service_client import GraphServiceClient
 
 from pulse.adapters.graph import GraphMailbox
-from pulse.adapters.render import Renderer
+from pulse.adapters.render import Renderer, credit
 from pulse.adapters.store import SqliteStore
 from pulse.agents.orchestrator.run import Orchestrator
 from pulse.config import Config, load_config
@@ -127,7 +128,8 @@ async def test_an_approved_newsletter_is_withdrawn_then_sent(tmp_path: Path) -> 
 
 
 async def test_flagged_entries_reach_the_reviewers_and_never_all_staff(tmp_path: Path) -> None:
-    """Also needs the test user's forward of corpus m19's supplier email in the dev inbox."""
+    """Also needs, in the dev inbox, the test user's forward of a supplier's price change that is
+    marked for partners only."""
     config = load_config(Path("config.yaml"))
     assert "company_notices" in config.categories, "add the company_notices section"
     corpus = {m["subject"]: m["id"] for m in seedable_corpus_messages()}
@@ -182,7 +184,9 @@ async def test_flagged_entries_reach_the_reviewers_and_never_all_staff(tmp_path:
     assert "confidential" in flagged(forward)
     assert "named_person" in flagged(by_corpus["m05"])
     # Every entry is credited to whoever shared it, in the all-staff send too.
-    assert all(version.notes.credits.get(e.item_id) for e in version.content.entries())
-    assert "- " in all_staff
+    credits = [version.notes.credits.get(e.item_id) for e in version.content.entries()]
+    assert all(credits)
+    for names in credits:
+        assert escape(f"- {credit(names or [])}") in all_staff
     for label in ("Named person", "Financial", "Flagged for review"):
         assert label not in all_staff

@@ -100,6 +100,24 @@ def test_the_message_holds_the_email_without_its_body_and_its_numbered_lines() -
     )
 
 
+def test_a_forward_gives_its_new_text_and_numbers_every_line_it_forwards() -> None:
+    forward = make_screened_email(
+        subject="FW: Prices",
+        unique_body="For anyone ordering laptops.",
+        body="For anyone ordering laptops.\n\nFrom: Litware Supplies\nPrices rise on 1 November.",
+    )
+
+    email, lines = EXTRACTOR.message(forward).split("\n\n")
+
+    assert json.loads(email.split("\n")[1])["unique_body"] == "For anyone ordering laptops."
+    assert [line["text"] for line in json.loads(lines.split("\n")[1])] == [
+        "FW: Prices",
+        "For anyone ordering laptops.",
+        "From: Litware Supplies",
+        "Prices rise on 1 November.",
+    ]
+
+
 @pytest.mark.parametrize(
     ("numbers", "problem"),
     [
@@ -112,6 +130,20 @@ def test_the_message_holds_the_email_without_its_body_and_its_numbered_lines() -
 def test_every_line_must_be_listed_once(numbers: tuple[int, ...], problem: str) -> None:
     assert EXTRACTOR.checks(_lines(*numbers), EMAIL) == [
         f"list every line in <lines> once in lines: {problem}"
+    ]
+
+
+def test_every_problem_is_listed_so_the_retry_can_fix_them_all() -> None:
+    answer = answer_for(
+        make_output(category="gossip", facts=["We signed Northwind Retail on 1 May."]),
+        message_lines(EMAIL),
+    )
+    problems = EXTRACTOR.checks(answer.model_copy(update={"lines": answer.lines[:-1]}), EMAIL)
+
+    assert problems == [
+        "list every line in <lines> once in lines: missing 3",
+        "category gossip is not a configured category",
+        "write each number only as the email gives it, adding none: added 1",
     ]
 
 

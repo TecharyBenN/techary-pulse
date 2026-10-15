@@ -34,7 +34,6 @@ from pulse.entities.lifecycle import (
     open_newsletter,
     present,
     require_changeable,
-    require_latest,
     require_open,
     send_time,
     send_time_text,
@@ -172,12 +171,6 @@ class Operations:
         await self._store.save_restored(newsletter_id, record)
         return RestoreResult(excluded_id=excluded_id, message_id=record.message_id)
 
-    async def check(self) -> list[CheckFailure]:
-        """Run the draft checks on the latest newsletter's working draft."""
-        newsletter = require_latest(await self._store.get_latest_newsletter())
-        draft = await self.draft_or_version(newsletter, None)
-        return await self._check(newsletter.newsletter_id, draft.content)
-
     async def present_draft(self, email_reviewers: bool = True) -> PresentResult:
         """Save the working draft as the next version, with its check failures, the judge's
         latest verdicts and its entry notes, and email it to the reviewers, in the newsletter's
@@ -203,7 +196,7 @@ class Operations:
             draft,
             next_version(newsletter),
             self._clock(),
-            await self._check(newsletter_id, draft.content),
+            await self.check(newsletter_id, draft.content),
             await self._store.get_verdicts(newsletter_id),
             await entry_notes(self._store, newsletter_id, draft.content),
         )
@@ -324,7 +317,9 @@ class Operations:
         text = f"The approval of version {version} was withdrawn, so it will not be sent."
         return await self._outbox.notice(withdrawn, _SEND_CANCELLED, text)
 
-    async def _check(self, newsletter_id: str, content: Content) -> list[CheckFailure]:
+    async def check(self, newsletter_id: str, content: Content) -> list[CheckFailure]:
+        """Run the draft checks on the content against the newsletter's items, screened emails
+        and feedback."""
         consolidation = await self._store.get_items(newsletter_id)
         emails = await self._store.list_screened_emails(newsletter_id)
         feedback = await self._store.list_feedback(newsletter_id)

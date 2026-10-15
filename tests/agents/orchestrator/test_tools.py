@@ -2,7 +2,6 @@ import asyncio
 import json
 from collections.abc import Mapping
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -21,18 +20,25 @@ from pydantic_ai.usage import RunUsage
 
 from pulse.adapters.store import SqliteStore
 from pulse.agents.consolidator.agent import ConsolidatorAgent
-from pulse.agents.decomposer.agent import DecomposerAgent
+from pulse.agents.decomposer.agent import DecomposerAgent, DecomposerTask
 from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.judge.agent import JudgeAgent
 from pulse.agents.orchestrator.agent import OrchestratorAgent
 from pulse.agents.orchestrator.run import Orchestrator
-from pulse.agents.orchestrator.tools import PROGRESS_NOTES, ShowResult, Tools, progress_note
+from pulse.agents.orchestrator.tools import (
+    PROGRESS_NOTES,
+    ShowResult,
+    Tools,
+    extract_news,
+    progress_note,
+)
 from pulse.agents.sensitivity.agent import SensitivityAgent
 from pulse.agents.writer.agent import WriterAgent
 from pulse.entities.content import Entry, JudgeOutput
 from pulse.entities.conversation import ReviewerMessage
-from pulse.entities.extracts import Extraction
-from pulse.entities.lifecycle import start_send
+from pulse.entities.extracts import DecomposerOutput, Extraction, ExtractorOutput, LineFacts
+from pulse.entities.lifecycle import abandon, start_send
+from pulse.entities.mail import ScreenedEmail, message_lines
 from pulse.services.operations import ApproveResult, NoticeResult, RestoreResult
 from tests.emails import (
     CORPUS_ITEM_SOURCES,
@@ -47,6 +53,7 @@ from tests.emails import (
     make_email,
     make_item,
     make_output,
+    make_screened_email,
     make_verdict,
     stored_outcomes,
 )
@@ -62,7 +69,7 @@ from tests.fakes.models import (
     sensitivity_model,
     text_response,
 )
-from tests.messages import REVIEWER, make_message
+from tests.messages import OPENED, REVIEWER, make_message, make_newsletter
 from tests.operations import REVIEWERS, make_operations
 
 pytestmark = pytest.mark.anyio
@@ -105,13 +112,6 @@ def judge_model(seen: list[dict[str, Any]] | None = None) -> FunctionModel:
         return text_response(JudgeOutput(unsupported=verdict.unsupported).model_dump_json())
 
     return FunctionModel(model)
-
-
-@pytest.fixture
-async def store(tmp_path: Path) -> SqliteStore:
-    store = SqliteStore(tmp_path / "pulse.db")
-    await store.initialise()
-    return store
 
 
 def _tools(
@@ -330,6 +330,56 @@ async def test_extract_stores_each_record_with_its_facts_split_by_the_decomposer
 
     records = {r.message_id: r for r in await store.list_extract_records(started.newsletter_id)}
     assert records["m01"].facts == split
+
+
+def _line_by_line(email: ScreenedEmail, facts: Mapping[int, list[str]]) -> ExtractorAgent:
+    """An extractor answering the email with the given facts under each line."""
+    output = ExtractorOutput(
+        category="customer_win",
+        exclusion_reason=None,
+        summary="News.",
+        people=[],
+        lines=[LineFacts(line=n, facts=facts.get(n, [])) for n in range(len(message_lines(email)))],
+    )
+    return ExtractorAgent(FunctionModel(reply_with(output.model_dump_json())), CATEGORIES)
+
+
+async def test_extract_news_splits_each_line_with_facts_in_its_own_call() -> None:
+    fact = "Signed Northwind Retail on 22 September, and Contoso on 1 October."
+    split = ["Signed Northwind Retail on 22 September.", "Signed Contoso on 1 October."]
+    email = make_screened_email(subject="Signed", body=f"Hi all,\n{fact}\nPriya")
+    sent: list[str] = []
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        request = messages[0]
+        assert isinstance(request, ModelRequest)
+        sent.extend(str(p.content) for p in request.parts if isinstance(p, UserPromptPart))
+        return text_response(DecomposerOutput(facts=split).model_dump_json())
+
+    decomposer = DecomposerAgent(FunctionModel(model))
+    output = await extract_news(_line_by_line(email, {2: [fact]}), decomposer, email)
+
+    assert sent == [decomposer.message(DecomposerTask(line=fact, facts=[fact]))]
+    assert [line.facts for line in output.lines] == [[], [], split, []]
+
+
+async def test_a_gateway_error_fails_extract_news_once_every_other_call_has_finished() -> None:
+    email = make_screened_email(subject="Signed", body="Line one.\nLine two.")
+    finished: list[str] = []
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if "first" in str(messages[0]):
+            raise gateway_error()
+        await asyncio.sleep(0.05)
+        finished.append("second")
+        return text_response(DecomposerOutput(facts=["The second fact."]).model_dump_json())
+
+    extractor = _line_by_line(email, {1: ["The first fact."], 2: ["The second fact."]})
+
+    with pytest.raises(ModelHTTPError):
+        await extract_news(extractor, DecomposerAgent(FunctionModel(model)), email)
+
+    assert finished == ["second"]
 
 
 async def test_extract_takes_only_emails_that_passed_and_have_no_record(
@@ -730,6 +780,12 @@ async def test_judge_runs_the_code_checks_and_returns_every_failure(store: Sqlit
         1,
         [{"check": "dashes", "target": "intro", "detail": "em or en dash"}],
     )
+
+
+async def test_judge_works_only_on_the_open_newsletter(store: SqliteStore) -> None:
+    await store.save_newsletter(abandon(make_newsletter(), REVIEWER, OPENED))
+
+    assert await _tools(store).judge() == "Refused: no newsletter is open"
 
 
 async def test_a_gateway_error_fails_judge_once_every_other_call_has_finished(

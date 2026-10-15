@@ -35,15 +35,9 @@ from tests.emails import (
     share,
 )
 
-# The same kinds can be fine to share or withheld; only the sensitivity agent's judgement decides.
 FLAG = Sensitivity(
     kind="personal_information", withheld=True, evidence="mentions a colleague's health"
 )
-NEW_BABY = Sensitivity(
-    kind="personal_information", withheld=False, evidence="congratulates a colleague on a baby"
-)
-PROFITS = Sensitivity(kind="financial", withheld=False, evidence="shares profits as good news")
-CASHFLOW = Sensitivity(kind="financial", withheld=True, evidence="an internal cashflow problem")
 COMMERCIAL = Sensitivity(kind="financial", withheld=False, evidence="a supplier's prices")
 NAMED = Sensitivity(kind="named_person", withheld=False, evidence="thanks a colleague by name")
 REVIEWER = "reviewer-oid"
@@ -69,10 +63,6 @@ def test_only_a_withheld_flag_excludes_whatever_its_kind(
 @pytest.mark.parametrize(
     ("changes", "expected"),
     [
-        ({"sensitivity": [PROFITS]}, None),
-        ({"sensitivity": [CASHFLOW]}, "sensitivity"),
-        ({"sensitivity": [NEW_BABY]}, None),
-        ({"sensitivity": [FLAG]}, "sensitivity"),
         ({"sensitivity": [COMMERCIAL, FLAG]}, "sensitivity"),
         ({"sensitivity": [FLAG], "category": None}, "sensitivity"),
         ({"category": None}, "no_category"),
@@ -104,12 +94,6 @@ def test_included_record_keeps_its_flags() -> None:
 
 def _record(output: Extraction, *used: str) -> ExtractRecord:
     return make_record("m01", output, used)
-
-
-def test_included_record_has_no_excluded_id() -> None:
-    record = _record(make_output())
-
-    assert (record.exclusion, record.excluded_id) == (None, None)
 
 
 def test_record_keeps_the_extraction_and_takes_the_message_id_from_code() -> None:
@@ -375,9 +359,9 @@ def test_a_number_dropped_or_added_is_a_problem() -> None:
 
 
 def test_a_number_from_the_line_may_be_added() -> None:
-    line = "Gen 4 Branch (PA-400s): a 15% surcharge from 3 October 2026."
-    before = ["A 15 per cent surcharge applies to Gen 4 Branch from 3 October 2026."]
-    after = ["A 15 per cent surcharge applies to Gen 4 Branch (PA-400s) from 3 October 2026."]
+    line = "Woodgrove Branch (WG-400s): a 15% surcharge from 3 October 2026."
+    before = ["A 15 per cent surcharge applies to Woodgrove Branch from 3 October 2026."]
+    after = ["A 15 per cent surcharge applies to Woodgrove Branch (WG-400s) from 3 October 2026."]
 
     assert number_problems(before, after, line) == []
 

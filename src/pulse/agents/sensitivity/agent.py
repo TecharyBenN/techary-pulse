@@ -7,7 +7,7 @@ from pulse.entities.extracts import SensitivityOutput
 
 
 class SensitivityAgent(EmailAgent[SensitivityOutput]):
-    """It reads the same email message as the extractor."""
+    """It reads the email as JSON with both bodies, where the extractor reads its numbered lines."""
 
     def __init__(self, model: Model) -> None:
         super().__init__(model, name="sensitivity", output_type=SensitivityOutput)

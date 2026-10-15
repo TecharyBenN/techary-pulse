@@ -1,5 +1,5 @@
 """Evaluates the writer on its own, writing a first draft from the consolidator baseline's items,
-and a first draft and a fix for a dense supplier notice, through the dev gateway, using
+and a first draft of a dense supplier notice, through the dev gateway, using
 ./config.yaml and .env. Every call is paid; the results, with every request sent, go to
 evaluations/writer/."""
 

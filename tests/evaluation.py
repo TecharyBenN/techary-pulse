@@ -41,7 +41,7 @@ from pulse.agents.extractor.agent import ExtractorAgent
 from pulse.agents.judge.agent import JudgeAgent, JudgeTask
 from pulse.agents.orchestrator.agent import OrchestratorAgent
 from pulse.agents.orchestrator.run import Orchestrator
-from pulse.agents.orchestrator.tools import Tools
+from pulse.agents.orchestrator.tools import Tools, extract_news
 from pulse.agents.sensitivity.agent import SensitivityAgent
 from pulse.agents.writer.agent import WriterAgent, WriterTask
 from pulse.config import Config, load_config
@@ -101,7 +101,7 @@ _RECORDS = TypeAdapter(list[ExtractRecord])
 # The items the consolidator baseline produced from those included records, and the excluded
 # records, which the writer is given.
 WRITER_INPUT = Path(__file__).parent / "corpus" / "writer_input.json"
-# Texts from a tested writer draft, and three that each break one rule, which the judge is given.
+# Texts from a tested writer draft, and texts that each break one rule, which the judge is given.
 JUDGE_INPUT = Path(__file__).parent / "corpus" / "judge_input.json"
 # The writer's tested draft, which the writer stand-in returns to the orchestrator.
 ORCHESTRATOR_INPUT = Path(__file__).parent / "corpus" / "orchestrator_input.json"
@@ -617,6 +617,8 @@ class Exchange(Entity):
     usage: dict[str, Any] | None
     # The model's answer, or the error body when the request failed.
     content: str | None
+    # The tools the model called, with their arguments; results saved before this have none.
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class Recorder:
@@ -656,6 +658,7 @@ class Recorder:
                     "finish_reason": choice.get("finish_reason"),
                     "usage": completion.get("usage"),
                     "content": choice["message"].get("content"),
+                    "tool_calls": choice["message"].get("tool_calls"),
                 }
             )
         self._exchanges[_CALL.get()].append(exchange)
@@ -719,8 +722,10 @@ class Results(Entity):
     model: str
     base_url: str
     commit: str
-    # `git status --porcelain` lines, so changes not yet committed are known too.
+    # `git status --porcelain` lines and `git diff HEAD`, so changes not yet committed are known
+    # too; results saved before the diff was recorded have none.
     uncommitted: list[str]
+    diff: str = ""
     started: AwareDatetime
     finished: AwareDatetime
     samples: int
@@ -746,6 +751,7 @@ class Results(Entity):
             base_url=base_url,
             commit=_git("rev-parse", "HEAD").strip(),
             uncommitted=_git("status", "--porcelain").splitlines(),
+            diff=_git("diff", "HEAD"),
             started=started,
             finished=finished,
             samples=samples,
@@ -780,9 +786,9 @@ def save_live_run(
         recorder=recorder,
     )
     path = save_results(results)
-    copy = path.with_suffix(".db")
-    shutil.copyfile(store, copy)
-    copy.chmod(0o600)
+    descriptor = os.open(path.with_suffix(".db"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(descriptor, "wb") as copy, store.open("rb") as original:
+        shutil.copyfileobj(original, copy)
     return path
 
 
@@ -821,7 +827,7 @@ class ExtractionSteps:
         self._decomposer = decomposer
 
     async def answer(self, task: ScreenedEmail) -> ExtractorOutput:
-        return await self._decomposer.split(await self._extractor.answer(task), task)
+        return await extract_news(self._extractor, self._decomposer, task)
 
 
 async def run_live[T, O: BaseModel](
@@ -836,7 +842,6 @@ async def run_live[T, O: BaseModel](
     through the dev gateway, using ./config.yaml and .env. Save the results and print a report for
     each input; `details` gives the lines worth reading from one answer."""
     config = load_config(Path("config.yaml"))
-    model = config.llm.models[agent]
     inputs = chosen_inputs(inputs, os.environ.get(INPUTS_VARIABLE))
     recorder = Recorder()
     provider = OpenAIProvider(
@@ -844,22 +849,32 @@ async def run_live[T, O: BaseModel](
         api_key=os.environ[config.llm.api_key_env],
         http_client=recorder.client(),
     )
-    evaluated = build(
-        lambda name: OpenAIChatModel(config.llm.models[name], provider=provider), config
-    )
+    # Every agent the run builds, such as the extractor and the decomposer, with its model.
+    models: dict[str, str] = {}
+
+    def model(name: str) -> Model:
+        models[name] = config.llm.models[name]
+        return OpenAIChatModel(models[name], provider=provider)
+
+    evaluated = build(model, config)
     started = datetime.now(UTC)
-    answers = await evaluate(evaluated.answer, problems, inputs, samples, recorder)
-    results = Results.of(
-        agent=agent,
-        model=model,
-        base_url=config.llm.base_url,
-        samples=samples,
-        started=started,
-        finished=datetime.now(UTC),
-        answers=answers,
-        recorder=recorder,
-    )
-    path = save_results(results)
+    answers: list[Answer] = []
+    try:
+        answers = await evaluate(evaluated.answer, problems, inputs, samples, recorder)
+    finally:
+        # Saved even when the run fails, so the paid requests it made are kept.
+        path = save_results(
+            Results.of(
+                agent=agent,
+                model=", ".join(f"{name}: {used}" for name, used in models.items()),
+                base_url=config.llm.base_url,
+                samples=samples,
+                started=started,
+                finished=datetime.now(UTC),
+                answers=answers,
+                recorder=recorder,
+            )
+        )
     for item in inputs:
         _report(item, [a for a in answers if a.input_id == item.input_id], details)
     calls = sum(len(answer.exchanges) for answer in answers)
@@ -903,6 +918,11 @@ def _report[T](
     lines += [line for answer in answers if answer.output for line in details(answer.output)]
     for line, count in Counter(lines).items():
         print(f"    {count}x {line}")
+
+
+def _says(reply: str, text: str) -> bool:
+    """Whether the reply holds the text as whole words, so "now" is not found in "know"."""
+    return re.search(rf"\b{re.escape(text)}\b", reply, re.IGNORECASE) is not None
 
 
 def _git(*args: str) -> str:
@@ -988,15 +1008,9 @@ def orchestrator_problems(turn: Turn, expected: ScenarioExpectation) -> list[str
     ]
     reply = turn.reply or ""
     problems += [
-        f"the reply does not say {text}"
-        for text in expected.reply_has
-        if text.casefold() not in reply.casefold()
+        f"the reply does not say {text}" for text in expected.reply_has if not _says(reply, text)
     ]
-    problems += [
-        f"the reply says {text}"
-        for text in expected.reply_lacks
-        if text.casefold() in reply.casefold()
-    ]
+    problems += [f"the reply says {text}" for text in expected.reply_lacks if _says(reply, text)]
     problems += [
         f"the reply contains {match}" for match in dict.fromkeys(_REPLY_NEVER.findall(reply))
     ]

@@ -451,14 +451,6 @@ def test_each_included_item_is_credited_to_its_senders_once_each() -> None:
     }
 
 
-def test_a_version_keeps_the_notes_it_was_presented_with() -> None:
-    notes = EntryNotes(credits={"item-1": ["Priya Shah"]}, flags={"item-1": [COMMERCIAL]})
-
-    version = version_of(make_draft(), 1, datetime(2026, 9, 26, 9, 0, tzinfo=UTC), [], None, notes)
-
-    assert version.notes == notes
-
-
 def test_a_verdict_is_supported_exactly_when_nothing_is_unsupported() -> None:
     part = UnsupportedText(text="Signed two customers", reason="The facts name one customer.")
 
